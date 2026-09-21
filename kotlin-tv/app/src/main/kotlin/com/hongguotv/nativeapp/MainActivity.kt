@@ -167,19 +167,20 @@ class MainActivity: Activity() {
         val scroll=ScrollView(this).apply { isFillViewport=false; isVerticalScrollBarEnabled=false; clipToPadding=false }
         val list=column(); scroll.addView(list); body.addView(scroll,lp(-1,0).apply { weight=1f })
         val cards=mutableListOf<View>(); val count=5; val gap=dp(10); val width=((resources.displayMetrics.widthPixels*.9f-gap*(count-1))/count).toInt()
-        catalog.chunked(count).forEachIndexed { rowIndex,items ->
+        catalog.chunked(count).forEach { items ->
             val line=row(); line.gravity=Gravity.TOP
             items.forEachIndexed { columnIndex,item ->
-                val card=column(); card.setPadding(dp(5),dp(5),dp(5),dp(7)); focusStyle(card); card.contentDescription=item.title
+                val card=column(); card.minimumHeight=dp(221); card.setPadding(dp(5),dp(5),dp(5),dp(7)); focusStyle(card); card.contentDescription=item.title
                 val image=ImageView(this).apply { scaleType=ImageView.ScaleType.CENTER_CROP; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }; card.addView(image,lp(-1,dp(142))); loadCover(image,item.cover)
-                card.addView(text(item.title,15f).apply { maxLines=2; minLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(7),dp(3),0) },lp(-1,dp(46)))
+                card.addView(text(item.title,15f).apply { maxLines=2; minLines=2; minHeight=dp(46); ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(7),dp(3),0) },lp(-1,-2).apply { weight=1f })
                 val progress=if(tab==3) library.progress(item.id) else null
-                card.addView(text(if(progress!=null) "第 ${progress.episodeIndex+1} 集 · ${formatTime(progress.position)}" else item.badge,12f,muted).apply { maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),0,0,0) },lp(-1,dp(19)))
+                card.addView(text(if(progress!=null) "第 ${progress.episodeIndex+1} 集 · ${formatTime(progress.position)}" else item.badge,12f,muted).apply { maxLines=1; minLines=1; minHeight=dp(19); ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),0,0,0) },lp(-1,-2))
                 card.setOnClickListener { catalogFocus=item.id; openDetail(item) }
                 card.setOnFocusChangeListener { _,focused -> card.background=rounded(if(focused) Color.rgb(66,43,43) else surface,if(focused) accent else Color.TRANSPARENT); if(focused) { catalogFocus=item.id; scroll.post { scroll.smoothScrollTo(0,line.top) } } }
-                line.addView(card,lp(width,dp(221)).apply { if(columnIndex<count-1) rightMargin=gap }); cards+=card
+                // The row measures its tallest card, then stretches siblings to keep badges aligned.
+                line.addView(card,lp(width,-1).apply { if(columnIndex<count-1) rightMargin=gap }); cards+=card
             }
-            list.addView(line,lp(-1,dp(231)))
+            list.addView(line,lp(-1,-2).apply { bottomMargin=dp(10) })
         }
         val paging=row(); paging.gravity=Gravity.CENTER
         var prev: View?=null; var next: View?=null
@@ -201,10 +202,18 @@ class MainActivity: Activity() {
         if(focusNav) nav[tab].requestFocus() else cards[catalog.indexOfFirst { it.id==catalogFocus }.coerceAtLeast(0)].requestFocus()
     }
     private fun settings(parent: LinearLayout) {
-        message(parent,"原生独立版 · 0.2.0")
+        message(parent,"原生独立版 · 0.2.1")
         parent.addView(text("安装后联网即可使用，无需服务器地址或 Docker。",18f).apply { setPadding(0,0,0,dp(18)) })
-        addButton(parent,"清晰度上限：${library.maxQuality}P") { library.maxQuality=if(library.maxQuality==1080) 720 else 1080; showCatalog() }
-        addButton(parent,"自动播放下一集：${if(library.autoNext) "开启" else "关闭"}") { library.autoNext=!library.autoNext; showCatalog() }
+        lateinit var qualityButton: TextView
+        qualityButton=addButton(parent,"清晰度上限：${library.maxQuality}P") {
+            library.maxQuality=if(library.maxQuality==1080) 720 else 1080
+            qualityButton.text="清晰度上限：${library.maxQuality}P"
+        }
+        lateinit var autoNextButton: TextView
+        autoNextButton=addButton(parent,"自动播放下一集：${if(library.autoNext) "开启" else "关闭"}") {
+            library.autoNext=!library.autoNext
+            autoNextButton.text="自动播放下一集：${if(library.autoNext) "开启" else "关闭"}"
+        }
         message(parent,"遥控器：方向键移动焦点，确认键选择；播放时左右快退/快进，确认暂停，向下打开选集菜单。")
         parent.addView(text("最低 Android 8.0 · Kotlin / Media3\n内容通过互联网读取。收藏与观看记录保存在本机。\n旧版的收藏和记录不自动迁移。",14f,muted))
         addButton(parent,"开源许可") { AlertDialog.Builder(this).setTitle("开源许可").setMessage("本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\nBouncy Castle：MIT\n完整源码和许可证见 GitHub：N3urda/hongguoTV，codex/kotlin-standalone 分支。").setPositiveButton("关闭",null).show() }
@@ -225,7 +234,8 @@ class MainActivity: Activity() {
         info.addView(text(data.series.title,26f).apply { setTypeface(null,Typeface.BOLD); maxLines=2; ellipsize=TextUtils.TruncateAt.END })
         info.addView(text("${data.episodes.size} 集  ·  ${data.series.tags}",13f,muted).apply { maxLines=1; setPadding(0,dp(8),0,dp(8)) })
         val description=data.series.description.ifBlank { "选择剧集开始观看" }
-        info.addView(text(description,15f,muted).apply { maxLines=if(synopsisExpanded) 20 else 2; ellipsize=TextUtils.TruncateAt.END })
+        val synopsis=text(description,15f,muted).apply { maxLines=if(synopsisExpanded) 20 else 2; ellipsize=TextUtils.TruncateAt.END }
+        info.addView(synopsis)
         val actions=row(); actions.setPadding(0,dp(12),0,0); info.addView(actions)
         val progress=library.progress(data.series.id)
         val resumeIndex=progress?.let { data.episodes.indexOf(it.episodeId).takeIf { n -> n>=0 } } ?: 0
@@ -233,7 +243,13 @@ class MainActivity: Activity() {
         val play=addButton(actions,if(progress!=null && !progress.completed) "继续第 ${resumeIndex+1} 集" else "开始观看") { playEpisode(if(progress?.completed==true) (resumeIndex+1).coerceAtMost(data.episodes.lastIndex) else resumeIndex,resumePosition) }
         lateinit var favorite: TextView
         favorite=addButton(actions,if(library.favorite(data.series.id)) "已收藏" else "收藏") { val saved=library.toggle(data.series); favorite.text=if(saved) "已收藏" else "收藏" }
-        addButton(actions,if(synopsisExpanded) "收起简介" else "完整简介") { synopsisExpanded=!synopsisExpanded; showDetail(false) }
+        lateinit var synopsisButton: TextView
+        synopsisButton=addButton(actions,if(synopsisExpanded) "收起简介" else "完整简介") {
+            synopsisExpanded=!synopsisExpanded
+            synopsis.maxLines=if(synopsisExpanded) 20 else 2
+            synopsisButton.text=if(synopsisExpanded) "收起简介" else "完整简介"
+            synopsisButton.post { synopsisButton.requestRectangleOnScreen(android.graphics.Rect(0,0,synopsisButton.width,synopsisButton.height),false) }
+        }
         content.addView(hero)
         val groupRow=row(); groupRow.setPadding(0,dp(3),0,dp(5))
         val maxGroup=data.episodes.lastIndex/20; group=group.coerceIn(0,maxGroup)

@@ -7,11 +7,13 @@
 - 收藏和历史独立保存在本机，不自动迁移旧版数据。
 - APK 不含 JNI 库，可由 Android 在 ARM32、ARM64、x86、x86_64 上运行；视频解码能力依赖设备。
 - 源码分支：`codex/kotlin-standalone`。
-- [下载正式签名 APK](https://github.com/N3urda/hongguoTV/releases/tag/kotlin-v0.2.0)
+- [下载正式签名 APK](https://github.com/N3urda/hongguoTV/releases/tag/kotlin-v0.2.1)
+
+0.2.1 修复简介与设置切换后的焦点跳转，并适配放大字号的卡片高度。可直接覆盖安装 0.2.0，保留收藏和观看记录；见 [交付与验证记录](DELIVERY.md)。
 
 ## 使用
 
-1. 将 `hongguotv-kotlin-0.2.0-android8.apk` 拷贝到电视，允许文件管理器安装应用后打开 APK；或执行 `adb install -r hongguotv-kotlin-0.2.0-android8.apk`。
+1. 将 `hongguotv-kotlin-0.2.1-android8.apk` 拷贝到电视，允许文件管理器安装应用后打开 APK；或执行 `adb install -r hongguotv-kotlin-0.2.1-android8.apk`。
 2. 在电视应用列表打开「红果 TV 原生版」，进入推荐或搜索。
 3. 遥控器确认键进入详情，选择开始观看或续播。设置中可选择 720P / 1080P 上限和是否自动连播。
 
@@ -40,7 +42,7 @@ keyPassword=your-password
 
 ```sh
 ./scripts/build-kotlin.sh
-# 输出：outputs/hongguotv-kotlin-0.2.0-android8.apk
+# 输出：outputs/hongguotv-kotlin-0.2.1-android8.apk
 ```
 
 ## 工程结构

@@ -11,5 +11,5 @@ if [[ -z "${ANDROID_HOME:-}" && -d "$HOME/.cache/hongguotv/android-sdk" ]]; then
 fi
 "$repo_dir/kotlin-tv/gradlew" -p "$repo_dir/kotlin-tv" :core:test :app:lintRelease :app:assembleRelease --console=plain
 mkdir -p "$repo_dir/outputs"
-cp "$repo_dir/kotlin-tv/app/build/outputs/apk/release/app-release.apk" "$repo_dir/outputs/hongguotv-kotlin-0.2.0-android8.apk"
-if command -v shasum >/dev/null; then shasum -a 256 "$repo_dir/outputs/hongguotv-kotlin-0.2.0-android8.apk"; else sha256sum "$repo_dir/outputs/hongguotv-kotlin-0.2.0-android8.apk"; fi
+cp "$repo_dir/kotlin-tv/app/build/outputs/apk/release/app-release.apk" "$repo_dir/outputs/hongguotv-kotlin-0.2.1-android8.apk"
+if command -v shasum >/dev/null; then shasum -a 256 "$repo_dir/outputs/hongguotv-kotlin-0.2.1-android8.apk"; else sha256sum "$repo_dir/outputs/hongguotv-kotlin-0.2.1-android8.apk"; fi
