@@ -22,6 +22,7 @@
 - 3 部测试剧的搜索均匹配目标 ID，分集数为 86、85、71；分集 ID 无重复。
 - 每部首、中、末集共 9 个媒体片段均返回 206，64 KiB 长度与 MP4 文件头符合预期。
 - 第一部首集前 10 秒通过 FFmpeg 解码。
+- GitHub Actions 的 Node 22 检查和测试、两份 Compose 配置校验、AMD64 / ARM64 镜像构建与容器启动检查通过。ARM64 使用 QEMU；具体部署见 [Docker 指南](DOCKER.md)。
 
 构建和模拟器的最终证据见 [首版交付说明](FIRST_RELEASE.md)，脱敏原始探测结果保存在 `outputs/probe.json`。
 

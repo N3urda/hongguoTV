@@ -53,6 +53,7 @@ adb install -r outputs/hongguotv-0.1.0-android8.apk
 | TypeScript | `npm run typecheck` 通过，见 `outputs/typecheck.log` |
 | 自动化测试 | 9 项通过、0 失败；覆盖续播、分页合并、地址校验、媒体范围、多分块输出、鉴权、失败脱敏及并发槽释放，见 `outputs/tests.log` |
 | 原生构建 | `assembleRelease` 成功，见 `outputs/build.log` |
+| Docker | GitHub Actions 的 AMD64 / ARM64 构建、非 root 容器启动、健康检查、端口映射与鉴权均通过；ARM64 使用 QEMU，见 [运行记录](https://github.com/N3urda/hongguoTV/actions/runs/35563476910) |
 | APK | `aapt` 确认 minSdk 26、双 ARM 架构；`apksigner verify` 通过 v2 签名，见 `outputs/apk-info.txt`、`outputs/apk-signature.txt` |
 | 真实内容 | 17 项探测通过：首页 24 部；3 部搜索均匹配目标 ID；分集数 86、85、71，均无重复；每部首、中、末集共 9 个 64 KiB 媒体片段均为 206 且 MP4 头有效，见 `outputs/probe.json` |
 | 真实解码 | 第一部首集前 10 秒 FFmpeg 解码成功；样本为 HEVC 1080×1920 + AAC，时长 98.1 秒，见 `outputs/media-format.json` |
@@ -66,7 +67,7 @@ adb install -r outputs/hongguotv-0.1.0-android8.apk
 
 - **实际 Android 8.0 电视尚未连接**。API 26 安装下限已写入 APK，但实际电视的硬件解码、遥控器差异、性能和声音仍需确认；32 位 ARM 包已构建，未在 32 位设备运行。
 - 连续观看至少 3 集、长时间运行、家庭 Wi-Fi 波动、休眠唤醒、自然过期地址和断网恢复还需在目标电视测试。媒体片段探测不能替代整集观看验收。
-- 本地初版验证使用 Node 进程；Docker 的 AMD64 / ARM64 构建和容器启动检查由 GitHub Actions 执行，状态见 [工作流](https://github.com/N3urda/hongguoTV/actions/workflows/verify-publish.yml)。用户实际 NAS 环境仍需验收。
+- Docker 的 AMD64 / ARM64 构建和容器启动检查已通过，用户实际 NAS 的网络、真实内容与长期运行仍需验收。
 - Apple TV 仅有工程骨架，未构建；iOS、移动端和 Web 未交付。业务与服务已分层，新增平台仍需各自适配和验收。
 - 内容接入依赖固定提交的第三方非官方实现。本次样本成功不保证平台后续接口持续兼容。
 

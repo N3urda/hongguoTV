@@ -62,3 +62,5 @@ docker compose -f server/compose.yaml logs --tail=100
 推送稳定版本标签（如 `v0.1.0`）时，所有检查通过后发布对应版本和 `latest` 标签到 GHCR。第三方 Actions 固定提交 SHA，认证使用 GitHub 提供的临时 `GITHUB_TOKEN`，不在仓库内存储发布令牌。
 
 当前执行结果见 [GitHub Actions](https://github.com/N3urda/hongguoTV/actions/workflows/verify-publish.yml)。容器启动检查与媒体接口、电视播放分别验收，不能相互替代。
+
+2026-09-21 首次云端验证已通过：[运行 35563476910](https://github.com/N3urda/hongguoTV/actions/runs/35563476910)。Node 22 类型检查、9 项测试、两份 Compose 配置校验，以及 AMD64 / ARM64 镜像构建和容器启动检查全部成功；ARM64 使用 QEMU，并非实际 NAS 硬件验收。
