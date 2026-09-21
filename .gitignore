@@ -1,0 +1,29 @@
+# Local machine and IDE files
+.DS_Store
+.idea/
+*.iml
+local.properties
+
+# Build and dependency output
+.gradle/
+build/
+dist/
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+*.apk
+*.aab
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+keystore.properties
+
+# Local captures and downloaded media
+/captures/
+/downloads/
+/tmp/
