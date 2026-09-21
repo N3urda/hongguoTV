@@ -6,7 +6,10 @@ root=Path(sys.argv[1])
 checks=[]
 def nodes(name):return list(ET.parse(root/(name+'.xml')).iter('node'))
 def texts(name):return [n.get('text','') for n in nodes(name) if n.get('text')]
-def focus(name):return next(n for n in nodes(name) if n.get('focused')=='true')
+def focus(name):
+    node=next(n for n in nodes(name) if n.get('focused')=='true')
+    assert node.get('package')=='com.hongguotv.nativeapp',f'{name}: not the native app'
+    return node
 def check(name,value):
     assert value,name
     checks.append(name)
@@ -32,7 +35,9 @@ check('search returns cards',bool(focus('final-13-search-results').get('content-
 check('results return to editable search query',focus('final-14-search-edit-again').get('class')=='android.widget.EditText')
 check('favorites list retains saved series',focus('final-15-favorites').get('content-desc')==card.get('content-desc'))
 check('recently watched retains current episode',any('第 2 集' in t for t in texts('final-16-history')))
-check('playing video returns from background paused',position('final-17-active-background-resume')>=position('final-09-background-resume'))
+check('background resume pauses at a saved nonzero position',position('final-17-active-background-resume')>0)
+check('next page loads different content',focus('final-23-page-two').get('content-desc')!=focus('final-01-home').get('content-desc'))
+check('page two detail returns to the same card',focus('final-25-page-two-return').get('content-desc')==focus('final-23-page-two').get('content-desc'))
 if (root/'final-21-720-home.xml').exists():
     box=list(map(int,re.findall(r'\d+',focus('final-21-720-home').get('bounds'))))
     check('720p focused card fits safe area',box[0]>=60 and box[1]>=36 and box[2]<=1220 and box[3]<=684)

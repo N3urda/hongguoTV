@@ -8,9 +8,9 @@
 - 发布：`kotlin-v0.2.0`
 - APK：`hongguotv-kotlin-0.2.0-android8.apk`
 - 包名：`com.hongguotv.nativeapp`；最低 API 26，目标 API 36。
-- 大小：2,496,447 字节；无 JNI、Node、JS 或 React Native 运行时。
+- 大小：2,496,647 字节；无 JNI、Node、JS 或 React Native 运行时。
 - 使用独立发布签名，可与旧版并存；两者本机收藏/历史不互通。
-- APK SHA-256：`b79c1b3594d9ff253c0378b1c7c06f3341e885b69b4abae74557438b21f9b1b2`
+- APK SHA-256：`a12ae6f447514b890778ebb8181092776bb08a224849010ace382c81a89ad72e`
 - 发布证书 SHA-256：`3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98`
 
 ## 功能

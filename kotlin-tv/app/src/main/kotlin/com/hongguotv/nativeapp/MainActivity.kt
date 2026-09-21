@@ -383,5 +383,9 @@ class MainActivity: Activity() {
     override fun onPause() { pausedForLifecycle=true; player?.pause(); saveProgress(); super.onPause() }
     override fun onStop() { super.onStop(); if(screen=="player") { generation++; saveProgress(); releasePlayer() } }
     override fun onRestart() { super.onRestart(); if(screen=="player" && player==null) { val progress=detail?.let { library.progress(it.series.id) }; playEpisode(episodeIndex,progress?.takeIf { it.episodeIndex==episodeIndex }?.position ?: 0,autoplay=false) } }
-    override fun onDestroy() { generation++; saveProgress(); releasePlayer(); main.removeCallbacksAndMessages(null); io.shutdownNow(); images.shutdownNow(); repository.http.dispatcher.cancelAll(); repository.http.connectionPool.evictAll(); super.onDestroy() }
+    override fun onDestroy() { generation++; saveProgress(); releasePlayer(); main.removeCallbacksAndMessages(null); io.shutdownNow(); images.shutdownNow(); Thread({
+            repository.http.dispatcher.cancelAll()
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }, "hongguotv-network-cleanup").start(); super.onDestroy() }
 }
