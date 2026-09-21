@@ -2,9 +2,9 @@
 
 用于自家电视的非官方红果短剧客户端。首版采用 **React Native TV + TypeScript**，最低 Android 8.0（API 26）。电视负责界面和播放，独立 Node 服务负责内容接入与媒体分段处理，便于后续其他平台复用。
 
-**下载：[v0.1.0 APK、源码及 Docker 部署包](https://github.com/N3urda/hongguoTV/releases/tag/v0.1.0)** · [Docker 部署指南](docs/DOCKER.md)
+**下载：[v0.1.1 APK、源码及 Docker 部署包](https://github.com/N3urda/hongguoTV/releases/tag/v0.1.1)** · [Docker 部署指南](docs/DOCKER.md)
 
-## 第一版功能
+## 当前功能
 
 - 推荐、关键词搜索、分页、详情和选集。
 - 遥控器焦点、方向键、确定键和返回键操作。
@@ -12,7 +12,7 @@
 - 本地收藏、最近观看、断点续播。
 - 服务地址 / 可选访问口令设置，连接检测及播放失败重试。
 
-当前实现与验证范围见 [首版交付说明](docs/FIRST_RELEASE.md)。Android 8.0 的最低版本配置不等于目标电视已经验收；Apple TV 工程骨架保留，移动端和 Web 还未交付。
+v0.1.1 改善 TV 焦点滚动、返回恢复、遥控器播放按键、安全边距与选集分组，见 [本版交付说明](docs/RELEASE_0.1.1.md)。Android 8.0 的最低版本配置不等于目标电视已经验收；Apple TV 工程骨架保留，移动端和 Web 还未交付。
 
 ## 在电视上使用
 
@@ -23,10 +23,10 @@
    npm run bridge -- --lan
    ```
 
-2. 从 Release 下载 APK，拷贝到电视安装。本地构建产物为 `outputs/hongguotv-0.1.0-android8.apk`，也可以通过已连接的 ADB 安装：
+2. 从 Release 下载 APK，拷贝到电视安装。本地构建产物为 `outputs/hongguotv-0.1.1-android8.apk`，也可以通过已连接的 ADB 安装：
 
    ```sh
-   adb install -r outputs/hongguotv-0.1.0-android8.apk
+   adb install -r outputs/hongguotv-0.1.1-android8.apk
    ```
 
 3. 电视和服务所在设备连接同一家庭网络。在应用「设置」中输入启动日志显示的 `http://电脑局域网IP:8787`，选择「连接并保存」。电视上不能把 `127.0.0.1` 当成电脑地址。
@@ -52,7 +52,7 @@ cp .env.example .env
 docker compose --env-file .env -f server/compose.yaml up -d --build
 ```
 
-也提供 `ghcr.io/n3urda/hongguotv-bridge:0.1.0` 的 AMD64 / ARM64 镜像，以及根目录的镜像部署 Compose；私有镜像登录、更新和排查见 [Docker 部署指南](docs/DOCKER.md)。服务参数为 `BRIDGE_HOST`、`PORT`、`BRIDGE_TOKEN`；Node 进程不会自动读取 `.env`，应由 shell 或部署工具传入环境变量。
+也提供 `ghcr.io/n3urda/hongguotv-bridge:0.1.1` 的 AMD64 / ARM64 镜像，以及根目录的镜像部署 Compose；私有镜像登录、更新和排查见 [Docker 部署指南](docs/DOCKER.md)。服务参数为 `BRIDGE_HOST`、`PORT`、`BRIDGE_TOKEN`；Node 进程不会自动读取 `.env`，应由 shell 或部署工具传入环境变量。
 
 ## 开发与验证
 
@@ -73,6 +73,7 @@ npm run build:android
 
 ## 项目资料
 
+- [v0.1.1 交付与验收](docs/RELEASE_0.1.1.md)
 - [首版交付与验收](docs/FIRST_RELEASE.md)
 - [Docker 部署](docs/DOCKER.md)
 - [项目状态](docs/PROJECT_STATUS.md)

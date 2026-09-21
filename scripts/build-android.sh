@@ -19,6 +19,7 @@ fi
 # Sideloadable release bundle signed with the development key; no Metro required.
 # Use a private release key for public distribution.
 (cd android && ./gradlew assembleRelease -PreactNativeArchitectures=armeabi-v7a,arm64-v8a --console=plain)
+version="$(node -p "require('./package.json').version")"
 mkdir -p outputs
-cp android/app/build/outputs/apk/release/app-release.apk outputs/hongguotv-0.1.0-android8.apk
-shasum -a 256 outputs/hongguotv-0.1.0-android8.apk > outputs/SHA256SUMS
+cp android/app/build/outputs/apk/release/app-release.apk "outputs/hongguotv-${version}-android8.apk"
+shasum -a 256 "outputs/hongguotv-${version}-android8.apk" > outputs/SHA256SUMS

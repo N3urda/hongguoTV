@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { forwardRef, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -17,30 +17,55 @@ export const palette = {
   accent: "#FF694F",
   border: "#32313F",
 };
-export function Button({
-  label,
-  onPress,
-  primary = false,
-  preferred = false,
-  disabled = false,
-  style,
-}: {
-  label: string;
-  onPress: () => void;
-  primary?: boolean;
-  preferred?: boolean;
-  disabled?: boolean;
-  style?: ViewStyle;
-}) {
+export const Button = forwardRef<
+  View,
+  {
+    label: string;
+    onPress: () => void;
+    primary?: boolean;
+    preferred?: boolean;
+    disabled?: boolean;
+    style?: ViewStyle;
+    onFocus?: () => void;
+    onBlur?: () => void;
+    testID?: string;
+    focusable?: boolean;
+  }
+>(function Button(
+  {
+    label,
+    onPress,
+    primary = false,
+    preferred = false,
+    disabled = false,
+    style,
+    onFocus,
+    onBlur,
+    testID,
+    focusable,
+  },
+  ref
+) {
   const [focused, setFocused] = useState(false);
+  const preferredUsed = useRef(false);
   return (
     <Pressable
+      ref={ref}
+      testID={testID}
+      focusable={focusable}
       accessibilityRole="button"
       accessibilityLabel={label}
-      hasTVPreferredFocus={preferred}
+      hasTVPreferredFocus={preferred && !preferredUsed.current}
       disabled={disabled}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
+      onFocus={() => {
+        preferredUsed.current = true;
+        setFocused(true);
+        onFocus?.();
+      }}
+      onBlur={() => {
+        setFocused(false);
+        onBlur?.();
+      }}
       onPress={onPress}
       style={[
         s.button,
@@ -55,28 +80,41 @@ export function Button({
       </Text>
     </Pressable>
   );
-}
-export function Card({
-  item,
-  width,
-  onPress,
-}: {
-  item: Series;
-  width: number;
-  onPress: () => void;
-}) {
+});
+export const Card = forwardRef<
+  View,
+  {
+    item: Series;
+    width: number;
+    coverHeight: number;
+    titleHeight: number;
+    onPress: () => void;
+    onFocus: () => void;
+    preferred?: boolean;
+  }
+>(function Card(
+  { item, width, coverHeight, titleHeight, onPress, onFocus, preferred },
+  ref
+) {
   const [focused, setFocused] = useState(false);
+  const preferredUsed = useRef(false);
   const [broken, setBroken] = useState(false);
   return (
     <Pressable
+      ref={ref}
       accessibilityRole="button"
       accessibilityLabel={`${item.title}，${item.badge}`}
-      onFocus={() => setFocused(true)}
+      hasTVPreferredFocus={preferred && !preferredUsed.current}
+      onFocus={() => {
+        preferredUsed.current = true;
+        setFocused(true);
+        onFocus();
+      }}
       onBlur={() => setFocused(false)}
       onPress={onPress}
       style={[s.card, { width }, focused && s.cardFocus]}
     >
-      <View style={[s.cover, { height: width * 1.28 }]}>
+      <View style={[s.cover, { height: coverHeight }]}>
         {item.cover && !broken ? (
           <Image
             source={{ uri: item.cover }}
@@ -88,18 +126,17 @@ export function Card({
           <Text style={s.placeholder}>红果</Text>
         )}
         <View style={s.badge}>
-          <Text style={s.badgeText}>{item.badge || "短剧"}</Text>
+          <Text numberOfLines={1} style={s.badgeText}>
+            {item.badge || "短剧"}
+          </Text>
         </View>
       </View>
-      <Text numberOfLines={1} style={s.title}>
+      <Text numberOfLines={2} style={[s.title, { height: titleHeight }]}>
         {item.title}
-      </Text>
-      <Text numberOfLines={1} style={s.caption}>
-        {item.tags || "点开选集"}
       </Text>
     </Pressable>
   );
-}
+});
 export function Notice({
   message,
   busy = false,
@@ -123,8 +160,8 @@ const s = StyleSheet.create({
     borderWidth: 2,
     borderColor: "transparent",
     borderRadius: 12,
-    paddingHorizontal: 18,
-    paddingVertical: 11,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
     alignItems: "center",
     justifyContent: "center",
     minHeight: 46,
@@ -133,8 +170,8 @@ const s = StyleSheet.create({
   focused: { backgroundColor: "#FFE5DC", borderColor: palette.accent },
   buttonText: { color: palette.text, fontSize: 16, fontWeight: "600" },
   card: {
-    margin: 7,
-    padding: 5,
+    margin: 6,
+    padding: 4,
     borderWidth: 3,
     borderColor: "transparent",
     borderRadius: 14,
@@ -156,10 +193,11 @@ const s = StyleSheet.create({
     backgroundColor: "#000000A0",
     padding: 8,
   },
-  badgeText: { color: "#fff", fontSize: 12 },
+  badgeText: { color: "#fff", fontSize: 14 },
   title: {
     color: palette.text,
-    fontSize: 17,
+    fontSize: 18,
+    lineHeight: 24,
     fontWeight: "600",
     marginTop: 10,
   },

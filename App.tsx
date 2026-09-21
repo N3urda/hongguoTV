@@ -7,8 +7,6 @@ import React, {
 } from "react";
 import {
   BackHandler,
-  FlatList,
-  Image,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -19,18 +17,20 @@ import {
 } from "react-native";
 import { BridgeProvider } from "./src/data/provider";
 import { loadState, saveLibrary, saveSettings } from "./src/data/storage";
+import { useCatalog } from "./src/data/useCatalog";
 import {
   Detail,
   Library,
   Progress,
   Series,
   Settings,
-  mergePage,
   normalizeBaseUrl,
-  resumeTarget,
 } from "./src/domain/model";
-import { Button, Card, Notice, palette } from "./src/ui/components";
+import { Button, Notice, palette } from "./src/ui/components";
 import { Player } from "./src/ui/Player";
+import { DetailTV } from "./src/ui/tv/DetailTV";
+import { GridHandle, GridPosition, TVGrid } from "./src/ui/tv/TVGrid";
+import { tvInsets } from "./src/ui/tv/layout";
 type Tab = "推荐" | "搜索" | "收藏" | "最近观看" | "设置";
 const tabs: Tab[] = ["推荐", "搜索", "收藏", "最近观看", "设置"];
 const sample: Detail = {
@@ -43,7 +43,8 @@ const sample: Detail = {
   episodes: [{ id: "test", number: 1, title: "测试片" }],
 };
 export default function App() {
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
+  const inset = tvInsets(width, height);
   const [ready, setReady] = useState(false);
   const [settings, setSettings] = useState<Settings>({
     baseUrl: "",
@@ -57,7 +58,6 @@ export default function App() {
   });
   const libraryRef = useRef(library);
   const [tab, setTab] = useState<Tab>("推荐");
-  const [items, setItems] = useState<Series[]>([]);
   const [detail, setDetail] = useState<Detail>();
   const [detailId, setDetailId] = useState("");
   const [play, setPlay] = useState<{
@@ -68,16 +68,30 @@ export default function App() {
   }>();
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState("");
-  const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(true);
+  const [searchRun, setSearchRun] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
   const [message, setMessage] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [editing, setEditing] = useState<string>();
-  const request = useRef(0);
+  const [restoreGrid, setRestoreGrid] = useState(false);
+  const [restoreEpisode, setRestoreEpisode] = useState<string>();
+  const [focusArea, setFocusArea] = useState<"nav" | "content">("nav");
+  const positions = useRef(
+    Object.fromEntries(tabs.map((t) => [t, { index: 0 }])) as Record<
+      Tab,
+      GridPosition
+    >
+  );
+  const grid = useRef<GridHandle>(null);
+  const nav = useRef(new Map<Tab, View>());
   const provider = useMemo(() => new BridgeProvider(settings), [settings]);
+  const catalog = useCatalog(
+    provider,
+    tab === "搜索" ? submitted : null,
+    ready && !!settings.baseUrl && ["推荐", "搜索"].includes(tab)
+  );
   useEffect(() => {
     loadState()
       .then((data) => {
@@ -115,53 +129,6 @@ export default function App() {
     [updateLibrary]
   );
   useEffect(() => {
-    if (
-      !ready ||
-      !settings.baseUrl ||
-      !["推荐", "搜索"].includes(tab) ||
-      detailId ||
-      play
-    )
-      return;
-    if (tab === "搜索" && !submitted) {
-      setItems([]);
-      setBusy(false);
-      setError("");
-      return;
-    }
-    const id = ++request.current;
-    setBusy(true);
-    setError("");
-    const promise =
-      tab === "搜索" ? provider.search(submitted, page) : provider.home(page);
-    promise
-      .then((rows) => {
-        if (id === request.current) {
-          setItems((old) => (page === 1 ? rows : mergePage(old, rows)));
-          setHasMore(rows.length > 0);
-        }
-      })
-      .catch((e) => {
-        if (id === request.current) setError(e.message);
-      })
-      .finally(() => {
-        if (id === request.current) setBusy(false);
-      });
-    return () => {
-      request.current++;
-    };
-  }, [
-    ready,
-    settings.baseUrl,
-    tab,
-    submitted,
-    page,
-    provider,
-    refresh,
-    detailId,
-    play,
-  ]);
-  useEffect(() => {
     if (!detailId) return;
     let live = true;
     setDetail(undefined);
@@ -182,41 +149,55 @@ export default function App() {
       live = false;
     };
   }, [detailId, provider, refresh]);
+  function closeDetail() {
+    setRestoreGrid(true);
+    setDetailId("");
+    setDetail(undefined);
+    setError("");
+  }
+  function changeTab(next: Tab) {
+    if (next === tab && !detailId) return;
+    setRestoreGrid(!!positions.current[next].id);
+    setTab(next);
+    setDetailId("");
+    setDetail(undefined);
+    setError("");
+  }
   useEffect(() => {
     if (play) return;
     const listener = BackHandler.addEventListener("hardwareBackPress", () => {
       if (detailId) {
-        setDetailId("");
-        setDetail(undefined);
-        setError("");
+        closeDetail();
+        return true;
+      }
+      if (focusArea === "content") {
+        grid.current?.top();
+        setRestoreGrid(false);
+        nav.current.get(tab)?.requestTVFocus();
+        setFocusArea("nav");
         return true;
       }
       if (tab !== "推荐" && settings.baseUrl) {
         changeTab("推荐");
+        setRestoreGrid(false);
+        requestAnimationFrame(() => nav.current.get("推荐")?.requestTVFocus());
         return true;
       }
       return false;
     });
     return () => listener.remove();
-  }, [detailId, tab, settings.baseUrl, play]);
-  function changeTab(next: Tab) {
-    if (next === tab && !detailId) return;
-    request.current++;
-    setTab(next);
-    setDetailId("");
-    setDetail(undefined);
-    setError("");
-    setItems([]);
-    setPage(1);
-    setHasMore(true);
-    setBusy(false);
-  }
+  }, [detailId, tab, settings.baseUrl, play, focusArea]);
   function open(item: Series) {
-    request.current++;
+    setRestoreEpisode(undefined);
     setError("");
     setDetailId(item.id);
   }
-  const exitPlayer = useCallback(() => setPlay(undefined), []);
+  const exitPlayer = useCallback(() => {
+    setPlay(undefined);
+    setRestoreEpisode(
+      libraryRef.current.progress[play?.detail.id || ""]?.episodeId
+    );
+  }, [play]);
   async function connect() {
     setConnecting(true);
     setMessage("");
@@ -227,6 +208,9 @@ export default function App() {
       setSettings(next);
       setUrl(next.baseUrl);
       setMessage("服务连接成功");
+      positions.current = Object.fromEntries(
+        tabs.map((t) => [t, { index: 0 }])
+      ) as Record<Tab, GridPosition>;
       changeTab("推荐");
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "连接失败");
@@ -241,6 +225,18 @@ export default function App() {
         ? old.favorites.filter((i) => i.id !== series.id)
         : [series, ...old.favorites],
     }));
+  }
+  function search() {
+    positions.current["搜索"] = { index: 0 };
+    setRestoreGrid(false);
+    if (!query.trim()) {
+      setSubmitted("");
+      return;
+    }
+    setRestoreGrid(true);
+    setSearchRun((n) => n + 1);
+    if (submitted === query.trim()) void catalog.refresh();
+    else setSubmitted(query.trim());
   }
   if (!ready)
     return (
@@ -264,126 +260,75 @@ export default function App() {
         />
       </View>
     );
-  const cols = width >= 850 ? 5 : width >= 700 ? 4 : width >= 500 ? 3 : 2;
-  const cardWidth = (width - 72) / cols - 14;
+  const recent = Object.values(library.progress).sort(
+    (a, b) => b.updatedAt - a.updatedAt
+  );
   const shown =
     tab === "收藏"
       ? library.favorites
       : tab === "最近观看"
-      ? Object.values(library.progress)
-          .sort((a, b) => b.updatedAt - a.updatedAt)
-          .map((p) => ({
-            ...p.series,
-            badge: `第 ${p.episodeNumber} 集 · ${
-              p.completed ? "已看完" : Math.floor(p.position / 60) + " 分钟"
-            }`,
-          }))
-      : items;
+      ? recent.map((p) => ({
+          ...p.series,
+          badge: `第 ${p.episodeNumber} 集 · ${
+            p.completed ? "已看完" : Math.floor(p.position / 60) + " 分钟"
+          }`,
+        }))
+      : catalog.items;
   return (
-    <View style={s.root}>
+    <View
+      style={[
+        s.root,
+        {
+          paddingHorizontal: inset.horizontal,
+          paddingVertical: inset.vertical,
+        },
+      ]}
+    >
       <StatusBar hidden />
       <View style={s.header}>
-        <View style={s.logo}>
-          <Text style={s.logoText}>红</Text>
-        </View>
         <Text style={s.brand}>红果 TV</Text>
-        <Text style={s.tagline}>好故事，慢慢看。</Text>
-        <View style={{ flex: 1 }} />
-        <Text style={s.version}>个人影院 · 0.1</Text>
-      </View>
-      {!detailId && (
-        <View style={s.nav}>
-          {tabs.map((t) => (
-            <Button
-              key={t}
-              label={t}
-              primary={tab === t}
-              preferred={t === tab}
-              onPress={() => changeTab(t)}
-            />
-          ))}
-        </View>
-      )}
-      {detailId ? (
-        <>
-          <View style={s.detailNav}>
-            <Button
-              label="‹ 返回"
-              onPress={() => {
-                setDetailId("");
-                setError("");
-              }}
-              preferred
-            />
-            <Text style={s.muted}>剧集详情</Text>
+        {!detailId ? (
+          <View style={s.nav}>
+            {tabs.map((t) => (
+              <Button
+                key={t}
+                label={t}
+                primary={tab === t}
+                ref={(node) => {
+                  if (node) nav.current.set(t, node);
+                  else nav.current.delete(t);
+                }}
+                preferred={t === tab && !restoreGrid}
+                onFocus={() => setFocusArea("nav")}
+                onPress={() => changeTab(t)}
+              />
+            ))}
           </View>
-          {busy ? (
-            <Notice message="正在加载剧集…" busy />
-          ) : error ? (
-            <Notice message={error} retry={() => setRefresh((n) => n + 1)} />
-          ) : (
-            detail && (
-              <ScrollView contentContainerStyle={s.detailContent}>
-                <View style={s.hero}>
-                  <Image source={{ uri: detail.cover }} style={s.heroCover} />
-                  <View style={{ width: Math.max(120, width - 250), gap: 14 }}>
-                    <Text numberOfLines={2} style={s.heroTitle}>
-                      {detail.title}
-                    </Text>
-                    <Text style={s.muted}>
-                      {detail.badge} · {detail.tags}
-                    </Text>
-                    <Text style={s.description} numberOfLines={4}>
-                      {detail.description}
-                    </Text>
-                    <View style={s.row}>
-                      <Button
-                        label={
-                          library.progress[detail.id] ? "继续观看" : "开始播放"
-                        }
-                        primary
-                        onPress={() => {
-                          const target = resumeTarget(
-                            detail,
-                            library.progress[detail.id]
-                          );
-                          setPlay({ detail, ...target });
-                        }}
-                      />
-                      <Button
-                        label={
-                          library.favorites.some((i) => i.id === detail.id)
-                            ? "已收藏 ✓"
-                            : "＋ 收藏"
-                        }
-                        onPress={() => {
-                          const { episodes: _, ...series } = detail;
-                          favorite(series);
-                        }}
-                      />
-                    </View>
-                  </View>
-                </View>
-                <Text style={s.section}>
-                  选集 · {detail.episodes.length} 集
-                </Text>
-                <View style={s.episodes}>
-                  {detail.episodes.map((episode, index) => (
-                    <Button
-                      key={episode.id}
-                      label={String(episode.number)}
-                      style={{ width: 72 }}
-                      primary={
-                        library.progress[detail.id]?.episodeId === episode.id
-                      }
-                      onPress={() => setPlay({ detail, index, position: 0 })}
-                    />
-                  ))}
-                </View>
-              </ScrollView>
-            )
-          )}
-        </>
+        ) : (
+          <Text style={s.muted}>剧集详情 · 返回键回到列表</Text>
+        )}
+      </View>
+      {detailId ? (
+        busy ? (
+          <Notice message="正在加载剧集…" busy />
+        ) : error ? (
+          <Notice message={error} retry={() => setRefresh((n) => n + 1)} />
+        ) : (
+          detail && (
+            <DetailTV
+              key={detail.id}
+              detail={detail}
+              progress={library.progress[detail.id]}
+              restoreEpisode={restoreEpisode}
+              favorite={library.favorites.some((i) => i.id === detail.id)}
+              onFavorite={() => {
+                const { episodes: _, ...series } = detail;
+                favorite(series);
+              }}
+              onPlay={(index, position) => setPlay({ detail, index, position })}
+            />
+          )
+        )
       ) : tab === "设置" ? (
         <ScrollView
           contentContainerStyle={s.settings}
@@ -396,7 +341,7 @@ export default function App() {
           <Text style={s.label}>服务地址</Text>
           <TextInput
             accessibilityLabel="服务地址"
-            onFocus={() => setEditing("url")}
+            onFocus={() => (setEditing("url"), setFocusArea("content"))}
             onBlur={() => setEditing(undefined)}
             onSubmitEditing={connect}
             returnKeyType="done"
@@ -414,7 +359,7 @@ export default function App() {
           <Text style={s.label}>访问口令（服务未设置时留空）</Text>
           <TextInput
             accessibilityLabel="访问口令"
-            onFocus={() => setEditing("token")}
+            onFocus={() => (setEditing("token"), setFocusArea("content"))}
             onBlur={() => setEditing(undefined)}
             onSubmitEditing={connect}
             returnKeyType="done"
@@ -459,94 +404,79 @@ export default function App() {
             <View style={s.search}>
               <TextInput
                 accessibilityLabel="搜索短剧"
-                onFocus={() => setEditing("search")}
-                onBlur={() => setEditing(undefined)}
-                placeholder="输入剧名或关键词"
-                placeholderTextColor="#747383"
                 value={query}
                 onChangeText={setQuery}
-                onSubmitEditing={() => {
-                  setSubmitted(query.trim());
-                  setPage(1);
-                  setRefresh((n) => n + 1);
+                placeholder="输入剧名或关键词"
+                placeholderTextColor="#747383"
+                onFocus={() => {
+                  setEditing("search");
+                  setFocusArea("content");
                 }}
+                onBlur={() => setEditing(undefined)}
+                onSubmitEditing={search}
+                returnKeyType="search"
                 style={[
                   s.input,
                   { flex: 1 },
                   editing === "search" && { borderColor: palette.accent },
                 ]}
-                returnKeyType="search"
               />
               <Button
                 label="搜索"
                 primary
-                onPress={() => {
-                  setSubmitted(query.trim());
-                  setPage(1);
-                  setItems([]);
-                  setRefresh((n) => n + 1);
-                }}
+                onFocus={() => setFocusArea("content")}
+                onPress={search}
               />
             </View>
           ) : (
             <View style={s.heading}>
               <Text style={s.section}>{tab === "推荐" ? "今日热播" : tab}</Text>
-              <Text style={s.muted}>
-                {tab === "推荐"
-                  ? "挑一部，开始今晚的故事。"
-                  : `${shown.length} 部短剧`}
-              </Text>
+              {tab === "推荐" && recent[0] ? (
+                <Button
+                  label={`续看：${recent[0].series.title.slice(0, 8)} · 第${
+                    recent[0].episodeNumber
+                  }集`}
+                  onFocus={() => setFocusArea("content")}
+                  onPress={() => open(recent[0].series)}
+                />
+              ) : (
+                <Text style={s.muted}>{shown.length} 部短剧</Text>
+              )}
             </View>
           )}
           {!settings.baseUrl ? (
             <Notice message="请先在设置中连接内容服务" />
-          ) : error ? (
-            <Notice message={error} retry={() => setRefresh((n) => n + 1)} />
-          ) : busy && !shown.length ? (
-            <Notice message="正在寻找好故事…" busy />
           ) : (
-            <FlatList
-              key={cols + tab}
-              data={shown}
-              numColumns={cols}
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={s.grid}
-              initialNumToRender={cols * 2}
-              windowSize={5}
-              renderItem={({ item }) => (
-                <Card
-                  item={item}
-                  width={cardWidth}
-                  onPress={() => open(item)}
-                />
-              )}
-              ListEmptyComponent={
-                <Notice
-                  message={
-                    tab === "搜索"
-                      ? submitted
-                        ? "没有找到相关短剧，换个关键词试试"
-                        : "输入关键词，发现下一部好剧"
-                      : tab === "收藏"
-                      ? "收藏喜欢的短剧，下次接着看"
-                      : tab === "最近观看"
-                      ? "开始播放后，这里会留下观看记录"
-                      : "暂无内容"
-                  }
-                />
+            <TVGrid
+              key={
+                tab + ":" + (tab === "搜索" ? submitted + ":" + searchRun : "")
               }
-              ListFooterComponent={
-                ["推荐", "搜索"].includes(tab) && shown.length > 0 ? (
-                  <View style={{ padding: 20, alignItems: "center" }}>
-                    <Button
-                      label={
-                        busy ? "正在加载…" : hasMore ? "加载更多" : "已经到底了"
-                      }
-                      disabled={busy || !hasMore}
-                      onPress={() => setPage((n) => n + 1)}
-                    />
-                  </View>
-                ) : null
+              ref={grid}
+              items={shown}
+              width={width - inset.horizontal * 2}
+              position={positions.current[tab]}
+              restore={restoreGrid}
+              onFocus={() => setFocusArea("content")}
+              onOpen={open}
+              busy={["推荐", "搜索"].includes(tab) && catalog.busy}
+              error={["推荐", "搜索"].includes(tab) ? catalog.error : undefined}
+              more={catalog.more}
+              loadMore={
+                ["推荐", "搜索"].includes(tab) &&
+                (tab !== "搜索" || !!submitted)
+                  ? catalog.loadMore
+                  : undefined
+              }
+              empty={
+                tab === "搜索"
+                  ? submitted
+                    ? "没有找到相关短剧，换个关键词试试"
+                    : "输入关键词，发现下一部好剧"
+                  : tab === "收藏"
+                  ? "收藏喜欢的短剧，下次接着看"
+                  : tab === "最近观看"
+                  ? "开始播放后，这里会留下观看记录"
+                  : "暂无内容"
               }
             />
           )}
@@ -560,88 +490,37 @@ const s = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 32,
-    paddingTop: 20,
-    paddingBottom: 16,
-    gap: 12,
+    gap: 20,
+    marginBottom: 12,
   },
-  logo: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    backgroundColor: palette.accent,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  logoText: { color: "#fff", fontWeight: "900", fontSize: 24 },
-  brand: { color: palette.text, fontSize: 25, fontWeight: "800" },
-  tagline: { color: palette.muted, fontSize: 14, marginLeft: 12 },
-  version: { color: "#777687", fontSize: 12 },
-  nav: {
-    flexDirection: "row",
-    paddingHorizontal: 32,
-    gap: 10,
-    paddingBottom: 12,
-  },
-  muted: { color: palette.muted, fontSize: 14 },
+  brand: { color: palette.accent, fontSize: 23, fontWeight: "800" },
+  nav: { flexDirection: "row", gap: 8, flex: 1 },
+  muted: { color: palette.muted, fontSize: 15 },
   heading: {
-    paddingHorizontal: 38,
-    paddingVertical: 14,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    minHeight: 48,
+    marginBottom: 8,
+    paddingHorizontal: 6,
   },
-  section: {
-    color: palette.text,
-    fontSize: 23,
-    fontWeight: "700",
-    marginBottom: 12,
-  },
-  grid: { paddingHorizontal: 29, paddingBottom: 32, flexGrow: 1 },
-  row: { flexDirection: "row", gap: 12, flexWrap: "wrap" },
+  section: { color: palette.text, fontSize: 21, fontWeight: "700" },
+  heroTitle: { color: palette.text, fontSize: 26, fontWeight: "700" },
+  description: { color: palette.muted, fontSize: 17, lineHeight: 25 },
+  settings: { padding: 6, gap: 12, paddingBottom: 24 },
+  label: { color: palette.text, fontSize: 17 },
   input: {
     color: palette.text,
     fontSize: 18,
     borderWidth: 2,
     borderColor: palette.border,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: palette.panel,
-    minHeight: 50,
-  },
-  search: {
-    paddingHorizontal: 36,
-    paddingVertical: 16,
-    flexDirection: "row",
-    gap: 12,
-  },
-  settings: {
-    paddingHorizontal: 40,
-    paddingVertical: 24,
-    gap: 16,
-    maxWidth: 900,
-    width: "100%",
-  },
-  heroTitle: { color: palette.text, fontSize: 32, fontWeight: "700" },
-  description: { color: "#C4C2CF", fontSize: 17, lineHeight: 28 },
-  label: { color: palette.text, fontSize: 16, marginTop: 10 },
-  note: { color: "#858494", fontSize: 13, lineHeight: 24, marginTop: 10 },
-  feedback: { color: "#FFB9A8", fontSize: 16, lineHeight: 26 },
-  detailNav: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 32,
-    gap: 20,
-    paddingBottom: 16,
-  },
-  detailContent: { paddingHorizontal: 36, paddingBottom: 40 },
-  hero: { flexDirection: "row", gap: 28, marginBottom: 28 },
-  heroCover: {
-    width: 150,
-    height: 200,
-    borderRadius: 12,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     backgroundColor: palette.panel,
   },
-  episodes: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  row: { flexDirection: "row", gap: 12, flexWrap: "wrap" },
+  search: { flexDirection: "row", gap: 12, marginBottom: 12 },
+  feedback: { color: palette.accent, fontSize: 17 },
+  note: { color: palette.muted, fontSize: 15, lineHeight: 24, marginTop: 8 },
 });
