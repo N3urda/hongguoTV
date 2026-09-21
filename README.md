@@ -1,37 +1,86 @@
 # hongguoTV
 
-计划开发一个适配安卓电视和电视盒子的非官方红果短剧客户端，提供遥控器操作、搜索、选集和连续播放体验。
+用于自家电视的非官方红果短剧客户端。首版采用 **React Native TV + TypeScript**，最低 Android 8.0（API 26）。电视负责界面和播放，独立 Node 服务负责内容接入与媒体分段处理，便于后续其他平台复用。
 
-**当前阶段：可行性调研。仓库目前只有项目文档，尚未创建 Android 工程，没有可安装 APK，红果接口及真实播放尚未完成验证。**
+**下载：[v0.1.0 APK、源码及 Docker 部署包](https://github.com/N3urda/hongguoTV/releases/tag/v0.1.0)** · [Docker 部署指南](docs/DOCKER.md)
 
-## 文档
+## 第一版功能
 
-- [项目现状与后续工作](docs/PROJECT_STATUS.md)
-- [红果接口开源项目调研（2026-09-21）](docs/research/2026-09-21-hongguo-open-source.md)
+- 推荐、关键词搜索、分页、详情和选集。
+- 遥控器焦点、方向键、确定键和返回键操作。
+- 原比例播放、暂停、前后跳转、上下集及自动连播。
+- 本地收藏、最近观看、断点续播。
+- 服务地址 / 可选访问口令设置，连接检测及播放失败重试。
 
-## 已完成
+当前实现与验证范围见 [首版交付说明](docs/FIRST_RELEASE.md)。Android 8.0 的最低版本配置不等于目标电视已经验收；Apple TV 工程骨架保留，移动端和 Web 还未交付。
 
-- 明确目标平台为 Android TV / 安卓电视盒子。
-- 检索公开项目并检查关键接口源码、依赖和提交记录。
-- 整理搜索、剧集详情、视频模型的调用路径及候选项目的局限。
+## 在电视上使用
 
-优先验证的参考项目是 [woshishiq1/drpys](https://github.com/woshishiq1/drpys) 中的“红果果[短]”源，以及 [zhenyong97/hongguo-downloader](https://github.com/zhenyong97/hongguo-downloader) 的接口模块。源码中存在调用逻辑，不代表平台接口当前可用。
+1. 在电脑或 NAS 安装 Node.js 22 或更新版本，在本目录运行：
 
-## 下一步
+   ```sh
+   npm ci
+   npm run bridge -- --lan
+   ```
 
-先验证一条完整流程：**搜索 → 剧集详情 → 分集列表 → 单集播放 → 切换下一集**，记录接口依赖、返回数据和实际播放结果。验证通过后，再确定客户端架构并开发 TV 界面。
+2. 从 Release 下载 APK，拷贝到电视安装。本地构建产物为 `outputs/hongguotv-0.1.0-android8.apk`，也可以通过已连接的 ADB 安装：
 
-初步建议使用 Kotlin、Compose for TV 和 Media3；这是待验证的技术选型，尚未形成最终方案。接口逻辑放在客户端还是独立服务，也需根据实测结果决定。
+   ```sh
+   adb install -r outputs/hongguotv-0.1.0-android8.apk
+   ```
 
-## 拟议首版功能
+3. 电视和服务所在设备连接同一家庭网络。在应用「设置」中输入启动日志显示的 `http://电脑局域网IP:8787`，选择「连接并保存」。电视上不能把 `127.0.0.1` 当成电脑地址。
+4. 进入推荐或搜索，打开剧集开始播放。观看期间内容服务需保持运行，电脑不能休眠。
 
-- 遥控器方向键导航和清晰的焦点反馈。
-- 搜索、剧集详情和选集。
-- 自动连播、收藏和断点续播。
-- 竖屏短剧按原比例展示。
+首次启动默认没有内容服务地址，也不会用测试数据冒充真实内容。「测试播放器」仅播放明确标注的 Big Buck Bunny 公开样片。
 
-这些功能仍处于规划阶段，尚未实现。
+服务默认仅监听 `127.0.0.1`；`--lan` 显式开放家庭网络访问。可通过 `BRIDGE_TOKEN` 设置访问口令，并在电视端填入相同值。此服务按家庭网络使用设计，未实现公网部署所需的完整访问控制。手机 / 浏览器不要假定可直接使用原生端的媒体和请求头配置。
 
-## 项目范围
+## 独立服务部署
 
-本项目与红果官方无关联。目前仓库保存原创调研文档及公开源码链接，未引入第三方实现，也未确定项目软件许可证。后续复用源码时需单独核对来源及依赖的许可证。
+只部署服务时不需要安装 React Native 依赖：
+
+```sh
+npm ci --prefix server
+node server/index.mjs --lan
+```
+
+电脑 / NAS 可使用 Docker，从源码或 Release 的 Docker 部署包根目录执行：
+
+```sh
+cp .env.example .env
+docker compose --env-file .env -f server/compose.yaml up -d --build
+```
+
+也提供 `ghcr.io/n3urda/hongguotv-bridge:0.1.0` 的 AMD64 / ARM64 镜像，以及根目录的镜像部署 Compose；私有镜像登录、更新和排查见 [Docker 部署指南](docs/DOCKER.md)。服务参数为 `BRIDGE_HOST`、`PORT`、`BRIDGE_TOKEN`；Node 进程不会自动读取 `.env`，应由 shell 或部署工具传入环境变量。
+
+## 开发与验证
+
+```sh
+npm ci
+npm run typecheck
+npm test
+npm run bridge
+# 另一个终端：访问真实平台，结果写入 outputs/probe.json
+npm run probe
+# 需要 JDK 17、Android SDK 36、Build Tools 36.0.0、NDK 27.1.12297006
+npm run build:android
+```
+
+`build:android` 生成包含 JavaScript 的 release APK，运行时不需要 Metro。首版使用本地开发签名供自用安装；签名文件被 Git 忽略，换机器构建需保留同一密钥才能直接覆盖已有安装。对外发布前应配置自己的正式签名。
+
+服务 API 与部署边界见 [接口说明](docs/API.md)。
+
+## 项目资料
+
+- [首版交付与验收](docs/FIRST_RELEASE.md)
+- [Docker 部署](docs/DOCKER.md)
+- [项目状态](docs/PROJECT_STATUS.md)
+- [React Native 与多平台架构](docs/ARCHITECTURE.md)
+- [接口研究](docs/research/2026-09-21-hongguo-open-source.md)
+
+## 来源与许可证
+
+项目与红果官方无关联。内容接口为非官方实现，平台变化可能导致失效；错误会明确显示，不会替换为虚假内容。
+
+Node 服务使用固定提交的 `drpys` 源，保留原文件、GPL-3.0 许可证和来源记录，见 [第三方说明](server/vendor/NOTICE.md)。Android / tvOS 工程骨架源于 MIT 许可的 RN TV 模板。本项目代码按 [GPL-3.0](LICENSE) 提供，第三方部分保留各自许可。

@@ -27,3 +27,11 @@ keystore.properties
 /captures/
 /downloads/
 /tmp/
+
+# Delivery artifacts, native intermediates, local runtime
+/outputs/
+/server/.local/
+.cxx/
+.externalNativeBuild/
+/ios/Pods/
+/ios/build/
