@@ -23,11 +23,12 @@ android {
         }
     }
     buildTypes { getByName("release") { signingConfig = signingConfigs.getByName("delivery"); isMinifyEnabled = true; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro") } }
-    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17; isCoreLibraryDesugaringEnabled = true }
     kotlinOptions { jvmTarget = "17" }
     packaging { resources.excludes += setOf("META-INF/versions/**", "META-INF/*.kotlin_module") }
 }
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation(project(":core")) { exclude(group = "org.json") }
     implementation("androidx.media3:media3-exoplayer:1.8.0")

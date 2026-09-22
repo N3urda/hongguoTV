@@ -3,6 +3,8 @@ package com.hongguotv.nativeapp
 
 import android.content.Context
 import com.hongguotv.core.Series
+import com.hongguotv.core.ContentType
+import com.hongguotv.core.PlaybackSpeed
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -27,4 +29,10 @@ class Library(context: Context) {
     var autoNext: Boolean
         get()=prefs.getBoolean("autoNext",true)
         set(value) { prefs.edit().putBoolean("autoNext",value).apply() }
+    var contentType: ContentType
+        get()=ContentType.fromStored(prefs.getString("contentType",null))
+        set(value) { prefs.edit().putString("contentType",value.storedValue).apply() }
+    var playbackSpeed: Float
+        get()=PlaybackSpeed.normalize(prefs.getFloat("playbackSpeed",1f))
+        set(value) { prefs.edit().putFloat("playbackSpeed",PlaybackSpeed.normalize(value)).apply() }
 }

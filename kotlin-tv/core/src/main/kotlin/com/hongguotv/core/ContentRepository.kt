@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 
 internal fun JSONArray.objects() = (0 until length()).mapNotNull { optJSONObject(it) }
 internal fun JSONObject.str(key: String) = if (isNull(key)) "" else optString(key, "").trim()
-internal fun cleanUrl(s: String) = s.replace("\\/","/").replace("\\u0026","&").replace("&amp;","&")
+internal fun cleanUrl(s: String) = s.replace("\\/","/").replace("\\u002F","/",ignoreCase=true).replace("\\u0026","&").replace("&amp;","&")
 data class Series(val id: String, val title: String, val cover: String = "", val description: String = "", val badge: String = "", val tags: String = "") {
     fun toJson() = JSONObject().put("id",id).put("title",title).put("cover",cover).put("description",description).put("badge",badge).put("tags",tags)
     companion object { fun fromJson(o: JSONObject) = Series(o.str("id"),o.str("title"),o.str("cover"),o.str("description"),o.str("badge"),o.str("tags")) }
@@ -20,10 +20,13 @@ data class Series(val id: String, val title: String, val cover: String = "", val
 data class Detail(val series: Series, val episodes: List<String>)
 data class CatalogPage(val items: List<Series>, val hasMore: Boolean)
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String)
+class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
 
-class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build()) {
+class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build(), private val clock: () -> Long = System::currentTimeMillis) {
     private val signer = Signer()
     private val site = "https://hongguoduanju.com"
+    private data class SearchCursor(val searchId: String, val passback: String, val offset: Int?, val updatedAt: Long)
+    private val searchCursors=linkedMapOf<Triple<ContentType,String,Int>,SearchCursor>()
     private fun text(url: String, signed: Signer.Request? = null): String {
         val request = Request.Builder().url(url).header("User-Agent",VendorConstants.VIDEO_UA).header("Accept-Language","zh-CN,zh;q=0.9")
         signed?.headers?.forEach { (k,v) -> request.header(k,v) }
@@ -46,33 +49,48 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         return Series(o.str("series_id"),o.str("series_name").ifEmpty { o.str("series_title").ifEmpty { item.str("name") } },cleanUrl(o.str("series_cover")),o.str("series_intro"),o.str("episode_right_text").ifEmpty { if(count>0) "全 ${count} 集" else "" },(0 until minOf(tags.length(),5)).joinToString(" · ") { tags.optJSONObject(it)?.str("name") ?: tags.optString(it) })
     }
     private fun valid(rows: List<Series>) = rows.filter { it.id.matches(Regex("[0-9]{1,30}")) && it.title.isNotBlank() }.distinctBy { it.id }
-    fun home(page: Int = 1): CatalogPage {
+    fun home(page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
         require(page in 1..100)
+        if(type==ContentType.COMIC) return ComicRank.parse(text("$site/rank/hot-comic-drama?page=$page"),page)
         val data=router("$site/category?tab=1&sort_type=1"+if(page>1) "&page=$page" else "")
         val section=data.optJSONObject("category_page") ?: data.optJSONObject("category_$") ?: throw IOException("首页数据结构已变化")
         val rows=section.optJSONArray("recommendList") ?: section.optJSONObject("categoryData")?.optJSONArray("recommendList") ?: throw IOException("首页数据暂不可用")
         val items=valid(rows.objects().map(::card))
-        return CatalogPage(items,items.isNotEmpty() && page<100)
+        val lastPage=section.optJSONObject("pagination")?.optInt("totalPages",100) ?: 100
+        return CatalogPage(items,items.isNotEmpty() && page<minOf(lastPage,100))
     }
-    fun search(keyword: String, page: Int = 1): CatalogPage {
+    fun search(keyword: String, page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
         require(keyword.isNotBlank() && keyword.length<=80 && page in 1..100)
-        try { val result=appSearch(keyword,page); if(result.items.isNotEmpty() || !result.hasMore) return result } catch (_: Exception) { /* Website fallback. */ }
+        // The website search does not constrain content type. Never use it for comics.
+        if(type==ContentType.COMIC) return appSearch(keyword,page,type)
+        try { val result=appSearch(keyword,page,type); if(result.items.isNotEmpty() || !result.hasMore) return result } catch (e: Exception) { if(e is SearchSessionExpiredException) throw e; /* Website fallback for short dramas only. */ }
         val data=router("$site/search/${Signer.encode(keyword)}?page=$page")
         val section=data.optJSONObject("search_(keyword)/page") ?: data.optJSONObject("search_page") ?: throw IOException("搜索数据暂不可用")
         val rows=section.optJSONArray("searchList") ?: throw IOException("搜索数据结构已变化")
         val items=valid(rows.objects().map(::card))
         return CatalogPage(items,items.isNotEmpty() && page<100)
     }
-    private fun appSearch(keyword: String, page: Int): CatalogPage {
+    private fun appSearch(keyword: String, page: Int, type: ContentType): CatalogPage {
         val values=VendorConstants.device.toMutableMap()
         for(k in listOf("version_code","manifest_version_code","update_version_code","pv_player")) values[k]="72232"
         values["version_name"]="7.2.2.32"
-        values.putAll(linkedMapOf("query" to keyword,"count" to "20","offset" to ((page-1)*20).toString(),"tab_type" to "11","bookshelf_search_plan" to "4","use_correct" to "true","user_is_login" to "0"))
+        values.putAll(linkedMapOf("query" to keyword,"count" to "20","offset" to ((page-1)*20).toString(),"tab_type" to type.searchTab.toString(),"bookshelf_search_plan" to "4","use_correct" to "true","user_is_login" to "0"))
+        val cursor=synchronized(searchCursors) {
+            val now=clock()
+            searchCursors.entries.removeAll { now-it.value.updatedAt>300000 || (page==1 && it.key.first==type && it.key.second==keyword) }
+            searchCursors[Triple(type,keyword,page-1)]
+        }
+        if(type==ContentType.COMIC && page>1 && cursor==null) throw SearchSessionExpiredException()
+        cursor?.let {
+            if(it.searchId.isNotBlank()) values["search_id"]=it.searchId
+            if(it.passback.isNotBlank()) values["passback"]=it.passback
+            it.offset?.takeIf { offset -> offset>=0 }?.let { offset -> values["offset"]=offset.toString() }
+        }
         val signed=signer.sign("https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v",values)
         val data=JSONObject(text(signed.url,signed))
         if(data.optInt("code",-1)!=0) throw IOException("搜索接口暂不可用")
         val tabs=data.optJSONArray("search_tabs") ?: data.optJSONObject("data")?.optJSONArray("search_tabs") ?: throw IOException("搜索格式异常")
-        val tab=tabs.objects().firstOrNull { it.optInt("tab_type")==11 } ?: throw IOException("没有短剧搜索结果")
+        val tab=tabs.objects().firstOrNull { it.optInt("tab_type")==type.searchTab } ?: throw IOException("${type.label}搜索暂不可用")
         val list=mutableListOf<Series>()
         for(cell in (tab.optJSONArray("data") ?: JSONArray()).objects()) {
             val cells=mutableListOf(cell)
@@ -84,6 +102,10 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
                 val count=video.optInt("episode_cnt")
                 list+=Series(id,title,cleanUrl(video.str("cover").ifEmpty { video.str("cover_url") }),video.str("video_desc"),if(count>0) "全 $count 集" else video.str("rec_text"),video.str("sub_title"))
             }
+        }
+        synchronized(searchCursors) {
+            searchCursors[Triple(type,keyword,page)]=SearchCursor(tab.str("search_id"),tab.str("passback"),tab.str("next_offset").toIntOrNull(),clock())
+            while(searchCursors.size>100) searchCursors.remove(searchCursors.keys.first())
         }
         return CatalogPage(valid(list),tab.optBoolean("has_more",false) && page<100)
     }
