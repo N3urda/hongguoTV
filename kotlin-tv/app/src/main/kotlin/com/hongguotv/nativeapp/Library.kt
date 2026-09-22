@@ -7,6 +7,8 @@ import com.hongguotv.core.ContentType
 import com.hongguotv.core.PlaybackSpeed
 import com.hongguotv.core.SearchHistory
 import com.hongguotv.core.RecentSearch
+import com.hongguotv.core.FavoriteUpdate
+import com.hongguotv.core.PlaybackQuality
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -20,7 +22,9 @@ class Library(context: Context) {
     fun favorite(id: String) = favorites().any { it.id==id }
     fun toggle(series: Series): Boolean {
         val rows=favorites().toMutableList(); val found=rows.removeAll { it.id==series.id }; if(!found) rows.add(0,series)
-        prefs.edit().putString("favorites",JSONArray(rows.take(500).map { it.toJson() }).toString()).apply(); return !found
+        val retained=rows.take(500)
+        val updates=updatesJson(); updates.keys().asSequence().toList().filter { id -> retained.none { it.id==id } }.forEach { updates.remove(it) }
+        prefs.edit().putString("favorites",JSONArray(retained.map { it.toJson() }).toString()).putString("favoriteUpdates",updates.toString()).apply(); return !found
     }
     fun history(): List<WatchProgress> { val rows=read("progress"); return (0 until rows.length()).mapNotNull { i -> runCatching { val o=rows.getJSONObject(i); WatchProgress(Series.fromJson(o.getJSONObject("series")),o.getString("episodeId"),o.getInt("episodeIndex"),o.getLong("position"),o.getLong("duration"),o.optBoolean("completed"),o.getLong("updatedAt")) }.getOrNull() }.sortedByDescending { it.updatedAt } }
     fun progress(id: String) = history().firstOrNull { it.series.id==id }
@@ -39,9 +43,21 @@ class Library(context: Context) {
         prefs.edit().putString("progress",JSONArray(history().filterNot { it.series.id==id }.map { it.json() }).toString()).putStringSet("watched",ids).apply()
     }
     fun clearHistory() { prefs.edit().remove("progress").remove("watched").apply() }
+    private fun updatesJson()=runCatching { JSONObject(prefs.getString("favoriteUpdates","{}") ?: "{}") }.getOrDefault(JSONObject())
+    fun favoriteUpdate(id: String)=FavoriteUpdate.decode(updatesJson().optJSONObject(id))
+    fun observeFavorite(id: String,count: Int,now: Long,acknowledge: Boolean=false) {
+        if(!favorite(id)) return
+        val updates=updatesJson()
+        val next=favoriteUpdate(id)?.observe(count,now,acknowledge) ?: FavoriteUpdate.first(count,now)
+        updates.put(id,next.json()); prefs.edit().putString("favoriteUpdates",updates.toString()).apply()
+    }
+    fun updatedFavorites()=favorites().count { (favoriteUpdate(it.id)?.added ?: 0)>0 }
+    fun favoriteLabel(id: String): String = favoriteUpdate(id)?.let {
+        if(it.added>0) "新增 ${it.added} 集 · 更新至 ${it.total} 集" else "更新至 ${it.total} 集"
+    } ?: "尚未检查更新"
     var maxQuality: Int
-        get()=prefs.getInt("quality",1080)
-        set(value) { prefs.edit().putInt("quality",value).apply() }
+        get()=PlaybackQuality.normalize(prefs.getInt("quality",1080))
+        set(value) { prefs.edit().putInt("quality",PlaybackQuality.normalize(value)).apply() }
     var autoNext: Boolean
         get()=prefs.getBoolean("autoNext",true)
         set(value) { prefs.edit().putBoolean("autoNext",value).apply() }
