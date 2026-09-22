@@ -11,9 +11,10 @@ android {
         applicationId = "com.hongguotv.nativeapp"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.1"
+        versionCode = 3
+        versionName = "0.3.0"
     }
+    buildFeatures { buildConfig = true }
     signingConfigs {
         create("delivery") {
             storeFile = signingValue("HONGGUOTV_KEYSTORE", "storeFile")?.let { file(it) }
@@ -28,6 +29,7 @@ android {
     packaging { resources.excludes += setOf("META-INF/versions/**", "META-INF/*.kotlin_module") }
 }
 dependencies {
+    implementation("com.google.zxing:core:3.5.3")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation(project(":core")) { exclude(group = "org.json") }

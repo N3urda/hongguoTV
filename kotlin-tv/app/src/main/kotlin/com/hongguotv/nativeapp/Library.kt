@@ -5,6 +5,8 @@ import android.content.Context
 import com.hongguotv.core.Series
 import com.hongguotv.core.ContentType
 import com.hongguotv.core.PlaybackSpeed
+import com.hongguotv.core.SearchHistory
+import com.hongguotv.core.RecentSearch
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -23,6 +25,20 @@ class Library(context: Context) {
     fun history(): List<WatchProgress> { val rows=read("progress"); return (0 until rows.length()).mapNotNull { i -> runCatching { val o=rows.getJSONObject(i); WatchProgress(Series.fromJson(o.getJSONObject("series")),o.getString("episodeId"),o.getInt("episodeIndex"),o.getLong("position"),o.getLong("duration"),o.optBoolean("completed"),o.getLong("updatedAt")) }.getOrNull() }.sortedByDescending { it.updatedAt } }
     fun progress(id: String) = history().firstOrNull { it.series.id==id }
     fun save(progress: WatchProgress) { val rows=(listOf(progress)+history().filter { it.series.id!=progress.series.id }).take(200); prefs.edit().putString("progress",JSONArray(rows.map { it.json() }).toString()).apply() }
+    fun searches(): List<RecentSearch> = SearchHistory.decode(prefs.getString("searches","[]") ?: "[]")
+    fun rememberSearch(query: String,type: ContentType) { prefs.edit().putString("searches",SearchHistory.encode(SearchHistory.remember(searches(),query,type))).apply() }
+    fun clearSearches() { prefs.edit().remove("searches").apply() }
+    fun watched(id: String) = id in prefs.getStringSet("watched",emptySet()).orEmpty()
+    fun setWatched(id: String,value: Boolean) {
+        val ids=prefs.getStringSet("watched",emptySet()).orEmpty().toMutableSet()
+        if(value) ids.add(id) else ids.remove(id)
+        prefs.edit().putStringSet("watched",ids).apply()
+    }
+    fun removeHistory(id: String) {
+        val ids=prefs.getStringSet("watched",emptySet()).orEmpty().toMutableSet().apply { remove(id) }
+        prefs.edit().putString("progress",JSONArray(history().filterNot { it.series.id==id }.map { it.json() }).toString()).putStringSet("watched",ids).apply()
+    }
+    fun clearHistory() { prefs.edit().remove("progress").remove("watched").apply() }
     var maxQuality: Int
         get()=prefs.getInt("quality",1080)
         set(value) { prefs.edit().putInt("quality",value).apply() }
