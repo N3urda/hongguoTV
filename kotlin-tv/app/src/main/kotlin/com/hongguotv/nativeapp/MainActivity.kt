@@ -39,6 +39,10 @@ class MainActivity: Activity() {
     private val repository=ContentRepository()
     private lateinit var library: Library
     private lateinit var tvTools: TvTools
+    private lateinit var mediaSession: TvMediaSession
+    private val sleepTimer=SleepTimer { android.os.SystemClock.elapsedRealtime() }
+    private var sleepStopped=false
+    private var playerView: PlayerView?=null
     private lateinit var favoriteMonitor: FavoriteMonitor
     private val favoriteBadges=mutableMapOf<String,TextView>()
     private var favoriteStatus: TextView?=null
@@ -108,13 +112,15 @@ class MainActivity: Activity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var controls: LinearLayout
     private var panel=false
+    private var transportPlay: TextView?=null
+    private var sleepButton: TextView?=null
     private var speedDialog: AlertDialog?=null
     private var pendingSeek: Long?=null
     private var playError=false
     private var lastSaved=0L
     private var quality=""
     private val coverCache=object: LruCache<String,Bitmap>(12*1024*1024) { override fun sizeOf(key: String,value: Bitmap)=value.byteCount }
-    private val tick=object: Runnable { override fun run() { if(screen=="player") { updatePlaybackText(); val now=System.currentTimeMillis(); if(now-lastSaved>5000) { saveProgress(); lastSaved=now } }; main.postDelayed(this,1000) } }
+    private val tick=object: Runnable { override fun run() { if(screen=="player") { if(sleepTimer.poll()) stopForSleep(); updatePlaybackText(); syncMediaSession(); val now=System.currentTimeMillis(); if(now-lastSaved>5000) { saveProgress(); lastSaved=now } }; main.postDelayed(this,1000) } }
     private val hideHud=Runnable { if(screen=="player" && !panel && player?.isPlaying==true && !playError) hud.visibility=View.GONE }
     private val seekRunnable=Runnable { pendingSeek?.let { player?.seekTo(it) }; pendingSeek=null }
     private fun dp(value: Number)=(value.toFloat()*resources.displayMetrics.density).toInt()
@@ -142,6 +148,7 @@ class MainActivity: Activity() {
         connectivity=getSystemService(ConnectivityManager::class.java)
         runCatching { connectivity.registerDefaultNetworkCallback(networkCallback); networkRegistered=true }
         favoriteMonitor=FavoriteMonitor(library,repository) { refreshFavoriteLabels() }
+        mediaSession=TvMediaSession(this,{ if(foreground && screen=="player") requestPlayback(true) },{ if(foreground && screen=="player") requestPlayback(false) },{ position -> if(foreground && screen=="player") seekTo(position) },{ direction -> skipEpisode(direction) },{ if(foreground && screen=="player") returnToDetail() })
         showCatalog(load=true); main.post(tick)
     }
     private fun base(title: String?=null): LinearLayout {
@@ -388,6 +395,8 @@ class MainActivity: Activity() {
         qualityButton=addButton(parent,"全局默认清晰度：${library.maxQuality}P") { showQualityPicker(qualityButton,false) }
         lateinit var defaultSpeed: TextView
         defaultSpeed=addButton(parent,"全局默认倍速：${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(defaultSpeed,false) }
+        lateinit var frame: TextView
+        frame=addButton(parent,"全局画面模式：${library.frameMode.label}") { showFramePicker(frame,false) }
         parent.addView(text("所有剧集使用这些默认值，重启后保留。清晰度按片源实际提供的档位选择。",13f,muted).apply { setPadding(0,dp(8),0,dp(12)) })
         qualityButton.nextFocusUpId=nav[tab].id; nav.forEach { it.nextFocusDownId=qualityButton.id }
         lateinit var autoNextButton: TextView
@@ -395,10 +404,21 @@ class MainActivity: Activity() {
             library.autoNext=!library.autoNext
             autoNextButton.text="自动播放下一集：${if(library.autoNext) "开启" else "关闭"}"
         }
+        lateinit var backup: TextView
+        backup=addButton(parent,"手机备份与恢复") {
+            runCatching { LibraryBackup.encode(library.snapshot()) }.onSuccess { encoded ->
+                tvTools.libraryTransfer(encoded,backup) { data,restoreSettings ->
+                    favoriteMonitor.stop(); library.restore(data,restoreSettings)
+                    tabState.clear(); tabFocus.clear(); catalogFocus=""; page=1
+                    showCatalog(); favoriteMonitor.check()
+                    Toast.makeText(this,"记录已合并恢复",Toast.LENGTH_LONG).show()
+                }
+            }.onFailure { tvTools.info("无法生成备份","本机记录暂时无法导出，请重试。",backup) }
+        }
         lateinit var updates: TextView
         updates=addButton(parent,"版本与更新") { tvTools.updates(updates) }
         message(parent,"遥控器：方向键移动焦点，确认键选择；播放时左右快退/快进，确认暂停，向下打开选集菜单。")
-        parent.addView(text("最低 Android 8.0 · Kotlin / Media3\n内容通过互联网读取。收藏与观看记录保存在本机。\n旧版的收藏和记录不自动迁移。",14f,muted))
+        parent.addView(text("最低 Android 8.0 · Kotlin / Media3\n内容通过互联网读取。收藏与观看记录保存在本机。\n可通过手机备份在本原生版设备间迁移记录。",14f,muted))
         addButton(parent,"开源许可") { AlertDialog.Builder(this).setTitle("开源许可").setMessage("本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\nBouncy Castle：MIT\n完整源码和许可证见 GitHub：N3urda/hongguoTV，codex/kotlin-standalone 分支。").setPositiveButton("关闭",null).show() }
         nav[tab].requestFocus()
     }
@@ -492,19 +512,21 @@ class MainActivity: Activity() {
         saveProgress(); releasePlayer()
         if(!recovering) recovery.reset()
         autoRecovery=false; startPosition=position.coerceAtLeast(0); requestedAutoplay=autoplay
+        if(autoplay) sleepStopped=false
         generation++; screen="player"; episodeIndex=index.coerceIn(0,data.episodes.lastIndex); group=episodeIndex/20
         panel=false; playError=false; playbackReady=false; quality=""; pausedForLifecycle=!autoplay
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         root.removeAllViews(); root.setBackgroundColor(Color.BLACK)
-        val view=PlayerView(this).apply { useController=false; resizeMode=androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT; isFocusable=false; setShutterBackgroundColor(Color.BLACK); setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS) }
-        root.addView(view,FrameLayout.LayoutParams(-1,-1))
+        val view=PlayerView(this).apply { useController=false; resizeMode=frameResizeMode(); isFocusable=false; setShutterBackgroundColor(Color.BLACK); setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS) }
+        playerView=view; root.addView(view,FrameLayout.LayoutParams(-1,-1))
         hud=column().apply { setPadding(dp(widthDp()*.05f),dp(20),dp(widthDp()*.05f),(resources.displayMetrics.heightPixels*.05f).toInt()); setBackgroundColor(Color.argb(215,12,15,22)) }
         val title=text("${data.series.title}  ·  第 ${episodeIndex+1} 集",23f).apply { maxLines=1; ellipsize=TextUtils.TruncateAt.END; setTypeface(null,Typeface.BOLD) }; hud.addView(title)
         playbackText=text("正在获取播放地址…",15f,muted).apply { setPadding(0,dp(10),0,dp(9)) }; hud.addView(playbackText)
         progressBar=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal).apply { max=1000; progressTintList=android.content.res.ColorStateList.valueOf(accent); progressBackgroundTintList=android.content.res.ColorStateList.valueOf(surface) }; hud.addView(progressBar,lp(-1,dp(4)))
         hud.addView(text("确认 暂停/播放    左右 快退/快进    ↓ 更多操作    返回 退出",13f,muted).apply { setPadding(0,dp(12),0,0) })
         controls=column().apply { setPadding(0,dp(12),0,0); visibility=View.GONE }; hud.addView(controls)
-        root.addView(hud,FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
+        root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled=false; addView(hud) },FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
+        syncMediaSession()
         val requestedId=data.episodes[episodeIndex]; val maxQuality=library.maxQuality
         work({ RemoteVideo(repository.http,repository.stream(requestedId,maxQuality)).prepare() }, { remote ->
             video=remote; quality=remote.info.quality
@@ -520,15 +542,16 @@ class MainActivity: Activity() {
                     if(state==Player.STATE_READY) { playbackReady=true; updatePlaybackText(); showHud() }
                     if(state==Player.STATE_ENDED) {
                         saveProgress(true)
-                        if(library.autoNext && episodeIndex<data.episodes.lastIndex) playEpisode(episodeIndex+1)
-                        else { p.pause(); playbackText.text="本集已结束"; showPanel() }
+                        if(sleepTimer.episodeEnded()) stopForSleep()
+                        else if(library.autoNext && episodeIndex<data.episodes.lastIndex) playEpisode(episodeIndex+1)
+                        else { requestedAutoplay=false; p.pause(); playbackText.text="本集已结束"; showPanel() }
                     }
                 }
                 override fun onIsPlayingChanged(playing: Boolean) { if(player===p) { updatePlaybackText(); showHud() } }
                 override fun onPlayerError(error: PlaybackException) { if(player===p) playerFailure(error) }
             })
             val source=ProgressiveMediaSource.Factory { VideoDataSource(remote) }.createMediaSource(MediaItem.Builder().setUri("hongguotv://episode/$requestedId").setMimeType(MimeTypes.VIDEO_MP4).build())
-            p.setMediaSource(source); p.seekTo(position.coerceAtLeast(0)); p.prepare(); p.playWhenReady=autoplay && !pausedForLifecycle
+            p.setMediaSource(source); p.seekTo(position.coerceAtLeast(0)); p.prepare(); p.playWhenReady=requestedAutoplay && !pausedForLifecycle && episodePanel==null
         }, { problem -> playerFailure(problem) })
     }
     private fun networkAvailable(): Boolean = connectivity.getNetworkCapabilities(connectivity.activeNetwork)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)==true
@@ -543,7 +566,7 @@ class MainActivity: Activity() {
         retryPending=true; main.postDelayed(retryRunnable,delay)
     }
     private fun playerFailure(problem: Throwable) {
-        retryPosition=currentPosition().coerceAtLeast(0); retryAutoplay=player?.playWhenReady ?: requestedAutoplay
+        retryPosition=currentPosition().coerceAtLeast(0); retryAutoplay=requestedAutoplay && !sleepStopped
         saveProgress(); cancelRecovery()
         playError=true; player?.pause(); hud.visibility=View.VISIBLE; controls.removeAllViews(); controls.visibility=View.VISIBLE; panel=true
         val decoding=problem is PlaybackException && problem.errorCode in 3000..4999
@@ -553,7 +576,7 @@ class MainActivity: Activity() {
         addButton(actions,"立即重试") { playEpisode(episodeIndex,retryPosition,retryAutoplay) }.requestFocus()
         addButton(actions,"尝试 720P") { library.maxQuality=720; playEpisode(episodeIndex,retryPosition,retryAutoplay) }
         addButton(actions,"返回选集") { returnToDetail() }
-        if(retryable) {
+        if(retryable && !sleepStopped) {
             addButton(controls,"停止自动重试") { cancelRecovery(); playbackText.text="自动重试已停止，观看位置已保留。" }
             autoRecovery=true; scheduleRecovery()
         }
@@ -565,14 +588,77 @@ class MainActivity: Activity() {
         if(!panel && player?.isPlaying==true) main.postDelayed(hideHud,4500)
     }
     private fun updatePlaybackText() {
+        transportPlay?.text=if(player?.playWhenReady==true) "暂停" else "播放"
+        sleepButton?.text="定时 ${sleepTimer.label()}"
         if(screen!="player" || playError) return
+        if(sleepStopped) { playbackText.text="定时停止已生效 · 观看位置已保存 · 按播放可继续"; return }
         val p=player ?: return
         val duration=p.duration.coerceAtLeast(0); val position=pendingSeek ?: p.currentPosition
         val state=when { p.playbackState==Player.STATE_BUFFERING -> "缓冲中"; p.playbackState==Player.STATE_ENDED -> "本集已结束"; !p.playWhenReady -> "已暂停"; else -> "正在播放" }
-        playbackText.text="$state  ·  ${formatTime(position)} / ${formatTime(duration)}  ·  $quality  ·  ${PlaybackSpeed.label(p.playbackParameters.speed)}"
+        playbackText.text="$state  ·  ${formatTime(position)} / ${formatTime(duration)}  ·  $quality  ·  ${PlaybackSpeed.label(p.playbackParameters.speed)}"+(if(sleepTimer.active) "  ·  定时 ${sleepTimer.label()}" else "")
         progressBar.progress=if(duration>0) (position*1000/duration).toInt().coerceIn(0,1000) else 0
     }
-    private fun togglePlayback() { val p=player ?: return; if(p.playbackState==Player.STATE_ENDED) p.seekTo(0); if(p.playWhenReady) p.pause() else { pausedForLifecycle=false; p.play() }; showHud(); updatePlaybackText(); if(panel) showPanel() }
+    private fun requestPlayback(play: Boolean) {
+        requestedAutoplay=play; pausedForLifecycle=!play
+        if(play) sleepStopped=false
+        if(!play) { player?.pause(); retryAutoplay=false; saveProgress() }
+        else if(playError) { playEpisode(episodeIndex,retryPosition,true); return }
+        else if(episodePanel==null) { if(player?.playbackState==Player.STATE_ENDED) player?.seekTo(0); player?.play() }
+        if(!play) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        showHud(); updatePlaybackText(); syncMediaSession(); if(panel && episodePanel==null) showPanel()
+    }
+    private fun togglePlayback()=requestPlayback(!(player?.playWhenReady ?: requestedAutoplay))
+    private fun seekTo(position: Long) {
+        val p=player ?: return; if(!playbackReady || p.duration<=0) return
+        main.removeCallbacks(seekRunnable); pendingSeek=null
+        p.seekTo(position.coerceIn(0,(p.duration-500).coerceAtLeast(0))); updatePlaybackText(); syncMediaSession(); showHud()
+    }
+    private fun skipEpisode(direction: Int) {
+        if(!foreground || screen!="player") return
+        val count=detail?.episodes?.size ?: return
+        val target=episodeIndex+direction
+        if(target in 0 until count) playEpisode(target)
+    }
+    private fun syncMediaSession() {
+        if(!foreground || screen!="player") { mediaSession.deactivate(); return }
+        val data=detail ?: return; val p=player
+        val state=when {
+            playError -> android.media.session.PlaybackState.STATE_ERROR
+            sleepStopped || !requestedAutoplay || (p!=null && !p.playWhenReady) -> android.media.session.PlaybackState.STATE_PAUSED
+            p==null || p.playbackState==Player.STATE_BUFFERING -> android.media.session.PlaybackState.STATE_BUFFERING
+            p.playbackState==Player.STATE_ENDED -> android.media.session.PlaybackState.STATE_STOPPED
+            p.isPlaying -> android.media.session.PlaybackState.STATE_PLAYING
+            else -> android.media.session.PlaybackState.STATE_PAUSED
+        }
+        mediaSession.update(data.series.title,episodeIndex,p?.duration?.coerceAtLeast(0) ?: 0,currentPosition(),library.playbackSpeed,state,episodeIndex>0,episodeIndex<data.episodes.lastIndex)
+    }
+    private fun stopForSleep() {
+        sleepStopped=true; requestedAutoplay=false; retryAutoplay=false; pausedForLifecycle=true
+        cancelRecovery(); player?.pause(); saveProgress()
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        playbackText.text="定时停止已生效 · 观看位置已保存 · 按播放可继续"
+        showHud(); if(!playError && episodePanel==null) showPanel(); syncMediaSession()
+        Toast.makeText(this,"定时停止已生效",Toast.LENGTH_LONG).show()
+    }
+    private fun showSleepPicker(anchor: TextView) {
+        val labels=listOf("关闭定时停止","15 分钟后","30 分钟后","60 分钟后","90 分钟后","本集播完","再播完 3 集","再播完 5 集")
+        tvTools.choose("定时停止 · ${sleepTimer.label()}",labels,anchor,{ choice ->
+            when(choice) { 0 -> sleepTimer.cancel(); in 1..4 -> sleepTimer.afterMinutes(listOf(15,30,60,90)[choice-1]); else -> sleepTimer.afterEpisodes(listOf(1,3,5)[choice-5]) }
+            anchor.text="定时 ${sleepTimer.label()}"; updatePlaybackText(); showHud()
+        })
+    }
+    private fun frameResizeMode()=when(library.frameMode) {
+        VideoFrameMode.FIT -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+        VideoFrameMode.ZOOM -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        VideoFrameMode.FILL -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL
+    }
+    private fun showFramePicker(anchor: TextView,inPlayer: Boolean) {
+        tvTools.choose("全局画面模式",listOf("完整画面 · 保留比例与全部内容","等比铺满 · 会裁掉部分画面与字幕","拉伸铺满 · 画面比例会改变"),anchor,{ index ->
+            library.frameMode=VideoFrameMode.entries[index]; playerView?.resizeMode=frameResizeMode()
+            anchor.text=(if(inPlayer) "画面 " else "全局画面模式：")+library.frameMode.label
+        })
+    }
     private fun seek(direction: Int,repeat: Int) {
         val p=player ?: return; if(!playbackReady) return
         val duration=p.duration; if(duration<=0) return
@@ -584,7 +670,7 @@ class MainActivity: Activity() {
         if(playError) return
         panel=true; showHud(); controls.visibility=View.VISIBLE; controls.removeAllViews()
         val transport=row(); controls.addView(transport)
-        val play=addButton(transport,if(player?.playWhenReady==true) "暂停" else "播放") { togglePlayback() }
+        val play=addButton(transport,if(player?.playWhenReady==true) "暂停" else "播放") { togglePlayback() }.also { transportPlay=it }
         addButton(transport,"上一集") { if(episodeIndex>0) playEpisode(episodeIndex-1) }.apply { isEnabled=episodeIndex>0; isFocusable=episodeIndex>0; alpha=if(episodeIndex>0) 1f else .4f }
         addButton(transport,"下一集") { if(episodeIndex<(detail?.episodes?.lastIndex ?: 0)) playEpisode(episodeIndex+1) }.apply { val enabled=episodeIndex<(detail?.episodes?.lastIndex ?: 0); isEnabled=enabled; isFocusable=enabled; alpha=if(enabled) 1f else .4f }
         val options=row().apply { setPadding(0,dp(8),0,0) }; controls.addView(options)
@@ -594,7 +680,13 @@ class MainActivity: Activity() {
         episodes=addButton(options,"选集") { showEpisodePanel(episodes) }
         lateinit var qualityChoice: TextView
         qualityChoice=addButton(options,"清晰度 ${library.maxQuality}P") { showQualityPicker(qualityChoice,true) }
-        addButton(options,"从头播放") { player?.seekTo(0); pendingSeek=null; main.removeCallbacks(seekRunnable); hidePanel() }
+        addButton(options,"从头播放") { seekTo(0); hidePanel() }
+        val comfort=row().apply { setPadding(0,dp(8),0,0) }; controls.addView(comfort)
+        lateinit var frame: TextView
+        frame=addButton(comfort,"画面 ${library.frameMode.label}") { showFramePicker(frame,true) }
+        lateinit var timer: TextView
+        timer=addButton(comfort,"定时 ${sleepTimer.label()}") { showSleepPicker(timer) }.also { sleepButton=it }
+        controls.addView(text("定时仅本次观看有效；按分钟包含暂停时间，按集数在片尾计数。",12f,muted).apply { setPadding(0,dp(6),0,0) })
         play.requestFocus()
     }
     private fun showSpeedPicker(anchor: TextView,inPlayer: Boolean=true) {
@@ -631,8 +723,9 @@ class MainActivity: Activity() {
     private fun showEpisodePanel(anchor: View) {
         val data=detail ?: return
         if(episodePanel!=null) return
-        val original=player; val wasPlaying=original?.playWhenReady==true
-        original?.pause(); saveProgress()
+        val ticket=generation
+        requestedAutoplay=player?.playWhenReady ?: requestedAutoplay
+        player?.pause(); saveProgress()
         var resumeOnClose=true
         val next=EpisodePanel(this,data.episodes.size,episodeIndex,
             { current,view,located -> tvTools.episodePicker(data.episodes.size,current,view,located) },
@@ -642,8 +735,8 @@ class MainActivity: Activity() {
             },
             {
                 episodePanel=null
-                if(resumeOnClose && foreground && !pausedForLifecycle && player===original && screen=="player") {
-                    if(wasPlaying) original?.play()
+                if(resumeOnClose && foreground && generation==ticket && screen=="player") {
+                    if(requestedAutoplay && !sleepStopped && !pausedForLifecycle) player?.play()
                     if(anchor.isAttachedToWindow) anchor.requestFocus()
                     showHud()
                 }
@@ -657,15 +750,15 @@ class MainActivity: Activity() {
         library.save(WatchProgress(data.series,data.episodes[episodeIndex],episodeIndex,p.currentPosition.coerceAtLeast(0),p.duration.coerceAtLeast(0),completed || p.playbackState==Player.STATE_ENDED,System.currentTimeMillis()))
     }
     private fun releasePlayer() {
-        cancelRecovery()
+        cancelRecovery(); mediaSession.deactivate(); tvTools.close()
         val wasForeground=foreground; foreground=false
         val oldPanel=episodePanel; episodePanel=null; oldPanel?.dismiss(); foreground=wasForeground
         speedDialog?.dismiss(); speedDialog=null
         main.removeCallbacks(hideHud); main.removeCallbacks(seekRunnable); pendingSeek=null
-        video?.close(); video=null; player?.release(); player=null; playbackReady=false
+        video?.close(); video=null; playerView?.player=null; playerView=null; player?.release(); player=null; playbackReady=false; transportPlay=null; sleepButton=null
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
-    private fun returnToDetail() { saveProgress(); releasePlayer(); showDetail(true) }
+    private fun returnToDetail() { sleepTimer.cancel(); sleepStopped=false; saveProgress(); releasePlayer(); showDetail(true) }
     private fun goBack() {
         when(screen) {
             "player" -> if(panel && !playError) hidePanel() else returnToDetail()
@@ -679,8 +772,18 @@ class MainActivity: Activity() {
         if(screen=="player") {
             val key=event.keyCode
             if(key==KeyEvent.KEYCODE_BACK) { if(event.action==KeyEvent.ACTION_UP) goBack(); return true }
-            if(key in listOf(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,KeyEvent.KEYCODE_MEDIA_PLAY,KeyEvent.KEYCODE_MEDIA_PAUSE)) {
-                if(event.action==KeyEvent.ACTION_DOWN && event.repeatCount==0) { if(key==KeyEvent.KEYCODE_MEDIA_PLAY) player?.play() else if(key==KeyEvent.KEYCODE_MEDIA_PAUSE) player?.pause() else togglePlayback() }; return true
+            if(key in listOf(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,KeyEvent.KEYCODE_MEDIA_PLAY,KeyEvent.KEYCODE_MEDIA_PAUSE,KeyEvent.KEYCODE_MEDIA_NEXT,KeyEvent.KEYCODE_MEDIA_PREVIOUS,KeyEvent.KEYCODE_MEDIA_STOP,KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,KeyEvent.KEYCODE_MEDIA_REWIND)) {
+                if(event.action==KeyEvent.ACTION_DOWN && event.repeatCount==0) when(key) {
+                    KeyEvent.KEYCODE_MEDIA_PLAY -> requestPlayback(true)
+                    KeyEvent.KEYCODE_MEDIA_PAUSE -> requestPlayback(false)
+                    KeyEvent.KEYCODE_MEDIA_NEXT -> skipEpisode(1)
+                    KeyEvent.KEYCODE_MEDIA_PREVIOUS -> skipEpisode(-1)
+                    KeyEvent.KEYCODE_MEDIA_STOP -> returnToDetail()
+                    KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> seek(1,0)
+                    KeyEvent.KEYCODE_MEDIA_REWIND -> seek(-1,0)
+                    else -> togglePlayback()
+                }
+                return true
             }
             if(!panel) {
                 if(key in listOf(KeyEvent.KEYCODE_DPAD_LEFT,KeyEvent.KEYCODE_DPAD_RIGHT,KeyEvent.KEYCODE_DPAD_CENTER,KeyEvent.KEYCODE_ENTER,KeyEvent.KEYCODE_DPAD_UP,KeyEvent.KEYCODE_DPAD_DOWN,KeyEvent.KEYCODE_MENU)) {
@@ -706,10 +809,10 @@ class MainActivity: Activity() {
         }
     }
     override fun onResume() { super.onResume(); foreground=true; favoriteMonitor.check() }
-    override fun onPause() { foreground=false; cancelRecovery(); favoriteMonitor.stop(); pausedForLifecycle=true; player?.pause(); saveProgress(); super.onPause() }
+    override fun onPause() { foreground=false; cancelRecovery(); mediaSession.deactivate(); sleepTimer.cancel(); favoriteMonitor.stop(); requestedAutoplay=false; pausedForLifecycle=true; player?.pause(); saveProgress(); super.onPause() }
     override fun onStop() { tvTools.close(); super.onStop(); if(screen=="player") { generation++; saveProgress(); releasePlayer() } }
     override fun onRestart() { super.onRestart(); if(screen=="player" && player==null) { val progress=detail?.let { library.progress(it.series.id) }; playEpisode(episodeIndex,progress?.takeIf { it.episodeIndex==episodeIndex }?.position ?: startPosition,autoplay=false) } }
-    override fun onDestroy() { generation++; if(networkRegistered) connectivity.unregisterNetworkCallback(networkCallback); favoriteMonitor.destroy(); tvTools.destroy(); saveProgress(); releasePlayer(); main.removeCallbacksAndMessages(null); io.shutdownNow(); images.shutdownNow(); Thread({
+    override fun onDestroy() { generation++; if(networkRegistered) connectivity.unregisterNetworkCallback(networkCallback); favoriteMonitor.destroy(); tvTools.destroy(); saveProgress(); releasePlayer(); mediaSession.release(); main.removeCallbacksAndMessages(null); io.shutdownNow(); images.shutdownNow(); Thread({
             repository.http.dispatcher.cancelAll()
             repository.http.connectionPool.evictAll()
             repository.http.dispatcher.executorService.shutdown()

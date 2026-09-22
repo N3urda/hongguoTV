@@ -2,7 +2,7 @@
 
 当前分支提供 **Kotlin 原生独立 APK**：安装后联网即可使用，无需 Node / Docker。最低 Android 8.0，电视遥控器操作。
 
-**[下载原生版 APK](https://github.com/N3urda/hongguoTV/releases/tag/kotlin-v0.4.0)** · [原生版说明与构建](kotlin-tv/README.md)
+**[下载原生版 APK](https://github.com/N3urda/hongguoTV/releases/tag/kotlin-v0.5.0)** · [原生版说明与构建](kotlin-tv/README.md)
 
 原生工程位于 `kotlin-tv/`，包名 `com.hongguotv.nativeapp`，可与旧版并存。以下为保留的 React Native 版说明。
 

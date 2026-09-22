@@ -9,6 +9,11 @@ import com.hongguotv.core.SearchHistory
 import com.hongguotv.core.RecentSearch
 import com.hongguotv.core.FavoriteUpdate
 import com.hongguotv.core.PlaybackQuality
+import com.hongguotv.core.BackupData
+import com.hongguotv.core.BackupProgress
+import com.hongguotv.core.BackupSettings
+import com.hongguotv.core.LibraryBackup
+import com.hongguotv.core.VideoFrameMode
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -67,4 +72,19 @@ class Library(context: Context) {
     var playbackSpeed: Float
         get()=PlaybackSpeed.normalize(prefs.getFloat("playbackSpeed",1f))
         set(value) { prefs.edit().putFloat("playbackSpeed",PlaybackSpeed.normalize(value)).apply() }
+    var frameMode: VideoFrameMode
+        get()=VideoFrameMode.fromStored(prefs.getString("frameMode",null))
+        set(value) { prefs.edit().putString("frameMode",value.name).apply() }
+    fun snapshot()=BackupData(favorites(),history().map { BackupProgress(it.series,it.episodeId,it.episodeIndex,it.position,it.duration,it.completed,it.updatedAt) },
+        prefs.getStringSet("watched",emptySet()).orEmpty().toSet(),searches(),BackupSettings(maxQuality,playbackSpeed,autoNext,contentType,frameMode))
+    fun restore(incoming: BackupData,restoreSettings: Boolean) {
+        val merged=LibraryBackup.merge(snapshot(),incoming,restoreSettings)
+        val updates=updatesJson(); updates.keys().asSequence().toList().filter { id -> merged.favorites.none { it.id==id } }.forEach { updates.remove(it) }
+        prefs.edit().putString("favorites",JSONArray(merged.favorites.map { it.toJson() }).toString())
+            .putString("progress",JSONArray(merged.history.map { it.json() }).toString())
+            .putStringSet("watched",merged.watched).putString("searches",SearchHistory.encode(merged.searches))
+            .putString("favoriteUpdates",updates.toString()).putInt("quality",merged.settings.quality)
+            .putFloat("playbackSpeed",merged.settings.speed).putBoolean("autoNext",merged.settings.autoNext)
+            .putString("contentType",merged.settings.type.storedValue).putString("frameMode",merged.settings.frame.name).apply()
+    }
 }
