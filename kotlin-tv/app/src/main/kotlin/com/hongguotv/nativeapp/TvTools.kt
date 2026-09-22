@@ -29,6 +29,7 @@ class TvTools(private val activity: Activity) {
     private val main=Handler(Looper.getMainLooper())
     private val worker=Executors.newSingleThreadExecutor()
     private var dialog: AlertDialog?=null
+    val showing: Boolean get()=dialog?.isShowing==true
     private var phone: java.io.Closeable?=null
     private fun dp(value: Int)=(value*activity.resources.displayMetrics.density).toInt()
     private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(Color.WHITE); setPadding(dp(8),dp(4),dp(8),dp(4)) }
@@ -144,7 +145,7 @@ class TvTools(private val activity: Activity) {
                     if(dialog!==next) return@post
                     next.dismiss()
                     val preview=column()
-                    preview.addView(label("备份含 ${data.favorites.size} 部收藏、${data.history.size} 条观看记录、${data.searches.size} 条搜索。\n\n收藏合并，观看位置以较新的记录为准；已有收藏优先保留（最多 500 部），历史保留最近 200 条。",16f))
+                    preview.addView(label("备份含 ${data.favorites.size} 部收藏、${data.history.size} 条观看记录、${data.searches.size} 条搜索、${data.later.size} 部稍后看、${data.hidden.size} 部已隐藏推荐。\n\n收藏合并，观看位置以较新的记录为准；已有收藏优先保留（最多 500 部），历史保留最近 200 条。",16f))
                     val settings=CheckBox(activity).apply { text="同时恢复播放设置和内容分类"; isChecked=false }; preview.addView(settings)
                     val confirm=AlertDialog.Builder(activity).setTitle("确认恢复本机记录")
                         .setView(ScrollView(activity).apply { addView(preview) }).setNegativeButton("取消",null)

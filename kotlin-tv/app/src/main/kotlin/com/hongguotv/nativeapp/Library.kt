@@ -24,6 +24,20 @@ class Library(context: Context) {
     private val prefs=context.getSharedPreferences("native-library-v1",Context.MODE_PRIVATE)
     private fun read(key: String) = runCatching { JSONArray(prefs.getString(key,"[]")) }.getOrDefault(JSONArray())
     fun favorites(): List<Series> { val rows=read("favorites"); return (0 until rows.length()).mapNotNull { runCatching { Series.fromJson(rows.getJSONObject(it)) }.getOrNull() } }
+    fun later(): List<Series> { val rows=read("later"); return (0 until rows.length()).mapNotNull { runCatching { Series.fromJson(rows.getJSONObject(it)) }.getOrNull() } }
+    fun queued(id: String)=later().any { it.id==id }
+    fun toggleLater(series: Series): Boolean {
+        val rows=later().toMutableList(); val removed=rows.removeAll { it.id==series.id }; if(!removed) rows.add(0,series)
+        prefs.edit().putString("later",JSONArray(rows.take(100).map { it.toJson() }).toString()).apply(); return !removed
+    }
+    fun hidden()=prefs.getStringSet("hidden",emptySet()).orEmpty().toSet()
+    fun hide(id: String) { prefs.edit().putStringSet("hidden",(hidden()+id).takeLastIds(500)).apply() }
+    private fun Set<String>.takeLastIds(count: Int)=toList().takeLast(count).toSet()
+    fun unhideAll() { prefs.edit().remove("hidden").apply() }
+    fun cachedHome(type: ContentType)=com.hongguotv.core.CatalogSnapshot.decode(prefs.getString("home-${type.storedValue}","").orEmpty(),System.currentTimeMillis())
+    fun cacheHome(type: ContentType,items: List<Series>,hasMore: Boolean) {
+        if(items.isNotEmpty()) prefs.edit().putString("home-${type.storedValue}",com.hongguotv.core.CatalogSnapshot.encode(items,hasMore,System.currentTimeMillis())).apply()
+    }
     fun favorite(id: String) = favorites().any { it.id==id }
     fun toggle(series: Series): Boolean {
         val rows=favorites().toMutableList(); val found=rows.removeAll { it.id==series.id }; if(!found) rows.add(0,series)
@@ -76,11 +90,12 @@ class Library(context: Context) {
         get()=VideoFrameMode.fromStored(prefs.getString("frameMode",null))
         set(value) { prefs.edit().putString("frameMode",value.name).apply() }
     fun snapshot()=BackupData(favorites(),history().map { BackupProgress(it.series,it.episodeId,it.episodeIndex,it.position,it.duration,it.completed,it.updatedAt) },
-        prefs.getStringSet("watched",emptySet()).orEmpty().toSet(),searches(),BackupSettings(maxQuality,playbackSpeed,autoNext,contentType,frameMode))
+        prefs.getStringSet("watched",emptySet()).orEmpty().toSet(),searches(),BackupSettings(maxQuality,playbackSpeed,autoNext,contentType,frameMode),later(),hidden())
     fun restore(incoming: BackupData,restoreSettings: Boolean) {
         val merged=LibraryBackup.merge(snapshot(),incoming,restoreSettings)
         val updates=updatesJson(); updates.keys().asSequence().toList().filter { id -> merged.favorites.none { it.id==id } }.forEach { updates.remove(it) }
         prefs.edit().putString("favorites",JSONArray(merged.favorites.map { it.toJson() }).toString())
+            .putString("later",JSONArray(merged.later.map { it.toJson() }).toString()).putStringSet("hidden",merged.hidden)
             .putString("progress",JSONArray(merged.history.map { it.json() }).toString())
             .putStringSet("watched",merged.watched).putString("searches",SearchHistory.encode(merged.searches))
             .putString("favoriteUpdates",updates.toString()).putInt("quality",merged.settings.quality)
