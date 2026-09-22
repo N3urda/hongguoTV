@@ -18,7 +18,9 @@ data class Series(val id: String, val title: String, val cover: String = "", val
     companion object { fun fromJson(o: JSONObject) = Series(o.str("id"),o.str("title"),o.str("cover"),o.str("description"),o.str("badge"),o.str("tags")) }
 }
 data class Detail(val series: Series, val episodes: List<String>)
-data class CatalogPage(val items: List<Series>, val hasMore: Boolean)
+data class RankPosition(val rank: Int?, val heat: String)
+data class ComicRanking(val positions: Map<String,RankPosition>, val totalPages: Int, val updatedText: String)
+data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val ranking: ComicRanking? = null)
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String)
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
 
@@ -49,9 +51,13 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         return Series(o.str("series_id"),o.str("series_name").ifEmpty { o.str("series_title").ifEmpty { item.str("name") } },cleanUrl(o.str("series_cover")),o.str("series_intro"),o.str("episode_right_text").ifEmpty { if(count>0) "全 ${count} 集" else "" },(0 until minOf(tags.length(),5)).joinToString(" · ") { tags.optJSONObject(it)?.str("name") ?: tags.optString(it) })
     }
     private fun valid(rows: List<Series>) = rows.filter { it.id.matches(Regex("[0-9]{1,30}")) && it.title.isNotBlank() }.distinctBy { it.id }
+    fun comicRanking(page: Int = 1): CatalogPage {
+        require(page in 1..100)
+        return ComicRank.parse(text("$site/rank/hot-comic-drama?page=$page"),page)
+    }
     fun home(page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
         require(page in 1..100)
-        if(type==ContentType.COMIC) return ComicRank.parse(text("$site/rank/hot-comic-drama?page=$page"),page)
+        if(type==ContentType.COMIC) return comicRanking(page)
         val data=router("$site/category?tab=1&sort_type=1"+if(page>1) "&page=$page" else "")
         val section=data.optJSONObject("category_page") ?: data.optJSONObject("category_$") ?: throw IOException("首页数据结构已变化")
         val rows=section.optJSONArray("recommendList") ?: section.optJSONObject("categoryData")?.optJSONArray("recommendList") ?: throw IOException("首页数据暂不可用")

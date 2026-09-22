@@ -45,7 +45,11 @@ class MainActivity: Activity() {
     private var catalog=emptyList<Series>()
     private var hasMore=false
     private var catalogFocus=""
-    private val tabState=mutableMapOf<Int,Triple<Int,List<Series>,Boolean>>()
+    private data class CatalogState(val page: Int,val items: List<Series>,val hasMore: Boolean,val ranking: ComicRanking?)
+    private var ranking: ComicRanking?=null
+    private var rankRefresh: View?=null
+    private var rankSubtitle: TextView?=null
+    private val tabState=mutableMapOf<Int,CatalogState>()
     private val tabFocus=mutableMapOf<Int,String>()
     private val nav=mutableListOf<View>()
     private val typeButtons=mutableMapOf<ContentType,View>()
@@ -139,24 +143,26 @@ class MainActivity: Activity() {
         parent.addView(text(detail,13f,muted)); addButton(parent,"重试",onClick=retry).requestFocus()
     }
     private fun switchTab(next: Int) {
-        tabState[tab]=Triple(page,catalog,hasMore); tabFocus[tab]=catalogFocus
-        tab=next; val saved=tabState[next]; page=saved?.first ?: 1; catalog=saved?.second ?: emptyList(); hasMore=saved?.third ?: false; catalogFocus=tabFocus[next].orEmpty()
-        showCatalog(load=(next<=1 && catalog.isEmpty() && (next==0 || query.isNotBlank())))
+        tabState[tab]=CatalogState(page,catalog,hasMore,ranking); tabFocus[tab]=catalogFocus
+        tab=next; val saved=tabState[next]; page=saved?.page ?: 1; catalog=saved?.items ?: emptyList(); hasMore=saved?.hasMore ?: false; ranking=saved?.ranking; catalogFocus=tabFocus[next].orEmpty()
+        showCatalog(load=(next<=2 && catalog.isEmpty() && (next!=1 || query.isNotBlank())))
     }
     private fun switchContentType(type: ContentType) {
         if(library.contentType==type) return
         (searchInput as? EditText)?.let { query=it.text.toString().trim() }
         library.contentType=type
         for(index in 0..1) { tabState.remove(index); tabFocus.remove(index) }
-        page=1; catalog=emptyList(); hasMore=false; catalogFocus=""
+        page=1; catalog=emptyList(); hasMore=false; ranking=null; catalogFocus=""
         showCatalog(load=(tab==0 || query.isNotBlank()),focusType=true)
     }
     private fun showCatalog(load: Boolean=false,focusNav: Boolean=false,focusType: Boolean=false) {
-        generation++; screen="catalog"; val container=base(); nav.clear(); typeButtons.clear(); searchInput=null; searchButton=null
+        // Never cache a new page number with the previous page's results while a request is pending.
+        if(load) { catalog=emptyList(); hasMore=false; ranking=null }
+        generation++; screen="catalog"; val container=base(); nav.clear(); typeButtons.clear(); searchInput=null; searchButton=null; rankRefresh=null; rankSubtitle=null
         val top=row(); top.addView(text("红果 TV",24f).apply { setTypeface(null,Typeface.BOLD) },lp(dp(135),dp(48)))
-        listOf("推荐","搜索","收藏","最近观看","设置").forEachIndexed { index,label -> nav+=addButton(top,label,index==tab) { switchTab(index) } }
+        listOf("推荐","搜索","排行榜","收藏","最近观看","设置").forEachIndexed { index,label -> nav+=addButton(top,label,index==tab) { switchTab(index) } }
         container.addView(top)
-        if(tab==4) { settings(container); if(focusNav) nav[tab].requestFocus(); return }
+        if(tab==5) { settings(container); if(focusNav) nav[tab].requestFocus(); return }
         if(tab<=1) {
             val types=row().apply { setPadding(0,dp(8),0,dp(6)) }
             types.addView(text("内容",15f,muted),lp(dp(55),-2))
@@ -175,15 +181,24 @@ class MainActivity: Activity() {
             searchInput=input; searchButton=addButton(searchRow,"搜索") { search() }; input.nextFocusUpId=typeButtons.getValue(library.contentType).id; searchButton?.nextFocusUpId=input.nextFocusUpId
             typeButtons.values.forEach { it.nextFocusDownId=input.id }
             input.setOnEditorActionListener { _,_,_-> search(); true }; container.addView(searchRow)
-        } else if(tab>1) container.addView(text(if(tab==2) "我的收藏" else "接着上次看",25f).apply { setTypeface(null,Typeface.BOLD); setPadding(0,dp(14),0,dp(6)) })
+        } else if(tab==2) {
+            val heading=row().apply { setPadding(0,dp(8),0,dp(6)) }
+            heading.addView(text("漫剧热播榜",25f).apply { setTypeface(null,Typeface.BOLD) },lp(0,-2).apply { weight=1f })
+            rankRefresh=addButton(heading,"刷新榜单") { page=1; catalogFocus=""; showCatalog(true) }.apply { nextFocusUpId=nav[tab].id }
+            container.addView(heading)
+            rankSubtitle=text(if(load) "正在读取最新榜单…" else ranking?.updatedText?.ifBlank { "来源：红果漫剧热播榜" } ?: "来源：红果漫剧热播榜",13f,muted)
+                .apply { setPadding(0,0,0,dp(8)) }
+            container.addView(rankSubtitle)
+            nav.forEach { it.nextFocusDownId=rankRefresh!!.id }
+        } else if(tab>2) container.addView(text(if(tab==3) "我的收藏" else "接着上次看",25f).apply { setTypeface(null,Typeface.BOLD); setPadding(0,dp(14),0,dp(6)) })
         val body=column(); container.addView(body,lp(-1,0).apply { weight=1f })
-        if(tab==2) { catalog=library.favorites(); hasMore=false }
-        if(tab==3) { catalog=library.history().map { it.series }; hasMore=false }
+        if(tab==3) { catalog=library.favorites(); hasMore=false; ranking=null }
+        if(tab==4) { catalog=library.history().map { it.series }; hasMore=false; ranking=null }
         if(load) {
             message(body,"正在加载…"); if(focusType) typeButtons[library.contentType]?.requestFocus() else nav[tab].requestFocus()
             val requestTab=tab; val requestPage=page; val requestQuery=query; val requestType=library.contentType
-            work({ if(requestTab==0) repository.home(requestPage,requestType) else repository.search(requestQuery,requestPage,requestType) }, { result -> catalog=result.items; hasMore=result.hasMore; body.removeAllViews(); catalogGrid(body,focusNav,focusType) }, { problem ->
-                catalog=emptyList(); hasMore=false
+            work({ when(requestTab) { 0 -> repository.home(requestPage,requestType); 2 -> repository.comicRanking(requestPage); else -> repository.search(requestQuery,requestPage,requestType) } }, { result -> catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; rankSubtitle?.text=ranking?.updatedText?.ifBlank { "来源：红果漫剧热播榜" } ?: "来源：红果漫剧热播榜"; body.removeAllViews(); catalogGrid(body,focusNav,focusType) }, { problem ->
+                catalog=emptyList(); hasMore=false; ranking=null; rankSubtitle?.text="榜单加载失败"
                 if(problem is SearchSessionExpiredException) {
                     page=1; catalogFocus=""
                     Toast.makeText(this,"搜索结果已过期，已回到第 1 页刷新",Toast.LENGTH_LONG).show()
@@ -194,9 +209,9 @@ class MainActivity: Activity() {
     }
     private fun catalogGrid(body: LinearLayout,focusNav: Boolean,focusType: Boolean=false) {
         if(catalog.isEmpty()) {
-            message(body,when(tab) { 1 -> if(query.isBlank()) "输入关键词，用遥控器确认搜索" else "没有找到相关${library.contentType.label}，换个关键词试试"; 2 -> "在剧集详情中选择收藏，喜欢的剧就会出现在这里"; 3 -> "播放过的剧集会自动保存在这里"; else -> "本页没有更多内容" })
-            if(tab<=1 && page>1) addButton(body,"上一页") { page--; showCatalog(true) }
-            if(tab<=1 && hasMore) addButton(body,"下一页") { page++; showCatalog(true) }
+            message(body,when(tab) { 1 -> if(query.isBlank()) "输入关键词，用遥控器确认搜索" else "没有找到相关${library.contentType.label}，换个关键词试试"; 3 -> "在剧集详情中选择收藏，喜欢的剧就会出现在这里"; 4 -> "播放过的剧集会自动保存在这里"; else -> "本页没有更多内容" })
+            if(tab<=2 && page>1) addButton(body,"上一页") { page--; showCatalog(true) }
+            if(tab<=2 && hasMore) addButton(body,"下一页") { page++; showCatalog(true) }
             if(focusType) typeButtons[library.contentType]?.requestFocus() else nav[tab].requestFocus()
             return
         }
@@ -207,10 +222,17 @@ class MainActivity: Activity() {
             val line=row(); line.gravity=Gravity.TOP
             items.forEachIndexed { columnIndex,item ->
                 val card=column(); card.minimumHeight=dp(221); card.setPadding(dp(5),dp(5),dp(5),dp(7)); focusStyle(card); card.contentDescription=item.title
-                val image=ImageView(this).apply { scaleType=ImageView.ScaleType.CENTER_CROP; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }; card.addView(image,lp(-1,dp(142))); loadCover(image,item.cover)
+                val position=if(tab==2) ranking?.positions?.get(item.id) else null
+                val artwork=FrameLayout(this); card.addView(artwork,lp(-1,dp(142)))
+                val image=ImageView(this).apply { scaleType=ImageView.ScaleType.CENTER_CROP; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }; artwork.addView(image,FrameLayout.LayoutParams(-1,-1)); loadCover(image,item.cover)
+                if(tab==2) {
+                    val rankLabel=position?.rank?.let { "第 $it 名" } ?: "名次暂无"
+                    artwork.addView(text(rankLabel,15f).apply { setTypeface(null,Typeface.BOLD); setPadding(dp(8),dp(5),dp(8),dp(5)); background=rounded(if((position?.rank ?: Int.MAX_VALUE)<=3) accent else Color.rgb(28,31,39)) },FrameLayout.LayoutParams(-2,-2,Gravity.TOP or Gravity.START))
+                    card.contentDescription="$rankLabel，${item.title}，${position?.heat?.ifBlank { "热度暂无" } ?: "热度暂无"}"
+                }
                 card.addView(text(item.title,15f).apply { maxLines=2; minLines=2; minHeight=dp(46); ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(7),dp(3),0) },lp(-1,-2).apply { weight=1f })
-                val progress=if(tab==3) library.progress(item.id) else null
-                card.addView(text(if(progress!=null) "第 ${progress.episodeIndex+1} 集 · ${formatTime(progress.position)}" else item.badge,12f,muted).apply { maxLines=1; minLines=1; minHeight=dp(19); ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),0,0,0) },lp(-1,-2))
+                val progress=if(tab==4) library.progress(item.id) else null
+                card.addView(text(if(tab==2) position?.heat?.ifBlank { "热度暂无" } ?: "热度暂无" else if(progress!=null) "第 ${progress.episodeIndex+1} 集 · ${formatTime(progress.position)}" else item.badge,12f,if(tab==2) accent else muted).apply { maxLines=1; minLines=1; minHeight=dp(19); ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),0,0,0) },lp(-1,-2))
                 card.setOnClickListener { catalogFocus=item.id; openDetail(item) }
                 card.setOnFocusChangeListener { _,focused -> card.background=rounded(if(focused) Color.rgb(66,43,43) else surface,if(focused) accent else Color.TRANSPARENT); if(focused) { catalogFocus=item.id; scroll.post { scroll.smoothScrollTo(0,line.top) } } }
                 // The row measures its tallest card, then stretches siblings to keep badges aligned.
@@ -220,19 +242,20 @@ class MainActivity: Activity() {
         }
         val paging=row(); paging.gravity=Gravity.CENTER
         var prev: View?=null; var next: View?=null
-        if(tab<=1) {
+        if(tab<=2) {
             prev=addButton(paging,"上一页") { if(page>1) { page--; catalogFocus=""; showCatalog(true) } }.apply { isEnabled=page>1; isFocusable=page>1; alpha=if(page>1) 1f else .4f }
-            paging.addView(text("第 $page 页",14f,muted).apply { gravity=Gravity.CENTER },lp(dp(95),dp(44)))
+            paging.addView(text(if(tab==2 && ranking!=null) "第 $page / ${ranking!!.totalPages} 页" else "第 $page 页",14f,muted).apply { gravity=Gravity.CENTER },lp(dp(if(tab==2) 135 else 95),dp(44)))
             next=addButton(paging,"下一页") { if(hasMore) { page++; catalogFocus=""; showCatalog(true) } }.apply { isEnabled=hasMore; isFocusable=hasMore; alpha=if(hasMore) 1f else .4f }
             list.addView(paging,lp(-1,dp(50)))
         }
         cards.forEachIndexed { index,card ->
             card.nextFocusLeftId=if(index%count==0) card.id else cards[index-1].id
             card.nextFocusRightId=if(index%count==count-1 || index==cards.lastIndex) card.id else cards[index+1].id
-            card.nextFocusUpId=if(index<count) (searchInput?.id ?: typeButtons[library.contentType]?.id ?: nav[tab].id) else cards[index-count].id
+            card.nextFocusUpId=if(index<count) (searchInput?.id ?: typeButtons[library.contentType]?.id ?: rankRefresh?.id ?: nav[tab].id) else cards[index-count].id
             card.nextFocusDownId=if(index+count<cards.size) cards[index+count].id else if(index/count<cards.lastIndex/count) cards.last().id else next?.takeIf { it.isFocusable }?.id ?: prev?.takeIf { it.isFocusable }?.id ?: card.id
         }
-        nav.forEach { it.nextFocusDownId=typeButtons[library.contentType]?.id ?: cards.first().id }
+        nav.forEach { it.nextFocusDownId=typeButtons[library.contentType]?.id ?: rankRefresh?.id ?: cards.first().id }
+        rankRefresh?.nextFocusDownId=cards.first().id
         typeButtons.values.forEach { it.nextFocusDownId=searchInput?.id ?: cards.first().id }
         searchInput?.nextFocusDownId=cards.first().id
         searchButton?.nextFocusDownId=cards[minOf(4,cards.lastIndex)].id

@@ -33,6 +33,61 @@ class ContentRepositoryTest {
         .put("rank_hot-comic-drama/page").put(JSONArray().put(JSONObject().put("key","content")
             .put("routerDataFnName","p").put("routerDataFnArgs",JSONArray().put(payload.toString())))))
 
+    @Test fun comicRankingPreservesSourceRankHeatAndUpdateRatherThanRenumbering() {
+        val payload=rankPayload(2,5)
+        payload.getJSONArray("rankList").getJSONObject(0).put("rank",23).put("heatText","5746万热度")
+        val repo=repository { request ->
+            assertEquals("/rank/hot-comic-drama",request.url.encodedPath)
+            assertEquals("2",request.url.queryParameter("page"))
+            """<script>_ROUTER_DATA={"loaderData":{"rank_hot-comic-drama/page":{"rankKey":"comic","pageNum":2,"updatedText":"9月22日已更新"}}};</script>"""+currentRank(payload)
+        }
+        val result=repo.comicRanking(2)
+        assertNotNull(result.ranking)
+        assertEquals(RankPosition(23,"5746万热度"),result.ranking!!.positions["123"])
+        assertEquals(5,result.ranking.totalPages)
+        assertEquals("9月22日已更新",result.ranking.updatedText)
+        assertTrue(result.hasMore)
+        assertFalse(result.items.single().toJson().has("rank"))
+    }
+
+    @Test fun missingRankIsNotInventedAndLastPageStops() {
+        val result=repository { currentRank(rankPayload(5,5)) }.comicRanking(5)
+        assertNotNull(result.ranking)
+        assertEquals(RankPosition(null,""),result.ranking!!.positions["123"])
+        assertFalse(result.hasMore)
+    }
+
+    @Test fun renderedRankingPreservesPageTwoRankAndHeat() {
+        val repo=repository {
+            """<script>_ROUTER_DATA={"loaderData":{"rank_hot-comic-drama/page":{"rankKey":"comic","pageNum":2,"updatedText":"今日已更新"}}};</script>
+                <article aria-labelledby="rank-title-123"><span class="pc-badge-number-example">21</span>
+                <h2 id="rank-title-123">漫剧</h2><p class="pc-metrics-example"><span>5746万热度</span></p></article>
+                <nav aria-label="榜单分页"><a href="/rank/hot-comic-drama">1</a><span aria-current="page">2</span><a href="/rank/hot-comic-drama?page=5">5</a></nav>"""
+        }
+        val result=repo.comicRanking(2)
+        assertNotNull(result.ranking)
+        assertEquals(RankPosition(21,"5746万热度"),result.ranking!!.positions["123"])
+        assertEquals(5,result.ranking.totalPages)
+        assertEquals("今日已更新",result.ranking.updatedText)
+    }
+
+    @Test fun rankingRejectsUnexpectedPageInsteadOfShowingWrongRanks() {
+        val repo=repository { currentRank(rankPayload(1,5)) }
+        assertThrows(IOException::class.java) { repo.comicRanking(2) }
+        assertThrows(IllegalArgumentException::class.java) { repo.comicRanking(0) }
+    }
+
+    @Test fun renderedLastPageCountsCurrentPageWithoutAnAnchor() {
+        val repo=repository {
+            """<script>_ROUTER_DATA={"loaderData":{"rank_hot-comic-drama/page":{"rankKey":"comic","pageNum":5}}};</script>
+                <article aria-labelledby="rank-title-123"><span class="pc-badge-number-example">81</span><h2 id="rank-title-123">漫剧</h2></article>
+                <nav aria-label="榜单分页"><a href="/rank/hot-comic-drama?page=4">4</a><span aria-current="page">5</span></nav>"""
+        }
+        val result=repo.comicRanking(5)
+        assertEquals(5,result.ranking!!.totalPages)
+        assertFalse(result.hasMore)
+    }
+
     @Test fun comicHomeUsesDedicatedRankAndRealPagination() {
         val repo=repository { request ->
             assertEquals("/rank/hot-comic-drama",request.url.encodedPath)
