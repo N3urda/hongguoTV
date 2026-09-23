@@ -20,10 +20,10 @@ class EpisodePanel(
     private var group=current/20
     private var focused=current
     private fun dp(n: Int)=(n*activity.resources.displayMetrics.density).toInt()
-    private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(Color.WHITE); setPadding(dp(8),dp(6),dp(8),dp(6)) }
+    private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(TvStyle.text); setPadding(dp(8),dp(6),dp(8),dp(6)) }
     private fun button(value: String,active: Boolean=false,action: ()->Unit)=label(value,16f).apply {
         id=View.generateViewId(); gravity=Gravity.CENTER; minHeight=dp(46); isFocusable=true; isFocusableInTouchMode=true
-        fun paint(focus: Boolean) { background=GradientDrawable().apply { setColor(if(focus) Color.rgb(255,99,76) else if(active) Color.rgb(87,53,49) else Color.rgb(31,36,47)); cornerRadius=dp(6).toFloat() } }
+        fun paint(focus: Boolean) { background=GradientDrawable().apply { setColor(if(focus) TvStyle.accent else if(active) Color.rgb(61,39,34) else TvStyle.surface); cornerRadius=dp(6).toFloat() } }
         paint(false); setOnFocusChangeListener { _,hasFocus -> paint(hasFocus) }; setOnClickListener { action() }
     }
     fun show() {
@@ -39,8 +39,8 @@ class EpisodePanel(
     }
     fun dismiss()=dialog.dismiss()
     private fun render() {
-        val content=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(14),dp(12),dp(14),dp(12)); setBackgroundColor(Color.rgb(16,19,27)) }
-        content.addView(label("播放中选集 · 当前第 ${current+1} 集",20f))
+        val content=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(14),dp(12),dp(14),dp(12)); setBackgroundColor(TvStyle.background) }
+        content.addView(label("选集  /  正在看第 ${current+1} 集",20f))
         val actions=LinearLayout(activity)
         val close=button("关闭") { dismiss() }
         lateinit var jump: TextView

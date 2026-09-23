@@ -27,8 +27,8 @@ import java.util.concurrent.Executors
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity: Activity() {
-    private val bg=Color.rgb(16,19,27); private val surface=Color.rgb(31,36,47)
-    private val accent=Color.rgb(255,99,76); private val white=Color.rgb(244,245,248); private val muted=Color.rgb(161,172,190)
+    private val bg=TvStyle.background; private val surface=TvStyle.surface
+    private val accent=TvStyle.accent; private val white=TvStyle.text; private val muted=TvStyle.muted
     private val main=Handler(Looper.getMainLooper())
     private val io=Executors.newFixedThreadPool(3)
     private val repository=ContentRepository()
@@ -169,18 +169,18 @@ class MainActivity: Activity() {
             main.postDelayed(this,1000)
         }
     }
-    private val hideHud=Runnable { if(screen=="player" && !panel && player?.isPlaying==true && !playError) hud.visibility=View.GONE }
+    private val hideHud=Runnable { if(screen=="player" && !panel && player?.isPlaying==true && !playError) hidePlaybackOverlay() }
     private val seekRunnable=Runnable { pendingSeek?.let { player?.seekTo(it) }; pendingSeek=null }
     private fun dp(value: Number)=(value.toFloat()*resources.displayMetrics.density).toInt()
     private fun widthDp()=resources.displayMetrics.widthPixels/resources.displayMetrics.density
     private fun lp(w: Int=LinearLayout.LayoutParams.MATCH_PARENT,h: Int=LinearLayout.LayoutParams.WRAP_CONTENT)=LinearLayout.LayoutParams(w,h)
-    private fun rounded(color: Int,border: Int=Color.TRANSPARENT)=GradientDrawable().apply { setColor(color); cornerRadius=dp(9).toFloat(); setStroke(dp(2),border) }
+    private fun rounded(color: Int,border: Int=Color.TRANSPARENT)=TvStyle.shape(this,color,border)
     private fun text(value: String,size: Float=16f,color: Int=white)=TextView(this).apply { text=value; textSize=size; setTextColor(color); includeFontPadding=false }
     private fun column()=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
     private fun row()=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
     private fun focusStyle(view: View,selected: Boolean=false) {
         view.id=View.generateViewId(); view.isFocusable=true; view.isFocusableInTouchMode=true
-        fun paint(focused: Boolean) { view.background=rounded(if(focused) Color.rgb(66,43,43) else if(selected) Color.rgb(55,39,40) else surface,if(focused) accent else Color.TRANSPARENT) }
+        fun paint(focused: Boolean) { view.background=rounded(if(focused) TvStyle.raised else if(selected) Color.rgb(61,39,34) else surface,if(focused) accent else Color.TRANSPARENT) }
         paint(false); view.setOnFocusChangeListener { _,focused -> paint(focused) }
     }
     private fun button(label: String,selected: Boolean=false,onClick: ()->Unit): TextView = text(label,15f).apply {
@@ -299,6 +299,7 @@ class MainActivity: Activity() {
         collectionReturn=CatalogState(page,catalog,hasMore,ranking); collectionFocus=catalogFocus
         collection=kind; page=1; catalogFocus=""; showCatalog()
     }
+    private fun inlineHomeFilters()=tab==0 && resources.configuration.fontScale<=1.2f && widthDp()>=900
     private fun localCatalog()=tab==3 || tab==4 || collection!=null
     private fun localItems(): List<Series> = when(collection) {
         "hot" -> collectionReturn?.items.orEmpty().filterNot { it.id in library.hidden() }
@@ -316,22 +317,41 @@ class MainActivity: Activity() {
         }
         invalidatePage(); screen="catalog"; releaseCatalogViews(); val container=base()
         if(foreground && library.isLoaded && !favoriteMonitor.running) main.post { if(foreground && screen=="catalog") favoriteMonitor.check() }
-        val top=row(); top.addView(text("红果 TV",24f).apply { setTypeface(null,Typeface.BOLD) },lp(dp(135),dp(48)))
-        listOf("首页","搜索","排行榜","收藏","最近观看","设置").forEachIndexed { index,label -> nav+=addButton(top,label,index==tab) { switchTab(index) } }
+        val top=row().apply { setPadding(0,0,0,dp(8)) }
+        val brand=row()
+        brand.addView(ImageView(this).apply { setImageResource(com.hongguotv.nativeapp.R.drawable.app_icon) },lp(dp(28),dp(28)).apply { rightMargin=dp(9) })
+        brand.addView(text("红果",22f).apply { typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) })
+        top.addView(brand,lp(dp(120),dp(44)))
+        listOf("首页","搜索","排行榜","收藏","最近观看","设置").forEachIndexed { index,label ->
+            val item=addButton(top,label,index==tab) { switchTab(index) }
+            fun paint(focused: Boolean) {
+                item.setTextColor(if(focused) bg else if(index==tab) accent else muted)
+                item.background=rounded(if(focused) white else if(index==tab) Color.rgb(48,32,29) else Color.TRANSPARENT)
+                item.setTypeface(null,if(focused || index==tab) Typeface.BOLD else Typeface.NORMAL)
+            }
+            paint(false); item.setOnFocusChangeListener { _,focused -> paint(focused) }; nav+=item
+        }
         container.addView(top)
+        container.addView(View(this).apply { setBackgroundColor(TvStyle.outline) },lp(-1,dp(1)).apply { bottomMargin=dp(6) })
         if(tab==5) {
             val scroll=ScrollView(this); val body=column(); scroll.addView(body); container.addView(scroll,lp(-1,0).apply { weight=1f })
             settings(body); if(focusNav) nav[tab].requestFocus(); return
         }
         if(tab<=1) {
             val types=row().apply { setPadding(0,dp(8),0,dp(6)) }
-            types.addView(text("内容",15f,muted),lp(dp(55),-2))
+            if(!inlineHomeFilters()) types.addView(text("片库",12f,muted),lp(dp(42),-2))
             ContentType.entries.forEach { type ->
                 typeButtons[type]=addButton(types,type.label,library.contentType==type) { switchContentType(type) }
                     .apply { isSelected=library.contentType==type; nextFocusUpId=nav[tab].id }
             }
-            if(tab==0) types.addView(text("长按确认：收藏 / 稍后看",12f,muted).apply { setPadding(dp(14),0,0,0) })
-            container.addView(types)
+            if(inlineHomeFilters()) {
+                top.addView(Space(this),lp(0,1).apply { weight=1f })
+                typeButtons.values.forEach { view -> (view as TextView).apply { textSize=12f; minHeight=dp(34); setPadding(dp(12),dp(7),dp(12),dp(7)) } }
+                types.setPadding(0,0,0,0); top.addView(types)
+            } else {
+                if(tab==0) types.addView(text("长按确认 · 管理片单",12f,muted).apply { setPadding(dp(14),0,0,0) })
+                container.addView(types)
+            }
             nav.forEach { it.nextFocusDownId=typeButtons.getValue(library.contentType).id }
         }
         if(tab==1) {
@@ -445,27 +465,27 @@ class MainActivity: Activity() {
             if(focusType) typeButtons[library.contentType]?.requestFocus() else if(collectionBack!=null && !focusNav) collectionBack?.requestFocus() else if(focusNav || resumeCards.isEmpty()) nav[tab].requestFocus() else resumeCards.first().requestFocus()
             return
         }
-        val cards=mutableListOf<View>(); val count=5; val gap=dp(10); val width=((resources.displayMetrics.widthPixels*.9f-gap*(count-1))/count).toInt()
+        val cards=mutableListOf<View>(); val count=6; val gap=dp(14); val width=((resources.displayMetrics.widthPixels*.9f-gap*(count-1))/count).toInt()
         displayed.chunked(count).forEach { items ->
             val line=row(); line.gravity=Gravity.TOP
             items.forEachIndexed { columnIndex,item ->
-                val card=column(); card.minimumHeight=if(resources.configuration.fontScale>1.2f) 0 else dp(221); card.setPadding(dp(5),dp(5),dp(5),dp(7)); focusStyle(card); card.contentDescription=item.title; card.tag=item.id; catalogCards[item.id]=card
+                val card=column(); card.setPadding(dp(4),dp(4),dp(4),dp(9)); focusStyle(card); card.contentDescription=item.title; card.tag=item.id; catalogCards[item.id]=card
                 val position=if(tab==2) ranking?.positions?.get(item.id) else null
-                val artwork=FrameLayout(this); card.addView(artwork,lp(-1,dp(if(resources.configuration.fontScale>1.2f) 52 else 142)))
-                val image=ImageView(this).apply { scaleType=ImageView.ScaleType.CENTER_CROP; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }; artwork.addView(image,FrameLayout.LayoutParams(-1,-1)); loadCover(image,item.cover); cardImages[item.id]=image to item.cover
+                val artwork=FrameLayout(this); card.addView(artwork,lp(-1,((width-dp(8))/TvStyle.POSTER_ASPECT).toInt()))
+                val image=ImageView(this).apply { scaleType=ImageView.ScaleType.FIT_CENTER; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }; artwork.addView(image,FrameLayout.LayoutParams(-1,-1)); loadCover(image,item.cover); cardImages[item.id]=image to item.cover
                 if(tab==2) {
                     val rankLabel=position?.rank?.let { "第 $it 名" } ?: "名次暂无"
                     artwork.addView(text(rankLabel,15f).apply { setTypeface(null,Typeface.BOLD); setPadding(dp(8),dp(5),dp(8),dp(5)); background=rounded(if((position?.rank ?: Int.MAX_VALUE)<=3) accent else Color.rgb(28,31,39)) },FrameLayout.LayoutParams(-2,-2,Gravity.TOP or Gravity.START))
                     card.contentDescription="$rankLabel，${item.title}，${position?.heat?.ifBlank { "热度暂无" } ?: "热度暂无"}"
                 }
-                card.addView(text(item.title,15f).apply { maxLines=2; minLines=2; minHeight=dp(46); ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(7),dp(3),0) },lp(-1,-2).apply { weight=1f })
+                card.addView(text(item.title,14f).apply { maxLines=2; minLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(7),dp(3),0) },lp(-1,-2).apply { weight=1f })
                 val progress=if(tab==4 || collection=="resume") library.progress(item.id) else null
-                val badge=text(if(tab==3) library.favoriteLabel(item.id) else if(tab==2) position?.heat?.ifBlank { "热度暂无" } ?: "热度暂无" else if(progress!=null) if(library.watched(item.id)) "整剧已看完" else "第 ${progress.episodeIndex+1} 集 · ${formatTime(progress.position)}" else item.badge,12f,if(tab==2 || tab==3) accent else muted).apply { maxLines=if(tab==3) 2 else 1; minLines=if(tab==3) 2 else 1; minHeight=dp(19); ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),0,0,0) }
+                val badge=text(if(tab==3) library.favoriteLabel(item.id) else if(tab==2) position?.heat?.ifBlank { "热度暂无" } ?: "热度暂无" else if(progress!=null) if(library.watched(item.id)) "整剧已看完" else "第 ${progress.episodeIndex+1} 集 · ${formatTime(progress.position)}" else item.badge,12f,if(tab==2 || tab==3) accent else muted).apply { maxLines=1; minLines=1; minHeight=dp(19); ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),0,0,0) }
                 card.addView(badge,lp(-1,-2)); if(tab==3) favoriteBadges[item.id]=badge
                 card.setOnClickListener { catalogFocus=item.id; openDetail(item,tab==4 || collection=="resume" || collection=="updates") }
                 card.setOnLongClickListener { catalogFocus=item.id; quickActions(item,card); true }
                 card.setOnKeyListener { _,key,event -> if(key==KeyEvent.KEYCODE_MENU) { if(event.action==KeyEvent.ACTION_UP) { catalogFocus=item.id; quickActions(item,card) }; true } else false }
-                card.setOnFocusChangeListener { _,focused -> card.background=rounded(if(focused) Color.rgb(66,43,43) else surface,if(focused) accent else Color.TRANSPARENT); if(focused) { catalogFocus=item.id; loadCover(image,item.cover); preview.show(item,selectionStatus(item)); if(!restoringScroll) scroll.post { scroll.smoothScrollTo(0,when { line.top<scroll.scrollY -> line.top; line.bottom>scroll.scrollY+scroll.height -> (line.bottom-scroll.height).coerceAtLeast(0); else -> scroll.scrollY }) } } }
+                card.setOnFocusChangeListener { _,focused -> card.background=TvStyle.card(this,focused); if(focused) { catalogFocus=item.id; loadCover(image,item.cover); preview.show(item,selectionStatus(item)); if(!restoringScroll) scroll.post { scroll.smoothScrollTo(0,when { line.top<scroll.scrollY -> line.top; line.bottom>scroll.scrollY+scroll.height -> (line.bottom-scroll.height).coerceAtLeast(0); else -> scroll.scrollY }) } } }
                 // The row measures its tallest card, then stretches siblings to keep badges aligned.
                 line.addView(card,lp(width,-1).apply { if(columnIndex<count-1) rightMargin=gap }); cards+=card
             }
@@ -506,16 +526,26 @@ class MainActivity: Activity() {
         val savedScroll=scrollPositions[catalogPageKey]
         scroll.post {
             if(catalogScroll!==scroll) return@post
-            savedScroll?.let { scroll.scrollTo(0,it) }
-            (cards.firstOrNull { it.hasFocus() }?.parent as? View)?.let { line ->
-                val y=when {
-                    line.top<scroll.scrollY -> line.top
-                    line.bottom>scroll.scrollY+scroll.height -> if(line.height>=scroll.height) line.top else line.bottom-scroll.height
-                    else -> scroll.scrollY
-                }
-                scroll.scrollTo(0,y.coerceAtLeast(0))
+            cards.forEach { view ->
+                val card=view as LinearLayout
+                val image=card.getChildAt(0)
+                val textHeight=card.paddingTop+card.paddingBottom+(1 until card.childCount).sumOf { card.getChildAt(it).measuredHeight }
+                val target=minOf(((width-dp(8))/TvStyle.POSTER_ASPECT).toInt(),(scroll.height-textHeight-dp(4)).coerceAtLeast(dp(48)))
+                if(image.layoutParams.height!=target) image.layoutParams=image.layoutParams.apply { height=target }
             }
-            restoringScroll=false
+            scroll.post settle@{
+                if(catalogScroll!==scroll) return@settle
+                savedScroll?.let { scroll.scrollTo(0,it) }
+                (cards.firstOrNull { it.hasFocus() }?.parent as? View)?.let { line ->
+                    val y=when {
+                        line.top<scroll.scrollY -> line.top
+                        line.bottom>scroll.scrollY+scroll.height -> if(line.height>=scroll.height) line.top else line.bottom-scroll.height
+                        else -> scroll.scrollY
+                    }
+                    scroll.scrollTo(0,y.coerceAtLeast(0))
+                }
+                restoringScroll=false
+            }
         }
     }
     private fun selectionStatus(series: Series): String {
@@ -526,7 +556,7 @@ class MainActivity: Activity() {
     private fun renderHome(body: LinearLayout,focusNav: Boolean,focusType: Boolean,loading: Boolean) {
         homeUpdateCount=library.updatedFavorites()
         val preview=SeriesPreview(this); selectionPreview=preview; body.addView(preview)
-        val top=typeButtons.getValue(library.contentType)
+        val top=if(inlineHomeFilters()) nav[0] else typeButtons.getValue(library.contentType)
         val home=HomeScreen(this,top,::loadCover,{ item,label -> preview.show(item,if(label.startsWith("第 ")) selectionStatus(item) else listOf(label,selectionStatus(item)).filter { it.isNotBlank() }.joinToString(" · ")) },
             { item,resume -> openDetail(item,resume) },::quickActions,{ catalogFocus=it })
         homeScreen=home; body.addView(home,lp(-1,0).apply { weight=1f })
@@ -536,7 +566,8 @@ class MainActivity: Activity() {
         home.refresh.text=if(loading) if(homeFromCache) "已显示上次内容 · 正在更新热门…" else "正在更新热门…" else "刷新热门"
         home.refresh.setOnClickListener { showCatalog(true) }
         typeButtons.values.forEach { it.nextFocusDownId=home.firstId() }
-        if(focusNav) nav[0].requestFocus() else if(focusType) top.requestFocus()
+        if(inlineHomeFilters()) nav.forEach { it.nextFocusDownId=home.firstId() }
+        if(focusNav) nav[0].requestFocus() else if(focusType) typeButtons.getValue(library.contentType).requestFocus()
         if(hot.isNotEmpty() && !homeContentLogged) {
             homeContentLogged=true
             body.post { android.util.Log.i("HongguoTV","Home content ready cached=$homeFromCache elapsedMs=${android.os.SystemClock.elapsedRealtime()-activityStarted}") }
@@ -615,28 +646,43 @@ class MainActivity: Activity() {
         }
     }
     private fun settings(parent: LinearLayout) {
-        message(parent,"原生独立版 · ${BuildConfig.VERSION_NAME}")
-        parent.addView(text("安装后联网即可使用，无需服务器地址或 Docker。",18f).apply { setPadding(0,0,0,dp(18)) })
+        parent.addView(text("按你的习惯播放",25f).apply { typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL); setPadding(0,dp(15),0,dp(7)) })
+        parent.addView(text("偏好自动保存，下一部剧继续使用。",13f,muted).apply { setPadding(0,0,0,dp(18)) })
+        val groups=row().apply { gravity=Gravity.TOP }
+        val playback=column(); val device=column()
+        listOf(playback,device).forEachIndexed { i,group ->
+            group.setPadding(dp(16),dp(16),dp(16),dp(16)); group.background=rounded(surface)
+            groups.addView(group,lp(0,-2).apply { weight=1f; if(i==0) rightMargin=dp(16) })
+        }
+        parent.addView(groups)
+        fun heading(group: LinearLayout,title: String,subtitle: String) {
+            group.addView(text(title,18f).apply { setTypeface(null,Typeface.BOLD) })
+            group.addView(text(subtitle,12f,muted).apply { setPadding(0,dp(5),0,dp(15)) })
+        }
+        fun setting(group: LinearLayout,label: String,action: ()->Unit): TextView {
+            val view=button(label,onClick=action).apply {
+                gravity=Gravity.CENTER_VERTICAL; setPadding(dp(13),dp(11),dp(13),dp(11))
+                background=rounded(bg)
+                setOnFocusChangeListener { _,focused -> background=rounded(if(focused) TvStyle.raised else bg,if(focused) accent else Color.TRANSPARENT) }
+            }
+            group.addView(view,lp(-1,-2).apply { bottomMargin=dp(8) })
+            return view
+        }
+        heading(playback,"播放偏好","所有剧集共用，播放中也可调整")
+        heading(device,"片单与设备","保管记录，保持应用更新")
         lateinit var qualityButton: TextView
-        qualityButton=addButton(parent,"全局默认清晰度：${library.maxQuality}P") { showQualityPicker(qualityButton,false) }
+        qualityButton=setting(playback,"默认清晰度  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton,false) }
         lateinit var defaultSpeed: TextView
-        defaultSpeed=addButton(parent,"全局默认倍速：${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(defaultSpeed,false) }
+        defaultSpeed=setting(playback,"默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(defaultSpeed,false) }
         lateinit var frame: TextView
-        frame=addButton(parent,"全局画面模式：${library.frameMode.label}") { showFramePicker(frame,false) }
-        parent.addView(text("所有剧集使用这些默认值，重启后保留。清晰度按片源实际提供的档位选择。",13f,muted).apply { setPadding(0,dp(8),0,dp(12)) })
-        qualityButton.nextFocusUpId=nav[tab].id; nav.forEach { it.nextFocusDownId=qualityButton.id }
+        frame=setting(playback,"画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame,false) }
         lateinit var autoNextButton: TextView
-        autoNextButton=addButton(parent,"自动播放下一集：${if(library.autoNext) "开启" else "关闭"}") {
+        autoNextButton=setting(playback,"自动连播  ·  ${if(library.autoNext) "开启" else "关闭"}") {
             library.autoNext=!library.autoNext
-            autoNextButton.text="自动播放下一集：${if(library.autoNext) "开启" else "关闭"}"
+            autoNextButton.text="自动连播  ·  ${if(library.autoNext) "开启" else "关闭"}"
         }
-        lateinit var hidden: TextView
-        hidden=addButton(parent,"恢复隐藏的热门推荐：${library.hidden().size} 部") {
-            library.unhideAll(); hidden.text="恢复隐藏的热门推荐：0 部"; Toast.makeText(this,"热门推荐已恢复",Toast.LENGTH_SHORT).show()
-        }
-        parent.addView(text("下一集在网络非按流量计费、当前播放稳定后预加载；最多保留一集开头，退出播放即释放。",13f,muted).apply { setPadding(0,dp(8),0,dp(12)) })
         lateinit var backup: TextView
-        backup=addButton(parent,"手机备份与恢复") {
+        backup=setting(device,"手机备份与恢复") {
             runCatching { LibraryBackup.encode(library.snapshot()) }.onSuccess { encoded ->
                 tvTools.libraryTransfer(encoded,backup) { data,restoreSettings ->
                     favoriteMonitor.stop(); library.restore(data,restoreSettings)
@@ -646,11 +692,24 @@ class MainActivity: Activity() {
                 }
             }.onFailure { tvTools.info("无法生成备份","本机记录暂时无法导出，请重试。",backup) }
         }
+        lateinit var hidden: TextView
+        hidden=setting(device,"恢复隐藏推荐  ·  ${library.hidden().size} 部") {
+            library.unhideAll(); hidden.text="恢复隐藏推荐  ·  0 部"; Toast.makeText(this,"热门推荐已恢复",Toast.LENGTH_SHORT).show()
+        }
         lateinit var updates: TextView
-        updates=addButton(parent,"版本与更新") { tvTools.updates(updates) }
-        message(parent,"遥控器：方向键移动焦点，确认键选择；播放时左右快退/快进，确认暂停，向下打开选集菜单。")
-        parent.addView(text("最低 Android 8.0 · Kotlin / Media3\n内容通过互联网读取。收藏与观看记录保存在本机。\n可通过手机备份在本原生版设备间迁移记录。",14f,muted))
-        addButton(parent,"开源许可") { AlertDialog.Builder(this).setTitle("开源许可").setMessage("本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\nBouncy Castle：MIT\n完整源码和许可证见 GitHub：N3urda/hongguoTV，codex/kotlin-standalone 分支。").setPositiveButton("关闭",null).show() }
+        updates=setting(device,"版本与更新  ·  ${BuildConfig.VERSION_NAME}") { tvTools.updates(updates) }
+        val license=setting(device,"开源许可") {
+            AlertDialog.Builder(this).setTitle("开源许可").setMessage("本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\nBouncy Castle：MIT\n完整源码和许可证见 GitHub：N3urda/hongguoTV，codex/kotlin-standalone 分支。").setPositiveButton("关闭",null).show()
+        }
+        val left=listOf(qualityButton,defaultSpeed,frame,autoNextButton); val right=listOf(backup,hidden,updates,license)
+        listOf(left,right).forEach { items -> items.forEachIndexed { index,view ->
+            view.nextFocusUpId=items.getOrNull(index-1)?.id ?: nav[tab].id
+            view.nextFocusDownId=items.getOrNull(index+1)?.id ?: view.id
+        } }
+        left.forEachIndexed { i,v -> v.nextFocusLeftId=v.id; v.nextFocusRightId=right[i].id }
+        right.forEachIndexed { i,v -> v.nextFocusLeftId=left[i].id; v.nextFocusRightId=v.id }
+        nav.forEach { it.nextFocusDownId=qualityButton.id }
+        parent.addView(text("红果 TV  /  ${BuildConfig.VERSION_NAME}    ·    收藏与进度保存在本机",12f,muted).apply { setPadding(dp(2),dp(18),0,dp(10)) })
         nav[tab].requestFocus()
     }
     private fun runSearch(value: String,type: ContentType=library.contentType) {
@@ -692,7 +751,7 @@ class MainActivity: Activity() {
         val body=base("剧集详情")
         val scroll=ScrollView(this).apply { isVerticalScrollBarEnabled=false }; val content=column(); scroll.addView(content); body.addView(scroll,lp(-1,0).apply { weight=1f })
         val hero=row(); hero.gravity=Gravity.TOP; hero.setPadding(0,dp(12),0,dp(12))
-        val image=ImageView(this).apply { scaleType=ImageView.ScaleType.CENTER_CROP }; hero.addView(image,lp(dp(123),dp(174)).apply { rightMargin=dp(24) }); loadCover(image,data.series.cover)
+        val image=ImageView(this).apply { scaleType=ImageView.ScaleType.FIT_CENTER }; hero.addView(image,lp(dp(123),dp(174)).apply { rightMargin=dp(24) }); loadCover(image,data.series.cover)
         val info=column(); hero.addView(info,lp(0,-2).apply { weight=1f })
         info.addView(text(data.series.title,26f).apply { setTypeface(null,Typeface.BOLD); maxLines=2; ellipsize=TextUtils.TruncateAt.END })
         info.addView(text("${data.episodes.size} 集  ·  ${data.series.tags}",13f,muted).apply { maxLines=1; setPadding(0,dp(8),0,dp(8)) })
@@ -773,16 +832,16 @@ class MainActivity: Activity() {
                 setKeepContentOnPlayerReset(true); setShutterBackgroundColor(Color.BLACK); setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
             }
             playerView=view; root.addView(view,FrameLayout.LayoutParams(-1,-1))
-            hud=column().apply { setPadding(dp(widthDp()*.05f),dp(20),dp(widthDp()*.05f),(resources.displayMetrics.heightPixels*.05f).toInt()); setBackgroundColor(Color.argb(215,12,15,22)) }
+            hud=column().apply { setPadding(dp(widthDp()*.05f),dp(20),dp(widthDp()*.05f),(resources.displayMetrics.heightPixels*.05f).toInt()); background=GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,intArrayOf(Color.TRANSPARENT,Color.argb(240,11,15,21))) }
             playbackTitle=text("",23f).apply { maxLines=1; ellipsize=TextUtils.TruncateAt.END; setTypeface(null,Typeface.BOLD) }; hud.addView(playbackTitle)
             playbackText=text("",15f,muted).apply { setPadding(0,dp(10),0,dp(9)) }; hud.addView(playbackText)
             progressBar=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal).apply { max=1000; progressTintList=android.content.res.ColorStateList.valueOf(accent); progressBackgroundTintList=android.content.res.ColorStateList.valueOf(surface) }; hud.addView(progressBar,lp(-1,dp(4)))
-            hud.addView(text("确认 暂停/播放    左右 快退/快进    ↓ 选集    ↑ 更多    返回 退出",13f,muted).apply { setPadding(0,dp(12),0,0) })
+            hud.addView(text("确认 暂停/播放    左右 快退/快进    ↓ 选集    ↑ 更多    返回 收起 / 退出",13f,muted).apply { setPadding(0,dp(12),0,0) })
             controls=column().apply { setPadding(0,dp(12),0,0); visibility=View.GONE }; hud.addView(controls)
             root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled=false; addView(hud) },FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
         }
         playbackTitle.text="${data.series.title}  ·  第 ${episodeIndex+1} 集"
-        playbackText.text="正在获取播放地址…"; progressBar.progress=0; hud.visibility=View.VISIBLE
+        playbackText.text="正在获取播放地址…"; progressBar.progress=0; progressBar.visibility=View.VISIBLE; hidePlaybackOverlay()
         controls.removeAllViews(); controls.visibility=View.GONE; transportPlay=null; sleepButton=null
         syncMediaSession()
         val requestedId=data.episodes[episodeIndex]; val maxQuality=library.maxQuality; val ticket=generation
@@ -809,7 +868,7 @@ class MainActivity: Activity() {
                         }
                         playbackReady=true
                         if(firstReady) { firstReady=false; readySince=android.os.SystemClock.elapsedRealtime(); android.util.Log.i("HongguoTV","Playback ready episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${readySince-playbackStarted}") }
-                        updatePlaybackText(); showHud()
+                        if(hud.visibility==View.VISIBLE) updatePlaybackText()
                     }
                     syncMediaSession()
                     if(state==Player.STATE_ENDED) {
@@ -825,7 +884,7 @@ class MainActivity: Activity() {
                         android.util.Log.i("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-playbackStarted}")
                     }
                 }
-                override fun onIsPlayingChanged(playing: Boolean) { if(active()) { updatePlaybackText(); syncMediaSession(); showHud() } }
+                override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(hud.visibility==View.VISIBLE) showHud(); syncMediaSession() } }
                 override fun onPlaybackParametersChanged(parameters: PlaybackParameters) { if(active()) syncMediaSession() }
                 override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,newPosition: Player.PositionInfo,reason: Int) { if(active()) syncMediaSession() }
                 override fun onPlayerError(error: PlaybackException) { if(active()) playerFailure(error) }
@@ -883,7 +942,7 @@ class MainActivity: Activity() {
     private fun playerFailure(problem: Throwable) {
         retryPosition=currentPosition().coerceAtLeast(0); retryAutoplay=requestedAutoplay && !sleepStopped
         saveProgress(); cancelRecovery(); cancelPrefetch()
-        playError=true; player?.pause(); hud.visibility=View.VISIBLE; controls.removeAllViews(); controls.visibility=View.VISIBLE; panel=true
+        playError=true; player?.pause(); progressBar.visibility=View.GONE; hud.visibility=View.VISIBLE; controls.removeAllViews(); controls.visibility=View.VISIBLE; panel=true
         val decoding=problem is PlaybackException && problem.errorCode in 3000..4999
         val retryable=if(problem is PlaybackException) problem.errorCode in 2000..2999 || problem.errorCode==PlaybackException.ERROR_CODE_TIMEOUT else problem is java.io.IOException
         playbackText.text=if(decoding) "电视无法解码当前视频，可尝试更低清晰度。" else "播放失败，可重试或切换清晰度。"
@@ -896,6 +955,10 @@ class MainActivity: Activity() {
             autoRecovery=true; scheduleRecovery()
         }
         android.util.Log.w("HongguoTV","Playback failure: ${problem.javaClass.simpleName}"+(if(problem is PlaybackException) " code=${problem.errorCodeName}" else ""))
+    }
+    private fun hidePlaybackOverlay() {
+        main.removeCallbacks(hideHud)
+        panel=false; controls.visibility=View.GONE; controls.clearFocus(); hud.visibility=View.GONE
     }
     private fun showHud() {
         if(screen!="player") return
@@ -972,7 +1035,7 @@ class MainActivity: Activity() {
     private fun showFramePicker(anchor: TextView,inPlayer: Boolean) {
         tvTools.choose("全局画面模式",listOf("完整画面 · 保留比例与全部内容","等比铺满 · 会裁掉部分画面与字幕","拉伸铺满 · 画面比例会改变"),anchor,{ index ->
             library.frameMode=VideoFrameMode.entries[index]; playerView?.resizeMode=frameResizeMode()
-            if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "画面 " else "全局画面模式：")+library.frameMode.label
+            if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "画面 " else "画面模式  ·  ")+library.frameMode.label
         })
     }
     private fun seek(direction: Int,repeat: Int) {
@@ -1016,7 +1079,7 @@ class MainActivity: Activity() {
             .setSingleChoiceItems(speeds.map(PlaybackSpeed::label).toTypedArray(),selected) { popup,index ->
                 library.playbackSpeed=speeds[index]
                 if(inPlayer) player?.setPlaybackSpeed(library.playbackSpeed)
-                if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "倍速 " else "全局默认倍速：")+PlaybackSpeed.label(library.playbackSpeed)
+                if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "倍速 " else "默认倍速  ·  ")+PlaybackSpeed.label(library.playbackSpeed)
                 if(inPlayer) updatePlaybackText()
                 popup.dismiss()
             }.setNegativeButton("取消",null).create()
@@ -1033,7 +1096,7 @@ class MainActivity: Activity() {
             .setSingleChoiceItems(options.map { "${it}P" }.toTypedArray(),options.indexOf(library.maxQuality)) { popup,index ->
                 val target=options[index]; val changed=library.maxQuality!=target
                 library.maxQuality=target; popup.dismiss()
-                if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "清晰度 " else "全局默认清晰度：")+"${target}P"
+                if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "清晰度 " else "默认清晰度  ·  ")+"${target}P"
                 if(inPlayer && changed) playEpisode(episodeIndex,currentPosition(),player?.playWhenReady ?: requestedAutoplay)
             }.setNegativeButton("取消",null).create()
         dialog.setOnDismissListener { if(anchor.isAttachedToWindow) anchor.requestFocus() }
@@ -1043,6 +1106,7 @@ class MainActivity: Activity() {
         val data=detail ?: return
         if(episodePanel!=null) return
         val ticket=generation
+        val overlayWasVisible=hud.visibility==View.VISIBLE
         requestedAutoplay=player?.playWhenReady ?: requestedAutoplay
         player?.pause(); saveProgress()
         var resumeOnClose=true
@@ -1057,7 +1121,7 @@ class MainActivity: Activity() {
                 if(resumeOnClose && foreground && generation==ticket && screen=="player") {
                     if(requestedAutoplay && !sleepStopped && !pausedForLifecycle) player?.play()
                     if(anchor.isAttachedToWindow) anchor.requestFocus()
-                    showHud()
+                    if(overlayWasVisible) showHud() else hidePlaybackOverlay()
                 }
             })
         episodePanel=next; next.show()
@@ -1086,7 +1150,7 @@ class MainActivity: Activity() {
     private fun goBack() {
         if(!library.isLoaded) { finish(); return }
         when(screen) {
-            "player" -> if(panel && !playError) hidePanel() else returnToDetail()
+            "player" -> if(hud.visibility==View.VISIBLE && !playError) hidePlaybackOverlay() else returnToDetail()
             "detail" -> showCatalog()
             else -> if(collection!=null) { leaveCollection(); showCatalog() } else if(nav.any { it.hasFocus() }) { if(tab!=0) { switchTab(0); nav[0].requestFocus() } else finish() } else nav.getOrNull(tab)?.requestFocus()
         }

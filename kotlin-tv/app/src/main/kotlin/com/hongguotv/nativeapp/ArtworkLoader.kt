@@ -22,7 +22,6 @@ import java.util.PriorityQueue
 import java.util.WeakHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 
@@ -268,32 +267,21 @@ class ArtworkLoader(context: Context) {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth !in 1..32768 || bounds.outHeight !in 1..32768) return null
-        val originalScale = min(1.0, min(bounds.outWidth.toDouble() / job.key.width, bounds.outHeight.toDouble() / job.key.height))
-        val width = max(1, (job.key.width * originalScale).toInt())
-        val height = max(1, (job.key.height * originalScale).toInt())
-        val coverScale = max(width.toDouble() / bounds.outWidth, height.toDouble() / bounds.outHeight)
-        val neededWidth = ceil(bounds.outWidth * coverScale).toInt()
-        val neededHeight = ceil(bounds.outHeight * coverScale).toInt()
+        // Fit the entire source into the measured target. Cropping at decode time cannot be
+        // undone by ImageView.FIT_CENTER and used to remove most of a portrait poster.
+        val fit = min(1.0, min(job.key.width.toDouble() / bounds.outWidth, job.key.height.toDouble() / bounds.outHeight))
+        val width = max(1, (bounds.outWidth * fit).toInt())
+        val height = max(1, (bounds.outHeight * fit).toInt())
         var sample = 1
-        while (bounds.outWidth / (sample * 2) >= neededWidth && bounds.outHeight / (sample * 2) >= neededHeight) sample *= 2
-        // Extremely panoramic source images must not allocate a huge intermediate just to crop a card.
+        while (bounds.outWidth / (sample * 2) >= width && bounds.outHeight / (sample * 2) >= height) sample *= 2
         if ((bounds.outWidth / sample).toLong() * (bounds.outHeight / sample) > (if (lowRam) 2 else 4) * 1024 * 1024) return null
         val options = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
-        var temporary = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
-        try {
-            if (job.cancelled) return null
-            val decodedScale = max(width.toDouble() / temporary.width, height.toDouble() / temporary.height)
-            val scaled = Bitmap.createScaledBitmap(temporary, max(width, ceil(temporary.width * decodedScale).toInt()), max(height, ceil(temporary.height * decodedScale).toInt()), true)
-            if (scaled !== temporary) { temporary.recycle(); temporary = scaled }
-            val cropped = Bitmap.createBitmap(temporary, (temporary.width - width) / 2, (temporary.height - height) / 2, width, height)
-            if (cropped !== temporary) temporary.recycle()
-            if (job.cancelled) { cropped.recycle(); return null }
-            return cropped
-        } catch (problem: Throwable) {
-            temporary.recycle()
-            throw problem
-        } finally {
-            if (job.cancelled && !temporary.isRecycled) temporary.recycle()
-        }
+        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+        if (job.cancelled) { decoded.recycle(); return null }
+        val result = try { Bitmap.createScaledBitmap(decoded, width, height, true) }
+        catch (problem: Throwable) { decoded.recycle(); throw problem }
+        if (result !== decoded) decoded.recycle()
+        if (job.cancelled) { result.recycle(); return null }
+        return result
     }
 }
