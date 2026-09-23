@@ -3,12 +3,10 @@ package com.hongguotv.nativeapp
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -162,19 +160,6 @@ class TvTools(private val activity: Activity) {
                     instructions.addView(label(session.url,12f)); row.addView(instructions,LinearLayout.LayoutParams(0,-2,1f)); content.addView(row)
                 }
             } catch(_: Exception) { main.post { if(dialog===next) status.text="无法开启备份传输，请检查网络后重试。" } }
-        }
-    }
-    fun updates(anchor: View?) {
-        // Private GitHub downloads stay in the user's authenticated browser. Never embed a PAT.
-        val url="https://github.com/N3urda/hongguoTV/releases"
-        val row=LinearLayout(activity).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(16),dp(8),dp(16),dp(8)) }
-        row.addView(qr(url),LinearLayout.LayoutParams(dp(175),dp(175)))
-        row.addView(label("当前版本 ${BuildConfig.VERSION_NAME}\n\n手机扫码查看新版、下载 APK。私有仓库需先登录有权限的 GitHub 账号。\n\n使用同一发布签名的新版可覆盖安装并保留记录。",16f),LinearLayout.LayoutParams(0,-2,1f))
-        val next=AlertDialog.Builder(activity).setTitle("版本与更新").setView(row).setNegativeButton("关闭",null).setPositiveButton("电视浏览器打开",null).create()
-        open(next,anchor)
-        next.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            try { activity.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(url))) }
-            catch(_: android.content.ActivityNotFoundException) { Toast.makeText(activity,"电视未安装浏览器，请用手机扫码打开",Toast.LENGTH_LONG).show() }
         }
     }
 }

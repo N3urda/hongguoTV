@@ -6,6 +6,7 @@ local.properties
 
 # Build and dependency output
 .gradle/
+.kotlin/
 build/
 dist/
 node_modules/
