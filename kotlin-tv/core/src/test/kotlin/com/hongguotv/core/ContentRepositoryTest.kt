@@ -12,6 +12,36 @@ import org.junit.Test
 import java.io.IOException
 
 class ContentRepositoryTest {
+    private fun streamRepository(vararg variants: Triple<Int,String,String>) = repository { request ->
+        if(request.url.host=="example.com") {
+            val rows=JSONObject()
+            variants.forEachIndexed { index,(height,codec,url) -> rows.put("video_$index",JSONObject().put("vheight",height).put("codec_type",codec).put("main_url",url)) }
+            JSONObject().put("video_info",JSONObject().put("data",JSONObject().put("video_list",rows))).toString()
+        } else """{"data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}"""
+    }
+
+    @Test fun incompatibleByteVc2DoesNotBecomeAudioOnlyPlayback() {
+        val repo=streamRepository(Triple(720,"bytevc2","https://example.com/unsupported"),Triple(1080,"bytevc1","https://example.com/hevc"))
+        val result=repo.stream("123",720)
+        assertEquals("https://example.com/hevc",result.url)
+        assertEquals("1080P（兼容资源）",result.quality)
+    }
+
+    @Test fun compatibleLowerQualityWinsBeforeHigherResolutionFallback() {
+        val repo=streamRepository(Triple(720,"bytevc2","https://example.com/unsupported"),Triple(480,"h264","https://example.com/avc"),Triple(1080,"bytevc1","https://example.com/hevc"))
+        assertEquals("480P",repo.stream("123",720).quality)
+    }
+
+    @Test fun entirelyIncompatibleSourceFailsBeforeStartingAudio() {
+        val repo=streamRepository(Triple(720,"ByteVC2","https://example.com/unsupported"),Triple(480,"bvc2","https://example.com/unsupported2"))
+        assertThrows(IOException::class.java) { repo.stream("123",720) }
+    }
+
+    @Test fun legacyMissingCodecLabelKeepsQualityLimit() {
+        val repo=streamRepository(Triple(720,"","https://example.com/legacy"),Triple(1080,"bytevc1","https://example.com/hevc"))
+        assertEquals("720P",repo.stream("123",720).quality)
+    }
+
     private fun repository(clock: () -> Long = System::currentTimeMillis, respond: (Request) -> String) = ContentRepository(
         OkHttpClient.Builder().addInterceptor { chain ->
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)

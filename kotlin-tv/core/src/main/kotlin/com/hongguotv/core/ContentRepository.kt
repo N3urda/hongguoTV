@@ -33,14 +33,14 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         val request = Request.Builder().url(url).header("User-Agent",VendorConstants.VIDEO_UA).header("Accept-Language","zh-CN,zh;q=0.9")
         signed?.headers?.forEach { (k,v) -> request.header(k,v) }
         signed?.body?.let { request.post(it.toRequestBody("application/json; charset=utf-8".toMediaType())) }
-        http.newCall(request.build()).execute().use { response ->
+        return RequestScope.execute(http.newCall(request.build())) { response ->
             if (!response.isSuccessful) throw IOException("内容请求失败（HTTP ${response.code}）")
             val body = response.body ?: throw IOException("内容响应为空")
             if (body.contentLength() > 16*1024*1024) throw IOException("内容响应过大")
             val input=body.byteStream(); val out=java.io.ByteArrayOutputStream(); val buffer=ByteArray(8192)
             while(out.size()<=16*1024*1024) { val n=input.read(buffer); if(n<0) break; out.write(buffer,0,n) }; val bytes=out.toByteArray()
             if(bytes.size > 16*1024*1024) throw IOException("内容响应过大")
-            return String(bytes,Charsets.UTF_8)
+            String(bytes,Charsets.UTF_8)
         }
     }
     private fun router(url: String) = extractRouter(text(url)).getJSONObject("loaderData")
@@ -137,13 +137,18 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         if(!fallback.startsWith("https://")) throw IOException("播放地址格式异常")
         val info=JSONObject(text(fallback)).optJSONObject("video_info")?.optJSONObject("data") ?: throw IOException("没有播放资源")
         val videoList=info.optJSONObject("video_list") ?: throw IOException("没有可用清晰度")
-        val rows=videoList.keys().asSequence().mapNotNull { k -> videoList.optJSONObject(k)?.let { k to it } }.filter { it.second.str("main_url").isNotEmpty() }.map { (k,o) -> Triple(qualityNumber(o.str("quality_desc").ifEmpty { o.str("height").ifEmpty { o.str("vheight").ifEmpty { o.str("quality").ifEmpty { k } } } }),k,o) }.sortedByDescending { it.first }.toList()
-        val selected=rows.firstOrNull { it.first<=maxQuality } ?: rows.lastOrNull() ?: throw IOException("没有可用清晰度")
+        // ByteVC2 resources can expose playable audio but no video track in Android's MP4 extractor.
+        // Keep missing legacy codec labels usable, but never select a known incompatible variant.
+        val rows=videoList.keys().asSequence().mapNotNull { k -> videoList.optJSONObject(k)?.let { k to it } }.filter {
+            it.second.str("main_url").isNotEmpty() && it.second.str("codec_type").lowercase() !in setOf("bytevc2","bvc2")
+        }.map { (k,o) -> Triple(qualityNumber(o.str("quality_desc").ifEmpty { o.str("height").ifEmpty { o.str("vheight").ifEmpty { o.str("quality").ifEmpty { k } } } }),k,o) }.sortedByDescending { it.first }.toList()
+        val selected=rows.firstOrNull { it.first<=maxQuality } ?: rows.lastOrNull() ?: throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
         val item=selected.third; var url=cleanUrl(item.str("main_url")); val seed=info.str("key_seed")
         if(seed.isNotEmpty()) url=MediaCrypto.decryptUrl(url,decode64(seed))
         if(!url.startsWith("https://") && !url.startsWith("http://")) throw IOException("播放地址无效")
         val key=item.str("spade_a").takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
-        return StreamInfo(url,key,if(selected.first>0) "${selected.first}P" else "自动")
+        val quality=if(selected.first>0) "${selected.first}P"+(if(selected.first>maxQuality) "（兼容资源）" else "") else "自动"
+        return StreamInfo(url,key,quality)
     }
     companion object {
         fun extractRouter(html: String): JSONObject {

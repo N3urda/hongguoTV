@@ -22,7 +22,7 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo): Closeab
         val call=http.newCall(request)
         synchronized(calls) { if(closed) throw IOException("播放请求已取消"); calls+=call }
         try {
-            call.execute().use { response ->
+            return RequestScope.execute(call) { response ->
                 if(response.code!=206) throw IOException("视频服务器不支持分段读取（HTTP ${response.code}）")
                 val match=Regex("bytes (\\d+)-(\\d+)/(\\d+)").matchEntire(response.header("Content-Range").orEmpty()) ?: throw IOException("视频分段响应异常")
                 val (begin,finish,size)=match.destructured
@@ -31,7 +31,7 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo): Closeab
                 if(total!=0L && full!=total) throw IOException("视频资源已变化，请重试")
                 val n=(last-start+1).toInt(); val body=response.body ?: throw IOException("视频分段为空")
                 val bytes=body.source().readByteArray(n.toLong())
-                return Range(bytes,full)
+                Range(bytes,full)
             }
         } finally { synchronized(calls) { calls-=call } }
     }
