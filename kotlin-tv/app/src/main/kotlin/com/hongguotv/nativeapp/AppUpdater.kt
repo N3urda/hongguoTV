@@ -78,7 +78,11 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
     fun interrupt() {
         generation++; task?.cancel(true); task = null; repository.cancel(); busy = false
     }
-    fun destroy() { pause(); worker.shutdownNow(); repository.close() }
+    fun destroy() {
+        pause(); worker.shutdownNow()
+        // TLS socket close may send close_notify; it must not run on Android's main thread.
+        Thread({ repository.close() }, "hongguotv-update-cleanup").start()
+    }
     private fun updateStatus(text: String) { status = text; statusView?.text = text }
     private fun deferred(update: AppUpdate) = preferences.getLong("deferred_code", 0) == update.versionCode && preferences.getLong("deferred_until", 0) > System.currentTimeMillis()
     private fun renderActions() {
