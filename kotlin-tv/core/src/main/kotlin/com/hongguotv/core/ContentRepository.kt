@@ -8,11 +8,15 @@ import okhttp3.MediaType.Companion.toMediaType
 import org.json.JSONObject
 import org.json.JSONArray
 import java.io.IOException
+import java.net.URLEncoder
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 internal fun JSONArray.objects() = (0 until length()).mapNotNull { optJSONObject(it) }
 internal fun JSONObject.str(key: String) = if (isNull(key)) "" else optString(key, "").trim()
 internal fun cleanUrl(s: String) = s.replace("\\/","/").replace("\\u002F","/",ignoreCase=true).replace("\\u0026","&").replace("&amp;","&")
+private const val PLAYER_UA = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)"
+private fun randomDeviceId(): String { val b=StringBuilder("3"); repeat(18) { b.append(kotlin.random.Random.nextInt(10)) }; return b.toString() }
 data class Series(val id: String, val title: String, val cover: String = "", val description: String = "", val badge: String = "", val tags: String = "") {
     fun toJson() = JSONObject().put("id",id).put("title",title).put("cover",cover).put("description",description).put("badge",badge).put("tags",tags)
     companion object { fun fromJson(o: JSONObject) = Series(o.str("id"),o.str("title"),o.str("cover"),o.str("description"),o.str("badge"),o.str("tags")) }
@@ -27,6 +31,24 @@ class SearchSessionExpiredException: IOException("搜索结果已过期，请从
 class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build(), private val clock: () -> Long = System::currentTimeMillis) {
     private val signer = Signer()
     private val site = "https://hongguoduanju.com"
+    // The player cluster rejects signed player requests (empty body / Code 110001) and the shared
+    // device constants bundled with VendorConstants are flagged as well, so playback is requested
+    // unsigned with per-launch identifiers. Endpoint, payload and response format are unchanged.
+    private val playerDevice: Map<String, String> = VendorConstants.device + linkedMapOf(
+        "iid" to randomDeviceId(), "device_id" to randomDeviceId(), "cdid" to UUID.randomUUID().toString()
+    )
+    private fun postPlayer(url: String, payload: ByteArray): String {
+        val request = Request.Builder().url(url)
+            .header("User-Agent", PLAYER_UA)
+            .header("Accept", "application/json; charset=utf-8,application/x-protobuf")
+            .header("Content-Type", "application/json; charset=utf-8")
+            .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+        return RequestScope.execute(http.newCall(request)) { response ->
+            if (!response.isSuccessful) throw IOException("播放接口网络错误（HTTP ${response.code}）")
+            response.body?.string() ?: throw IOException("播放接口响应为空")
+        }
+    }
     private data class SearchCursor(val searchId: String, val passback: String, val offset: Int?, val updatedAt: Long)
     private val searchCursors=linkedMapOf<Triple<ContentType,String,Int>,SearchCursor>()
     private fun text(url: String, signed: Signer.Request? = null): String {
@@ -126,8 +148,8 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     fun stream(id: String, maxQuality: Int = 1080): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
         val payload="""{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]}}""".toByteArray()
-        val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",VendorConstants.device,payload)
-        val data=JSONObject(text(signed.url,signed))
+        val query=(playerDevice+("_rticket" to clock().toString())).entries.joinToString("&"){(k,v)->"${URLEncoder.encode(k,"UTF-8")}=${URLEncoder.encode(v,"UTF-8").replace("+","%20")}"}
+        val data=JSONObject(postPlayer("https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$query",payload))
         if(data.optInt("Code",data.optInt("code",0))!=0) throw IOException("播放接口暂不可用")
         val map=data.optJSONObject("data") ?: throw IOException("播放信息为空")
         val entry=map.optJSONObject(id) ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull() ?: throw IOException("播放信息为空")
