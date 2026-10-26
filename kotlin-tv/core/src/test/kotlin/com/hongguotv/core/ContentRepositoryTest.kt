@@ -163,7 +163,8 @@ class ContentRepositoryTest {
         val requests=mutableListOf<Request>()
         val repo=repository { request ->
             requests+=request
-            JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(19,"999")
+            if(request.url.encodedPath.startsWith("/category/comic-drama")) catalogPagePayload(request.url.queryParameter("page")?.toInt() ?: 1,2,"661",title="仙尊漫画")
+            else JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(19,"999")
                 .put("search_id","comic-session").put("passback","comic-cursor").put("next_offset",25))).toString()
         }
         repo.search("修仙",1,ContentType.COMIC)
@@ -171,25 +172,28 @@ class ContentRepositoryTest {
         assertEquals("comic-session",requests[1].url.queryParameter("search_id"))
         assertEquals("comic-cursor",requests[1].url.queryParameter("passback"))
         assertEquals("25",requests[1].url.queryParameter("offset"))
-        assertThrows(SearchSessionExpiredException::class.java) { repo.search("重生",2,ContentType.COMIC) }
-        assertEquals(2,requests.size)
+        // 新词没有游标：第 2 页先试一次接口（不带旧词游标），再静默落到类型目录。
+        repo.search("重生",2,ContentType.COMIC)
+        assertEquals(null,requests[2].url.queryParameter("search_id"))
+        assertEquals(null,requests[2].url.queryParameter("passback"))
     }
 
     @Test fun expiredCursorRequestsFreshSearchInsteadOfDuplicateOffsetPage() {
         var now=0L
-        var requests=0
-        val repo=repository(clock={ now }) {
-            requests++
-            JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(19,"999")
+        val requests=mutableListOf<Request>()
+        val repo=repository(clock={ now }) { request ->
+            requests+=request
+            if(request.url.encodedPath.startsWith("/category/comic-drama")) catalogPagePayload(1,1,"661",title="修仙漫画")
+            else JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(19,"999")
                 .put("search_id","session").put("passback","cursor"))).toString()
         }
         repo.search("修仙",1,ContentType.COMIC)
         now=300001L
-        assertThrows(SearchSessionExpiredException::class.java) { repo.search("修仙",2,ContentType.COMIC) }
-        assertEquals(1,requests)
-        repo.search("修仙",1,ContentType.COMIC)
-        repo.search("修仙",2,ContentType.COMIC)
-        assertEquals(3,requests)
+        // 游标过期（>5 分钟）：过期在发请求**之前**就抛——fqnovel 只被问第 1 页这一次，
+        // 第 2 页静默落到类型目录补页（comic-drama payload 的「仙尊漫画」命中）。
+        val page2=repo.search("修仙",2,ContentType.COMIC)
+        assertEquals(1,requests.count { it.url.host.endsWith("fqnovel.com") })
+        assertEquals(listOf("661"),page2.items.map { it.id })
     }
 
     @Test fun shortHomeStillUsesCategoryAndStopsOnLastPage() {
@@ -202,9 +206,142 @@ class ContentRepositoryTest {
         assertFalse(result.hasMore)
     }
 
-    private fun searchTab(type: Int,id: String) = JSONObject().put("tab_type",type).put("has_more",true)
+    private fun suggestionPayload(vararg entries: Pair<String,String?>): String {
+        // Pair<名称, series_id?>：series_id 为 null 表示纯查询词条目。
+        val rows=JSONArray()
+        entries.forEach { (name,sid) ->
+            val row=JSONObject().put("name",name).put("word_type","short_play_name")
+            if(sid!=null) row.put("video_data",JSONObject().put("series_id",sid)
+                .put("series_name",name).put("series_cover","https://example.com/$sid.jpg").put("episode_cnt",8))
+            rows.put(row)
+        }
+        return JSONObject().put("suggest_list",rows).toString()
+    }
+
+    @Test fun suggestionSearchIsTypedByComicCatalogMembership() {
+        val repo=repository { request ->
+            when {
+                request.url.encodedPath.startsWith("/incent_resource/suggestion") ->
+                    suggestionPayload("仙尊漫剧" to "111","仙尊短剧" to "456","随便一词" to null)
+                request.url.encodedPath=="/category/comic-drama" ->
+                    """<script>_ROUTER_DATA={"loaderData":{"category_${'$'}":{"recommendList":[{"series_id":"111","series_name":"仙尊漫剧"}],"pagination":{"totalPages":1}}}};</script>"""
+                else -> throw IOException("unexpected ${request.url}")
+            }
+        }
+        // 漫剧搜索：suggestion 的 111 在漫画目录里 → 收；456 不在 → 绝不混进漫剧结果。
+        val comic=repo.search("仙尊",1,ContentType.COMIC)
+        assertEquals(listOf("111"),comic.items.map { it.id })
+        assertEquals("https://example.com/111.jpg",comic.items.single().cover)
+        // 短剧搜索：456 不在漫画目录 → 收；111 在 → 绝不混进短剧结果。
+        val short=repo.search("仙尊",1,ContentType.SHORT)
+        assertEquals(listOf("456"),short.items.map { it.id })
+    }
+
+    @Test fun suggestionSearchSkippedWhenComicCatalogWalkFails() {
+        // 漫画目录不可用 → 没有类型信息 → 宁可走目录慢路径，也不放行无类型条目（防混排回潮）。
+        val repo=repository { request ->
+            when {
+                request.url.encodedPath.startsWith("/incent_resource/suggestion") ->
+                    suggestionPayload("仙尊短剧" to "456")
+                request.url.encodedPath=="/category/comic-drama" -> throw IOException("catalog down")
+                request.url.encodedPath=="/category/real-drama" ->
+                    """<script>_ROUTER_DATA={"loaderData":{"category_${'$'}":{"recommendList":[{"series_id":"771","series_name":"仙尊归来"}],"pagination":{"totalPages":1}}}};</script>"""
+                else -> throw IOException("unexpected ${request.url}")
+            }
+        }
+        val result=repo.search("仙尊",1,ContentType.SHORT)
+        assertEquals(listOf("771"),result.items.map { it.id })
+    }
+
+    @Test fun searchAllTagsTypeAndAspectPerItem() {
+        val repo=repository { request ->
+            when {
+                request.url.encodedPath.startsWith("/incent_resource/suggestion") ->
+                    suggestionPayload("仙尊漫剧" to "111","仙尊短剧" to "456","随便一词" to null)
+                request.url.encodedPath=="/category/comic-drama" ->
+                    """<script>_ROUTER_DATA={"loaderData":{"category_${'$'}":{"recommendList":[{"series_id":"111","series_name":"仙尊漫剧"}],"pagination":{"totalPages":1}}}};</script>"""
+                else -> throw IOException("unexpected ${request.url}")
+            }
+        }
+        val page=repo.searchAll("仙尊",1)
+        val comic=page.items.single { it.id=="111" }
+        val short=page.items.single { it.id=="456" }
+        assertEquals("comic",comic.kind); assertEquals("漫剧 · 横屏 16:9",comic.badge)
+        assertEquals("short",short.kind); assertEquals("短剧 · 竖屏 9:16",short.badge)
+        // 纯查询词条目（无 series）不进结果。
+        assertEquals(2,page.items.size)
+        // 本机实测优先于类型默认档（默认已是 9:16，实测 16:9 覆盖它）。
+        val measured=repo.searchAll("仙尊",1,mapOf("456" to "16:9"))
+        assertEquals("短剧 · 横屏 16:9",measured.items.single { it.id=="456" }.badge)
+    }
+
+    @Test fun searchAllCatalogContinuationCoversBothTypes() {
+        val repo=repository { request ->
+            when {
+                request.url.encodedPath.startsWith("/incent_resource/suggestion") -> suggestionPayload()
+                request.url.encodedPath=="/category/comic-drama" ->
+                    """<script>_ROUTER_DATA={"loaderData":{"category_${'$'}":{"recommendList":[{"series_id":"111","series_name":"仙尊漫剧传"}],"pagination":{"totalPages":1}}}};</script>"""
+                request.url.encodedPath=="/category/real-drama" ->
+                    """<script>_ROUTER_DATA={"loaderData":{"category_${'$'}":{"recommendList":[{"series_id":"456","series_name":"仙尊短剧记"}],"pagination":{"totalPages":1}}}};</script>"""
+                else -> throw IOException("unexpected ${request.url}")
+            }
+        }
+        // 第 1 页 suggestion 命中不到（空 suggest_list）→ 落到目录扫描：两本目录都扫、各自标注。
+        val page=repo.searchAll("仙尊",1)
+        assertEquals(setOf("111","456"),page.items.map { it.id }.toSet())
+        assertEquals("comic",page.items.single { it.id=="111" }.kind)
+        assertEquals("short",page.items.single { it.id=="456" }.kind)
+    }
+
+    private fun searchTab(type: Int,id: String,title: String="测试剧集") = JSONObject().put("tab_type",type).put("has_more",true)
         .put("data",JSONArray().put(JSONObject().put("video_data",JSONArray().put(JSONObject()
-            .put("series_id",id).put("title","测试剧集").put("episode_cnt",8)))))
+            .put("series_id",id).put("title",title).put("episode_cnt",8)))))
+
+    @Test fun comicSearchNeverReturnsShortDramaItems() {
+        // 漫剧搜索只能得到漫剧条目：响应里同时带着短剧 tab，也绝不能拿来填。
+        val repo=repository {
+            JSONObject().put("code",0).put("search_tabs",JSONArray()
+                .put(searchTab(11,"111","真人短剧甲")).put(searchTab(19,"999","漫剧乙"))).toString()
+        }
+        val result=repo.search("修仙",1,ContentType.COMIC)
+        assertEquals(listOf("999"),result.items.map { it.id })
+        assertEquals(listOf("漫剧乙"),result.items.map { it.title })
+    }
+
+    @Test fun shortSearchNeverReturnsComicItems() {
+        // 反过来也一样，而且特意把漫剧 tab 放在第一位：证明不是"取第一个 tab"。
+        val repo=repository {
+            JSONObject().put("code",0).put("search_tabs",JSONArray()
+                .put(searchTab(19,"999","漫剧乙")).put(searchTab(11,"111","真人短剧甲"))).toString()
+        }
+        val result=repo.search("修仙",1,ContentType.SHORT)
+        assertEquals(listOf("111"),result.items.map { it.id })
+        assertEquals(listOf("真人短剧甲"),result.items.map { it.title })
+    }
+
+    @Test fun sameKeywordStaysIndependentAcrossContentTypes() {
+        // 同一个关键词在两类里各搜一次，结果集与游标都不串味。
+        val repo=repository {
+            JSONObject().put("code",0).put("search_tabs",JSONArray()
+                .put(searchTab(11,"111","短剧·同一关键词")).put(searchTab(19,"999","漫剧·同一关键词"))).toString()
+        }
+        assertEquals(listOf("111"),repo.search("修仙",1,ContentType.SHORT).items.map { it.id })
+        assertEquals(listOf("999"),repo.search("修仙",1,ContentType.COMIC).items.map { it.id })
+    }
+
+    @Test fun blankAppSearchBodyFallsBackToWebsiteImmediately() {
+        // 空响应体（设备未在服务端注册）必须一次即判死，不再重发拖慢首屏；
+        // 官网之前会先试一次 suggestion 分型（其漫画目录探测失败即跳过，不拖第二腿）。
+        val paths=mutableListOf<String>()
+        val repo=repository { request ->
+            paths+=request.url.encodedPath
+            if(paths.size==1) ""
+            else """<script>_ROUTER_DATA={"loaderData":{"search_page":{"searchList":[{"series_id":"456","series_name":"测试短剧"}]}}}};</script>"""
+        }
+        assertEquals("456",repo.search("短剧",1,ContentType.SHORT).items.single().id)
+        // appSearch(空) → 漫画目录探测(失败即弃) → 官网快路径。
+        assertEquals(3,paths.size)
+    }
 
     @Test fun comicSearchRequestsAndSelectsOnlyComicTab() {
         var requests=0
@@ -228,10 +365,42 @@ class ContentRepositoryTest {
     }
 
     @Test fun missingComicTabDoesNotFallBackToShortResults() {
-        var requests=0
-        val repo=repository { requests++; """{"code":0,"search_tabs":[{"tab_type":11,"data":[]}]}""" }
-        assertThrows(IOException::class.java) { repo.search("修仙",1,ContentType.COMIC) }
-        assertEquals(1,requests)
+        // 接口缺漫剧 tab、官网搜索也没有有效数据 → 落到漫画自己的目录（空目录），
+        // 结果里绝不出现短剧条目（111 是接口响应里的短剧 id）。
+        val repo=repository { request ->
+            if(request.url.encodedPath.startsWith("/category/comic-drama")) catalogPagePayload(1,1,"999",title="测试漫画")
+            else """{"code":0,"search_tabs":[{"tab_type":11,"data":[]}]}"""
+        }
+        val result=repo.search("仙尊",1,ContentType.COMIC)
+        assertTrue(result.items.all { it.id != "111" })
+    }
+
+    @Test fun comicFallbackScansComicCatalogOnly() {
+        val paths=mutableListOf<String>()
+        val repo=repository { request ->
+            paths+=request.url.encodedPath
+            if(request.url.encodedPath.startsWith("/category/comic-drama")) catalogPagePayload(request.url.queryParameter("page")?.toInt() ?: 1,2,"66${request.url.queryParameter("page")}",title="仙尊漫画 第${request.url.queryParameter("page")}部")
+            else """{"code":0,"search_tabs":[{"tab_type":11,"data":[]}]}"""
+        }
+        // 两类各扫各的目录：漫剧只允许碰 comic-drama，绝不去 real-drama 拿短剧内容来填。
+        val page1=repo.search("仙尊",1,ContentType.COMIC)
+        assertEquals(listOf("661","662"),page1.items.map { it.id })
+        repo.search("仙尊",2,ContentType.COMIC)
+        assertTrue(paths.any { it.startsWith("/category/comic-drama") })
+        assertTrue(paths.none { it.startsWith("/category/real-drama") })
+    }
+
+    @Test fun blankAppSearchBodyIsMarkedDeadAndSkippedOnLaterPages() {
+        var searchRequests=0
+        val repo=repository { request ->
+            if(request.url.host.endsWith("fqnovel.com")) { searchRequests++; "" }
+            catalogPagePayload(1,2,"771",title="仙尊归来")
+        }
+        // 空响应体 = 接口判死：第 1 页仍试一次，之后翻页不再空跑 fqnovel。
+        repo.search("仙尊",1,ContentType.SHORT)
+        assertEquals(1,searchRequests)
+        repo.search("仙尊",2,ContentType.SHORT)
+        assertEquals(1,searchRequests)
     }
 
     @Test fun shortSearchKeepsWebsiteFallback() {
@@ -242,6 +411,54 @@ class ContentRepositoryTest {
             """<script>_ROUTER_DATA={"loaderData":{"search_page":{"searchList":[{"series_id":"456","series_name":"测试短剧"}]}}}};</script>"""
         }
         assertEquals("456",repo.search("短剧",1,ContentType.SHORT).items.single().id)
-        assertEquals(2,paths.size)
+        // appSearch(断网) → 漫画目录探测(断网即弃) → 官网快路径兜住。
+        assertEquals(3,paths.size)
+    }
+
+    private fun catalogPagePayload(page: Int,totalPages: Int,id: String,title: String="仙尊归来 第${page}部") =
+        // 超出 totalPages 的页回空列表：与真实站点一致（页码越界不给数据）。
+        if(page>totalPages) """<script>_ROUTER_DATA={"loaderData":{"category_${'$'}":{"recommendList":[],"pagination":{"totalPages":$totalPages}}}};</script>"""
+        else """<script>_ROUTER_DATA={"loaderData":{"category_${'$'}":{"recommendList":[{"series_id":"$id","series_name":"$title"}],"pagination":{"totalPages":$totalPages}}}};</script>"""
+
+    @Test fun shortSearchPaginationScansRealDramaCatalogWithoutRepeats() {
+        val repo=repository { request ->
+            when {
+                request.url.encodedPath.startsWith("/search/") ->
+                    """<script>_ROUTER_DATA={"loaderData":{"search_page":{"searchList":[{"series_id":"456","series_name":"测试短剧"}]}}}};</script>"""
+                request.url.encodedPath=="/category/real-drama" ->
+                    catalogPagePayload(request.url.queryParameter("page")?.toInt() ?: 1,3,"77${request.url.queryParameter("page")}")
+                else -> throw IOException("unexpected ${request.url}")
+            }
+        }
+        assertEquals("456",repo.search("仙尊",1,ContentType.SHORT).items.single().id)
+        // 第 2 页起扫目录（real-drama），接上第 1 页没出现过的条目；目录只有 3 页，hasMore 收掉。
+        val page2=repo.search("仙尊",2,ContentType.SHORT)
+        assertEquals(listOf("771","772","773"),page2.items.map { it.id })
+        assertFalse(page2.hasMore)
+        // 第 3 页从目录第 4 页起扫：目录已尽，空页收场，不再重复已给过的条目。
+        val page3=repo.search("仙尊",3,ContentType.SHORT)
+        assertTrue(page3.items.isEmpty())
+        assertFalse(page3.hasMore)
+    }
+
+    @Test fun catalogDedupKeyIsScopedPerType() {
+        // 同一 repo 实例里两个关键词各自维护去重表：先翻完「甲乙」的目录页，
+        // 「丙丁」的第 2 页不许被它的去重表吞掉（key 必须带关键词）。
+        val repo=repository { request ->
+            when {
+                request.url.encodedPath.startsWith("/search/") ->
+                    """<script>_ROUTER_DATA={"loaderData":{"search_page":{"searchList":[{"series_id":"456","series_name":"甲乙丙丁"}]}}}};</script>"""
+                request.url.encodedPath=="/category/real-drama" -> {
+                    val page=request.url.queryParameter("page")?.toInt() ?: 1
+                    catalogPagePayload(page,2,"88$page",title="甲乙丙丁仙尊传 第${page}部")
+                }
+                else -> throw IOException("unexpected ${request.url}")
+            }
+        }
+        assertEquals("456",repo.search("甲乙",1,ContentType.SHORT).items.single().id)
+        assertEquals(listOf("881","882"),repo.search("甲乙",2,ContentType.SHORT).items.map { it.id })
+        assertEquals("456",repo.search("丙丁",1,ContentType.SHORT).items.single().id)
+        // 「丙丁」的第 2 页拿到的是它自己目录里的条目，没有被「甲乙」的去重表吞掉。
+        assertEquals(listOf("881","882"),repo.search("丙丁",2,ContentType.SHORT).items.map { it.id })
     }
 }

@@ -150,7 +150,7 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         }
         return output.base64()
     }
-    fun sign(base: String, values: Map<String,String>, body: ByteArray? = null): Request {
+    fun sign(base: String, values: Map<String,String>, body: ByteArray? = null, extraHeaders: Map<String,String> = emptyMap()): Request {
         val now = clock(); val ts = (now / 1000).toInt()
         var ticket = now; var query: String
         for (offset in 0..127) {
@@ -160,6 +160,8 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
                 val random = (random()*65536).toInt()
                 val headers = linkedMapOf("User-Agent" to (if (body != null) VendorConstants.VIDEO_UA else VendorConstants.APP_UA),"Accept" to "application/json; charset=utf-8,application/x-protobuf", "x-ss-req-ticket" to ticket.toString(),"x-tt-request-tag" to "t=0;n=0","sdk-version" to "2","passport-sdk-version" to "50561","x-xs-from-web" to "0","x-khronos" to ts.toString(),"x-ladon" to be32(ts).base64(),"x-argus" to le32(ts).base64(),"x-gorgon" to gorgon(query,body,ts,random),"x-helios" to helios(ts),"x-medusa" to medusa(url,body,ts),"x-tt-dt" to "")
                 if (body != null) { headers["Content-Type"]="application/json; charset=UTF-8"; headers["x-vc-bdturing-sdk-version"]="3.7.2.cn"; headers["x-ss-stub"]=digest("MD5",body).hex().uppercase() }
+                // 额外头（如登录后的 Cookie）不参与签名（签名只盖 query 与 body），直接叠加。
+                headers.putAll(extraHeaders)
                 return Request(url,headers,body)
             }
         }

@@ -8,8 +8,9 @@ import java.net.URI
 data class BackupProgress(val series: Series,val episodeId: String,val episodeIndex: Int,val position: Long,val duration: Long,val completed: Boolean,val updatedAt: Long) {
     fun json()=JSONObject().put("series",LibraryBackup.seriesJson(series)).put("episodeId",episodeId).put("episodeIndex",episodeIndex).put("position",position).put("duration",duration).put("completed",completed).put("updatedAt",updatedAt)
 }
-data class BackupSettings(val quality: Int=1080,val speed: Float=1f,val autoNext: Boolean=true,val type: ContentType=ContentType.COMIC,val frame: VideoFrameMode=VideoFrameMode.FIT) {
-    fun json()=JSONObject().put("quality",quality).put("speed",speed.toDouble()).put("autoNext",autoNext).put("type",type.storedValue).put("frame",frame.name)
+data class BackupSettings(val quality: Int=1080,val speed: Float=1f,val autoNext: Boolean=true,val type: ContentType=ContentType.COMIC,val frame: VideoFrameMode=VideoFrameMode.FIT,val keys: String="",val danmakuMode: DanmakuMode=DanmakuMode.FULL,val danmakuSpeed: DanmakuSpeed=DanmakuSpeed.NORMAL,val danmakuScale: Float=1f,val danmakuAlpha: Float=1f) {
+    fun json()=JSONObject().put("quality",quality).put("speed",speed.toDouble()).put("autoNext",autoNext).put("type",type.storedValue).put("frame",frame.name).put("keys",keys)
+        .put("danmakuMode",danmakuMode.storedValue).put("danmakuSpeed",danmakuSpeed.storedValue).put("danmakuScale",danmakuScale.toDouble()).put("danmakuAlpha",danmakuAlpha.toDouble())
 }
 data class BackupData(val favorites: List<Series>,val history: List<BackupProgress>,val watched: Set<String>,val searches: List<RecentSearch>,val settings: BackupSettings,val later: List<Series> = emptyList(),val hidden: Set<String> = emptySet())
 
@@ -76,7 +77,14 @@ object LibraryBackup {
         val autoNext=settings.get("autoNext"); require(autoNext is Boolean)
         val type=ContentType.entries.firstOrNull { it.storedValue==settings.getString("type") } ?: error("内容类型无效")
         val frame=VideoFrameMode.entries.firstOrNull { it.name==settings.getString("frame") } ?: error("画面模式无效")
-        return BackupData(favorites,history,watchedIds,searches,BackupSettings(quality,speed.toFloat(),autoNext,type,frame),later,hiddenIds)
+        // 「播放按键」是后加的字段：旧备份里没有它，必须按空串（全默认）读，否则整份恢复失败。
+        val keys=(if(settings.isNull("keys")) "" else settings.optString("keys","")).takeIf { it.length<=KeyMap.MAX_ENCODED } ?: error("按键绑定无效")
+        // 弹幕四项同样是后加的：旧备份没有就全走默认档，不让恢复整份失败。
+        val danmakuMode=DanmakuMode.fromStored(if(settings.isNull("danmakuMode")) null else settings.optString("danmakuMode",null))
+        val danmakuSpeed=DanmakuSpeed.fromStored(if(settings.isNull("danmakuSpeed")) null else settings.optString("danmakuSpeed",null))
+        val danmakuScale=DanmakuStyle.scale((settings.optDouble("danmakuScale",1.0) ?: 1.0).toFloat())
+        val danmakuAlpha=DanmakuStyle.alpha((settings.optDouble("danmakuAlpha",1.0) ?: 1.0).toFloat())
+        return BackupData(favorites,history,watchedIds,searches,BackupSettings(quality,speed.toFloat(),autoNext,type,frame,keys,danmakuMode,danmakuSpeed,danmakuScale,danmakuAlpha),later,hiddenIds)
     }
     /** Existing favorites stay first; only newer imported progress replaces a local record. */
     fun merge(local: BackupData,incoming: BackupData,restoreSettings: Boolean): BackupData {

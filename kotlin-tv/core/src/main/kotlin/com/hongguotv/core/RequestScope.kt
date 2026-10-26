@@ -45,5 +45,17 @@ class RequestScope {
             try { return call.execute().use(consume) }
             finally { owner?.detach(call) }
         }
+        /**
+         * 在**不受当前导航 scope 取消影响**的上下文里执行 [action]。
+         *
+         * 用于「跨导航意图的缓存构建」（如漫画目录 id 集的并行遍历）：这类请求不属于
+         * 某一次搜索/播放，页面切换的 `scope.cancel()` 不应该把它杀到一半——否则每次
+         * 连续导航都会让遍历重来，缓存永远建不起来。
+         */
+        fun <T> runUnscoped(action: () -> T): T {
+            val previous = current.get()
+            current.set(null)
+            return try { action() } finally { if (previous != null) current.set(previous) else current.remove() }
+        }
     }
 }

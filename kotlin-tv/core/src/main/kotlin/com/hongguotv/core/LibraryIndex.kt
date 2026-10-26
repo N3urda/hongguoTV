@@ -5,7 +5,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Main-thread-owned library. JSON is parsed once, and getters never parse or sort. */
-class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = emptyMap()) {
+class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = emptyMap(),
+    /** 导入的账号登录态（`Cookie:` 整段串）。只在本机索引里，**不进 BackupSettings/备份**。 */
+    val accountCookie: String = "", val accountExpiresAt: Long = 0,
+    /** 本机实测画幅（播放接口的宽高）：横版 16:9 / 竖版 9:16 的剧 id 集。只存本机。 */
+    val aspect16: Set<String> = emptySet(), val aspect916: Set<String> = emptySet(),
+    /** 本机实测类型原始值（播放接口的类型字段，id→raw 的 JSON）。只存本机。 */
+    val kindRaw: String = "",
+    /** 用户手动纠正的类型（id→comic/short/ai 的 JSON）：最高优先级，播放实测也盖不过它。 */
+    val manualKind: String = "") {
     private var favoriteRows = data.favorites.distinctBy { it.id }.take(500)
     private var favoriteIds = favoriteRows.map { it.id }.toSet()
     private var laterRows = data.later.distinctBy { it.id }.take(100)
@@ -103,9 +111,15 @@ object LibraryDisk {
         val updates = rawUpdates.keys().asSequence().mapNotNull { id -> FavoriteUpdate.decode(rawUpdates.optJSONObject(id))?.let { id to it } }.toMap()
         val settings = BackupSettings(PlaybackQuality.normalize((values["quality"] as? Number)?.toInt() ?: 1080),
             PlaybackSpeed.normalize((values["playbackSpeed"] as? Number)?.toFloat() ?: 1f), values["autoNext"] as? Boolean ?: true,
-            ContentType.fromStored(values["contentType"] as? String), VideoFrameMode.fromStored(values["frameMode"] as? String))
+            ContentType.fromStored(values["contentType"] as? String), VideoFrameMode.fromStored(values["frameMode"] as? String),
+            KeyMap.decode(values["keymap"] as? String).encode(),
+            DanmakuMode.fromStored(values["danmakuMode"] as? String), DanmakuSpeed.fromStored(values["danmakuSpeed"] as? String),
+            DanmakuStyle.scale((values["danmakuScale"] as? Number)?.toFloat() ?: 1f), DanmakuStyle.alpha((values["danmakuAlpha"] as? Number)?.toFloat() ?: 1f))
         return LibraryIndex(BackupData(series("favorites"), history, ids("watched"),
-            SearchHistory.decode(values["searches"] as? String ?: "[]"), settings, series("later"), ids("hidden")), updates)
+            SearchHistory.decode(values["searches"] as? String ?: "[]"), settings, series("later"), ids("hidden")), updates,
+            (values["accountCookie"] as? String).orEmpty(), (values["accountExpiresAt"] as? Number)?.toLong() ?: 0L,
+            ids("aspect16"), ids("aspect916"), (values["kindRaw"] as? String).orEmpty(),
+            (values["manualKind"] as? String).orEmpty())
     }
     fun series(rows: List<Series>) = JSONArray(rows.map { it.toJson() }).toString()
     fun history(rows: List<BackupProgress>) = JSONArray(rows.map { p ->
