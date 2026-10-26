@@ -20,6 +20,7 @@ import com.google.zxing.qrcode.QRCodeWriter
 import com.hongguotv.core.EpisodeTarget
 import com.hongguotv.core.PhoneSearchServer
 import com.hongguotv.core.LibraryTransferServer
+import com.hongguotv.core.AccountImportServer
 import com.hongguotv.core.BackupData
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -33,7 +34,7 @@ class TvTools(private val activity: Activity) {
     val showing: Boolean get()=dialog?.isShowing==true
     private var phone: java.io.Closeable?=null
     private fun dp(value: Int)=(value*activity.resources.displayMetrics.density).toInt()
-    private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(Color.WHITE); setPadding(dp(8),dp(4),dp(8),dp(4)) }
+    private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(Color.rgb(26,29,36)); setPadding(dp(8),dp(4),dp(8),dp(4)) }
     private fun column()=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(4),dp(16),dp(8)) }
     private fun open(next: AlertDialog,anchor: View?) {
         dialog?.dismiss(); dialog=next
@@ -42,13 +43,13 @@ class TvTools(private val activity: Activity) {
     }
     fun close() { dialog?.dismiss(); phone?.close(); phone=null }
     fun destroy() { close(); worker.shutdownNow() }
-    fun info(title: String,message: String,anchor: View?) = open(AlertDialog.Builder(activity).setTitle(title).setMessage(message).setPositiveButton("知道了",null).create(),anchor)
+    fun info(title: String,message: String,anchor: View?) = open(AlertDialog.Builder(android.view.ContextThemeWrapper(activity,R.style.AppDialog)).setTitle(title).setMessage(message).setPositiveButton("知道了",null).create(),anchor)
     fun confirm(title: String,message: String,anchor: View?,action: ()->Unit) {
-        val next=AlertDialog.Builder(activity).setTitle(title).setMessage(message).setNegativeButton("取消",null).setPositiveButton("确认") { _,_-> action() }.create()
+        val next=AlertDialog.Builder(android.view.ContextThemeWrapper(activity,R.style.AppDialog)).setTitle(title).setMessage(message).setNegativeButton("取消",null).setPositiveButton("确认") { _,_-> action() }.create()
         open(next,anchor); next.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()
     }
     fun choose(title: String,labels: List<String>,anchor: View?,onChoice: (Int)->Unit,extra: String?=null,onExtra: ()->Unit={}) {
-        val builder=AlertDialog.Builder(activity).setTitle(title).setItems(labels.toTypedArray()) { _,index-> onChoice(index) }.setNegativeButton("取消",null)
+        val builder=AlertDialog.Builder(android.view.ContextThemeWrapper(activity,R.style.AppDialog)).setTitle(title).setItems(labels.toTypedArray()) { _,index-> onChoice(index) }.setNegativeButton("取消",null)
         if(extra!=null) builder.setNeutralButton(extra) { _,_-> onExtra() }
         val next=builder.create(); open(next,anchor); next.listView.requestFocus()
     }
@@ -63,7 +64,7 @@ class TvTools(private val activity: Activity) {
             val row=LinearLayout(activity)
             keys.forEach { key ->
                 val button=Button(activity).apply {
-                    id=View.generateViewId(); text=key; minHeight=dp(42)
+                    id=View.generateViewId(); text=key; minHeight=dp(42); setTextColor(Color.WHITE)
                     backgroundTintList=android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused),intArrayOf()),intArrayOf(Color.rgb(255,99,76),Color.rgb(31,36,47)))
                     setOnClickListener { when(key) { "清空"->{ digits="";replace=false;value.text="—" }; "退格"->erase(); else->digit(key) } }
                 }
@@ -72,7 +73,7 @@ class TvTools(private val activity: Activity) {
             }
             content.addView(row)
         }
-        val next=AlertDialog.Builder(activity).setTitle("跳转集数 · 1—$count").setView(ScrollView(activity).apply { addView(content) }).setNegativeButton("取消",null).setPositiveButton("定位",null).create()
+        val next=AlertDialog.Builder(android.view.ContextThemeWrapper(activity,R.style.AppDialog)).setTitle("跳转集数 · 1—$count").setView(ScrollView(activity).apply { addView(content) }).setNegativeButton("取消",null).setPositiveButton("定位",null).create()
         next.setOnKeyListener { _,key,event ->
             when {
                 key in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> { if(event.action==KeyEvent.ACTION_DOWN) digit((key-KeyEvent.KEYCODE_0).toString()); true }
@@ -125,7 +126,7 @@ class TvTools(private val activity: Activity) {
             info("手机输入","请让电视和手机连接同一局域网（Wi-Fi 或有线网络）后重试。",anchor); return
         }
         val content=column(); val status=label("正在生成二维码…"); content.addView(status)
-        val next=AlertDialog.Builder(activity).setTitle("手机输入剧名").setView(content).setNegativeButton("关闭",null).create()
+        val next=AlertDialog.Builder(android.view.ContextThemeWrapper(activity,R.style.AppDialog)).setTitle("手机输入剧名").setView(content).setNegativeButton("关闭",null).create()
         open(next,anchor)
         worker.execute {
             try {
@@ -143,13 +144,41 @@ class TvTools(private val activity: Activity) {
             } catch(_: Exception) { main.post { if(dialog===next) status.text="无法开启手机输入，请检查网络后重试。" } }
         }
     }
+    /**
+     * 一次性「导入账号参数」：手机扫码上传 `cookieStore.xml` 或粘贴整段 Cookie。
+     * 收到的原文交给 [onImport]（解析与落盘由调用方负责，这里只管传输）。
+     */
+    fun accountImport(anchor: View?,onImport: (String)->Unit) {
+        val address=lanAddress()
+        if(address==null) {
+            info("导入账号参数","请让电视和手机连接同一局域网（Wi-Fi 或有线网络）后重试。",anchor); return
+        }
+        val content=column(); val status=label("正在生成二维码…"); content.addView(status)
+        val next=AlertDialog.Builder(android.view.ContextThemeWrapper(activity,R.style.AppDialog)).setTitle("导入账号参数").setView(content).setNegativeButton("关闭",null).create()
+        open(next,anchor)
+        worker.execute {
+            try {
+                val session=AccountImportServer(address,{ text -> main.post { if(dialog===next) { next.dismiss(); onImport(text) } } },{ main.post { if(dialog===next) { content.removeAllViews(); content.addView(label("二维码已过期，请关闭后重新打开。")) } } })
+                main.post {
+                    if(dialog!==next) { session.close(); return@post }
+                    phone=session; content.removeAllViews()
+                    val row=LinearLayout(activity).apply { gravity=Gravity.CENTER_VERTICAL }
+                    row.addView(qr(session.url),LinearLayout.LayoutParams(dp(185),dp(185)))
+                    val instructions=column()
+                    instructions.addView(label("手机扫码后上传 cookieStore.xml，或粘贴整段 Cookie。\n需连接同一局域网；关闭窗口即失效，最长 5 分钟。\n登录态只存本机，不会进备份。",15f))
+                    instructions.addView(label(session.url,12f))
+                    row.addView(instructions,LinearLayout.LayoutParams(0,-2,1f)); content.addView(row)
+                }
+            } catch(_: Exception) { main.post { if(dialog===next) status.text="无法开启导入服务，请检查网络后重试。" } }
+        }
+    }
     fun libraryTransfer(backup: String,anchor: View?,restore: (BackupData,Boolean)->Unit) {
         val address=lanAddress()
         if(address==null) {
             info("备份与恢复","请让电视和手机连接同一局域网后重试。",anchor); return
         }
         val content=column(); val status=label("正在生成二维码…"); content.addView(status)
-        val next=AlertDialog.Builder(activity).setTitle("手机备份与恢复").setView(ScrollView(activity).apply { addView(content) }).setNegativeButton("关闭",null).create()
+        val next=AlertDialog.Builder(android.view.ContextThemeWrapper(activity,R.style.AppDialog)).setTitle("手机备份与恢复").setView(ScrollView(activity).apply { addView(content) }).setNegativeButton("关闭",null).create()
         open(next,anchor)
         worker.execute {
             try {
@@ -159,7 +188,7 @@ class TvTools(private val activity: Activity) {
                     val preview=column()
                     preview.addView(label("备份含 ${data.favorites.size} 部收藏、${data.history.size} 条观看记录、${data.searches.size} 条搜索、${data.later.size} 部稍后看、${data.hidden.size} 部已隐藏推荐。\n\n收藏合并，观看位置以较新的记录为准；已有收藏优先保留（最多 500 部），历史保留最近 200 条。",16f))
                     val settings=CheckBox(activity).apply { text="同时恢复播放设置和内容分类"; isChecked=false }; preview.addView(settings)
-                    val confirm=AlertDialog.Builder(activity).setTitle("确认恢复本机记录")
+                    val confirm=AlertDialog.Builder(android.view.ContextThemeWrapper(activity,R.style.AppDialog)).setTitle("确认恢复本机记录")
                         .setView(ScrollView(activity).apply { addView(preview) }).setNegativeButton("取消",null)
                         .setPositiveButton("合并恢复") { _,_-> restore(data,settings.isChecked) }.create()
                     open(confirm,anchor); confirm.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()

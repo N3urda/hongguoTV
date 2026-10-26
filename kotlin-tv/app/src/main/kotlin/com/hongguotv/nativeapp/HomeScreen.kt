@@ -13,14 +13,14 @@ import com.hongguotv.core.Series
 /** Fixed text slots keep D-pad movement from resizing the content below the preview. */
 class SeriesPreview(context: Context): LinearLayout(context) {
     private fun label(size: Float,color: Int)=TextView(context).apply { textSize=size; setTextColor(color); includeFontPadding=false }
-    private val title=label(27f,TvStyle.text).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) }
-    private val meta=label(12f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END }
+    private val title=label(TvStyle.sp(27f),TvStyle.text).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) }
+    private val meta=label(TvStyle.sp(12f),TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END }
     init {
         orientation=VERTICAL
         val dp=resources.displayMetrics.density
-        setPadding(0,(7*dp).toInt(),0,(12*dp).toInt())
+        setPadding(0,TvStyle.touch(7),0,TvStyle.touch(12))
         addView(title)
-        addView(meta,LayoutParams(-1,-2).apply { topMargin=(5*dp).toInt() })
+        addView(meta,LayoutParams(-1,-2).apply { topMargin=TvStyle.touch(5) })
         show(null,"")
     }
     fun show(series: Series?,status: String) {
@@ -61,7 +61,7 @@ class HomeScreen(
     private var lastRow: String?=null
     private var restoring=false
     private var revision=0
-    val refresh=label("正在更新热门…",13f).apply { id=View.generateViewId(); tag="home:refresh"; isFocusable=true; isFocusableInTouchMode=true; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(12),dp(8),dp(12),dp(8)); background=shape(false); setOnFocusChangeListener { _,f -> background=shape(f); if(f) lastFocus=tag.toString() } }
+    val refresh=label("正在更新热门…",TvStyle.sp(13f)).apply { id=View.generateViewId(); tag="home:refresh"; isFocusable=true; isFocusableInTouchMode=true; gravity=Gravity.CENTER_VERTICAL; setPadding(TvStyle.touch(12),TvStyle.touch(8),TvStyle.touch(12),TvStyle.touch(8)); background=shape(false); setOnFocusChangeListener { _,f -> background=shape(f); if(f) lastFocus=tag.toString() } }
     init { orientation=VERTICAL; scroll.addView(contents); addView(scroll,LayoutParams(-1,0,1f)) }
 
     fun capturePosition(): Position {
@@ -103,25 +103,29 @@ class HomeScreen(
         contents.removeAllViews(); rows.clear(); cards.clear(); moreButton=null; lastRow=null
         shelves.filter { it.entries.isNotEmpty() || it.more!=null }.forEach { shelf ->
             val block=LinearLayout(context).apply { orientation=VERTICAL }
-            val heading=LinearLayout(context).apply { orientation=HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(2),dp(4),dp(2),dp(9)) }
-            heading.addView(View(context).apply { background=TvStyle.shape(context,accent,radius=2) },LayoutParams(dp(3),dp(14)).apply { rightMargin=dp(8) })
-            heading.addView(label(shelf.title,16f).apply { setTypeface(null,Typeface.BOLD) },LayoutParams(0,-2,1f))
-            heading.addView(label("左右选剧  ·  上下切换分区",10f,TvStyle.muted))
+            val heading=LinearLayout(context).apply { orientation=HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(TvStyle.touch(2),TvStyle.touch(4),TvStyle.touch(2),TvStyle.touch(9)) }
+            heading.addView(View(context).apply { background=TvStyle.shape(context,accent,radius=2) },LayoutParams(TvStyle.touch(3),TvStyle.touch(14)).apply { rightMargin=TvStyle.touch(8) })
+            heading.addView(label(shelf.title,TvStyle.sp(16f)).apply { setTypeface(null,Typeface.BOLD) },LayoutParams(0,-2,1f))
+            // 「左右选剧 · 上下切换分区」是给遥控器（DPAD）看的导航提示：手机是触摸操作，
+            // 这行字在右上角只是一段无意义的残留文本，只在 TV 版渲染。
+            if(!TvStyle.phoneUi) heading.addView(label("左右选剧  ·  上下切换分区",TvStyle.sp(10f),TvStyle.muted))
             block.addView(heading)
             val horizontal=HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled=false; clipToPadding=false; setPadding(dp(2),dp(2),dp(2),dp(2)) }
             val line=LinearLayout(context).apply { orientation=HORIZONTAL; gravity=Gravity.TOP }
             horizontal.addView(line); block.addView(horizontal)
             val rowCards=mutableListOf<Card>()
             fun addCard(entry: Entry?,moreAction: (() -> Unit)?=null) {
-                val width=((resources.displayMetrics.widthPixels*.9f-dp(70))/6).toInt().coerceAtLeast(dp(100))
+                // Phones show fewer, wider cards per shelf row so posters stay readable;
+                // TV keeps its dense 6-across layout.
+                val width=((resources.displayMetrics.widthPixels*.9f-TvStyle.touch(70))/if(TvStyle.phoneUi) 2.6f else 6f).toInt().coerceAtLeast(TvStyle.touch(100))
                 val key=if(entry!=null) "${shelf.key}:${entry.series.id}" else "${shelf.key}:more"
-                val view=LinearLayout(context).apply { orientation=VERTICAL; id=View.generateViewId(); tag=key; isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(4),dp(4),dp(4),dp(8)); background=shape(false) }
+                val view=LinearLayout(context).apply { orientation=VERTICAL; id=View.generateViewId(); tag=key; isFocusable=true; isFocusableInTouchMode=true; setPadding(TvStyle.touch(4),TvStyle.touch(4),TvStyle.touch(4),TvStyle.touch(8)); background=shape(false) }
                 val image=if(entry!=null) ImageView(context).apply { scaleType=ImageView.ScaleType.FIT_CENTER; importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO } else null
-                view.addView(image ?: label("›",36f).apply { gravity=Gravity.CENTER },LayoutParams(-1,((width-dp(8))/TvStyle.POSTER_ASPECT).toInt()))
-                val title=label(entry?.series?.title ?: "查看全部",14f).apply { minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(5),dp(3),0) }
-                val badge=label(entry?.label ?: shelf.title,12f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(2),0,0) }
+                view.addView(image ?: label("›",TvStyle.sp(36f)).apply { gravity=Gravity.CENTER },LayoutParams(-1,((width-TvStyle.touch(8))/TvStyle.POSTER_ASPECT).toInt()))
+                val title=label(entry?.series?.title ?: "查看全部",TvStyle.sp(14f)).apply { minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(TvStyle.touch(3),TvStyle.touch(5),TvStyle.touch(3),0) }
+                val badge=label(entry?.label ?: shelf.title,TvStyle.sp(12f),TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(TvStyle.touch(3),TvStyle.touch(2),0,0) }
                 val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply { max=100; progress=entry?.progress ?: 0; visibility=if(entry?.progress==null) INVISIBLE else VISIBLE; progressTintList=android.content.res.ColorStateList.valueOf(accent) }
-                view.addView(title); view.addView(badge); view.addView(progress,LayoutParams(-1,dp(3)).apply { topMargin=dp(4) })
+                view.addView(title); view.addView(badge); view.addView(progress,LayoutParams(-1,TvStyle.touch(3)).apply { topMargin=TvStyle.touch(4) })
                 val card=Card(key,view,image,title,badge,progress,entry)
                 view.contentDescription=entry?.let { "${shelf.title}，${it.series.title}，${it.label}" } ?: "查看全部${shelf.title}"
                 view.setOnClickListener { lastFocus=key; remember(key); card.entry?.let { open(it.series,it.resume) } ?: moreAction?.invoke() }
@@ -140,18 +144,18 @@ class HomeScreen(
                         lastRow=shelf.key
                     }
                 }
-                line.addView(view,LayoutParams(width,-1).apply { rightMargin=dp(14) }); rowCards+=card; cards[key]=card
+                line.addView(view,LayoutParams(width,-1).apply { rightMargin=TvStyle.touch(14) }); rowCards+=card; cards[key]=card
             }
             shelf.entries.forEach { addCard(it) }
             shelf.more?.let { action -> addCard(null,action) }
-            contents.addView(block,LayoutParams(-1,-2).apply { bottomMargin=dp(16) }); rows+=Row(shelf.key,block,horizontal,rowCards)
+            contents.addView(block,LayoutParams(-1,-2).apply { bottomMargin=TvStyle.touch(16) }); rows+=Row(shelf.key,block,horizontal,rowCards)
         }
-        if(cards.isEmpty()) contents.addView(label("还没有本机记录，热门剧加载后可选择观看。",15f).apply { setPadding(0,dp(16),0,dp(16)) })
-        contents.addView(refresh,LayoutParams(-1,-2).apply { topMargin=dp(10) })
+        if(cards.isEmpty()) contents.addView(label("还没有本机记录，热门剧加载后可选择观看。",TvStyle.sp(15f)).apply { setPadding(0,TvStyle.touch(16),0,TvStyle.touch(16)) })
+        contents.addView(refresh,LayoutParams(-1,-2).apply { topMargin=TvStyle.touch(10) })
         val footer=mutableListOf<View>(refresh)
         if(more!=null) {
-            val next=label("更多热门  ›",15f).apply { id=View.generateViewId(); tag="home:more"; isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(12),dp(12),dp(12),dp(12)); background=shape(false); setOnFocusChangeListener { _,f -> background=shape(f); if(f) lastFocus=tag.toString() }; setOnClickListener { more() } }
-            contents.addView(next,LayoutParams(-1,-2).apply { topMargin=dp(8) }); footer+=next; moreButton=next
+            val next=label("更多热门  ›",TvStyle.sp(15f)).apply { id=View.generateViewId(); tag="home:more"; isFocusable=true; isFocusableInTouchMode=true; setPadding(TvStyle.touch(12),TvStyle.touch(12),TvStyle.touch(12),TvStyle.touch(12)); background=shape(false); setOnFocusChangeListener { _,f -> background=shape(f); if(f) lastFocus=tag.toString() }; setOnClickListener { more() } }
+            contents.addView(next,LayoutParams(-1,-2).apply { topMargin=TvStyle.touch(8) }); footer+=next; moreButton=next
         }
         rows.forEachIndexed { i,row -> row.cards.forEachIndexed { j,card ->
             card.view.nextFocusLeftId=row.cards[(j-1).coerceAtLeast(0)].view.id; card.view.nextFocusRightId=row.cards[(j+1).coerceAtMost(row.cards.lastIndex)].view.id

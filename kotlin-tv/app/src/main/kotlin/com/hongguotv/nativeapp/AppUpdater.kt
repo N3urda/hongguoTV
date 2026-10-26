@@ -6,6 +6,7 @@ import android.app.AlertDialog
 import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -43,7 +44,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
     val showing get() = dialog?.isShowing == true
     private var statusView: TextView? = null
     private var anchor: View? = null
-    private var status = "当前版本 ${BuildConfig.VERSION_NAME}"
+    private var status = "当前版本 ${BuildConfig.VERSION_NAME} · 编译 ${BuildConfig.BUILD_TIME}"
     private var retryAfter = 0L
     private var promptedCode = 0L
     private val auto get() = preferences.getBoolean("automatic", true)
@@ -105,7 +106,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         dialog?.dismiss()
         val dp = activity.resources.displayMetrics.density
         val body = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding((24*dp).toInt(), (12*dp).toInt(), (24*dp).toInt(), 0) }
-        statusView = TextView(activity).apply { text = status; textSize = 17f; setTextColor(TvStyle.text) }
+        statusView = TextView(activity).apply { text = status; textSize = 17f; setTextColor(Color.rgb(26,29,36)) }
         body.addView(statusView)
         body.addView(CheckBox(activity).apply {
             text = "自动检查并下载更新"; isChecked = auto
@@ -115,10 +116,10 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
             }
         })
         body.addView(TextView(activity).apply {
-            text = "只在应用前台浏览时检查，播放中不打扰。下载后需确认系统安装，收藏与观看记录保留。"; textSize = 13f; setTextColor(TvStyle.muted)
+            text = "只在应用前台浏览时检查，播放中不打扰。下载后需确认系统安装，收藏与观看记录保留。"; textSize = 13f; setTextColor(Color.rgb(74,85,104))
             setPadding(0, (8*dp).toInt(), 0, (8*dp).toInt())
         })
-        val next = AlertDialog.Builder(activity).setTitle("版本与更新 · ${BuildConfig.VERSION_NAME}").setView(ScrollView(activity).apply { addView(body) })
+        val next = AlertDialog.Builder(android.view.ContextThemeWrapper(activity,R.style.AppDialog)).setTitle("版本与更新 · ${BuildConfig.APP_LABEL} v${BuildConfig.VERSION_NAME} · 编译 ${BuildConfig.BUILD_TIME}").setView(ScrollView(activity).apply { addView(body) })
             .setNegativeButton("稍后", null).setPositiveButton("检查更新", null).create()
         dialog = next
         next.setOnDismissListener {
