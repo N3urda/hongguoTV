@@ -67,7 +67,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         active = true; main.removeCallbacks(poll); main.postDelayed(poll, 8000)
         if (permissionRequested) {
             permissionRequested = false
-            if (activity.packageManager.canRequestPackageInstalls()) install()
+            if (Build.VERSION.SDK_INT < 26 || activity.packageManager.canRequestPackageInstalls()) install()
             else { status = "安装权限未开启，可在这里再次安装"; show(anchor) }
         }
     }
@@ -179,8 +179,10 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         val version = if (Build.VERSION.SDK_INT >= 28) candidate.longVersionCode else candidate.versionCode.toLong()
         fun signers(info: android.content.pm.PackageInfo) =
             (if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners else info.signatures)?.map { it.toCharsString() }?.toSet().orEmpty()
+        // Before API 24 the OS does not expose archive minSdk; the installer enforces it.
+        // Keep checksum, version and signer checks on every supported Android release.
         if (candidate.packageName != activity.packageName || version != update.versionCode || candidate.versionName != update.versionName || version <= BuildConfig.VERSION_CODE ||
-            candidate.applicationInfo?.minSdkVersion != update.minSdk || signers(installed).isEmpty() || signers(installed) != signers(candidate))
+            (Build.VERSION.SDK_INT >= 24 && candidate.applicationInfo?.minSdkVersion != update.minSdk) || signers(installed).isEmpty() || signers(installed) != signers(candidate))
             throw IOException("新版包名、版本或签名不匹配，已阻止安装")
     }
     private fun install() {
@@ -188,7 +190,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         if (busy || !active || !ready) return
         work({ validateApk(update) }) {
             try {
-                if (!activity.packageManager.canRequestPackageInstalls()) {
+                if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
                     permissionRequested = true
                     activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")))
                 } else {

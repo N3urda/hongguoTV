@@ -10,10 +10,10 @@ import android.view.View
 import android.widget.*
 import com.hongguotv.core.Series
 
-/** Fixed text slots keep D-pad movement from resizing the content below the preview. */
+/** Fixed slots keep focus stable; the full selected title scrolls without truncation. */
 class SeriesPreview(context: Context): LinearLayout(context) {
     private fun label(size: Float,color: Int)=TextView(context).apply { textSize=size; setTextColor(color); includeFontPadding=false }
-    private val title=label(27f,TvStyle.text).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) }
+    private val title=label(27f,TvStyle.text).apply { setSingleLine(true); ellipsize=TextUtils.TruncateAt.MARQUEE; marqueeRepeatLimit=-1; isSelected=true; typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) }
     private val meta=label(12f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END }
     init {
         orientation=VERTICAL

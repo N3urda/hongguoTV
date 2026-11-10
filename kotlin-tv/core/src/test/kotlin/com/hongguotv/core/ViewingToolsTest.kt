@@ -4,6 +4,47 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ViewingToolsTest {
+    @Test fun `zero rotation retains surface view and only surface type transitions rebuild`() {
+        assertFalse(VideoRotation.usesTexture(0)); assertFalse(VideoRotation.usesTexture(45))
+        for(rotation in listOf(90,180,270)) {
+            assertTrue(VideoRotation.usesTexture(rotation))
+            assertTrue(VideoRotation.requiresSurfaceRebuild(0,rotation))
+            assertTrue(VideoRotation.requiresSurfaceRebuild(rotation,0))
+            assertFalse(VideoRotation.requiresSurfaceRebuild(rotation,rotation))
+        }
+        assertFalse(VideoRotation.requiresSurfaceRebuild(0,0))
+        assertFalse(VideoRotation.requiresSurfaceRebuild(90,270))
+        assertFalse(VideoRotation.requiresSurfaceRebuild(270,180))
+        // Once rebuilt for the new preference, applying that preference again is a no-op.
+        assertFalse(VideoRotation.requiresSurfaceRebuild(90,90))
+    }
+    @Test fun `quarter turns swap video canvas dimensions without changing screen coordinates`() {
+        for(degrees in listOf(0,180)) assertEquals(VideoRotation.Canvas(1920,1080),VideoRotation.canvas(1920,1080,degrees))
+        for(degrees in listOf(90,270)) assertEquals(VideoRotation.Canvas(1080,1920),VideoRotation.canvas(1920,1080,degrees))
+        assertEquals(VideoRotation.Canvas(1920,1080),VideoRotation.canvas(1080,1920,90))
+        assertEquals(VideoRotation.Canvas(0,0),VideoRotation.canvas(-1,-3,270))
+        assertEquals(0,VideoRotation.normalize(45)); assertEquals(0,VideoRotation.normalize(-90))
+    }
+    @Test fun `persistent progress is separate from transient controls and off by default`() {
+        assertFalse(BackupSettings().alwaysShowProgress)
+        assertTrue(PlaybackProgressDisplay.visible(true,true,false,false))
+        assertFalse(PlaybackProgressDisplay.visible(false,true,false,false))
+        assertFalse(PlaybackProgressDisplay.visible(true,false,false,false))
+        assertFalse(PlaybackProgressDisplay.visible(true,true,true,false))
+        assertFalse(PlaybackProgressDisplay.visible(true,true,false,true))
+        assertEquals(500,PlaybackProgressDisplay.value(500,1000))
+        assertEquals(0,PlaybackProgressDisplay.value(-1,1000))
+        assertEquals(1000,PlaybackProgressDisplay.value(2000,1000))
+        assertEquals(0,PlaybackProgressDisplay.value(100,-1))
+        assertEquals(1000,PlaybackProgressDisplay.value(Long.MAX_VALUE,Long.MAX_VALUE))
+    }
+    @Test fun `display settings load with backward compatible defaults and normalization`() {
+        assertEquals(0,LibraryDisk.decode(emptyMap<String, Any>()).settings.rotation)
+        assertFalse(LibraryDisk.decode(emptyMap<String, Any>()).settings.alwaysShowProgress)
+        val loaded=LibraryDisk.decode(mapOf("videoRotation" to 270,"alwaysShowProgress" to true))
+        assertEquals(270,loaded.settings.rotation); assertTrue(loaded.settings.alwaysShowProgress)
+        assertEquals(0,LibraryDisk.decode(mapOf("videoRotation" to 45)).settings.rotation)
+    }
     @Test fun `jump validates the exact range without clamping`() {
         assertEquals(0,EpisodeTarget.parse("1",536)); assertEquals(535,EpisodeTarget.parse("536",536))
         for(value in listOf("0","537","-1","1.5","1e2","999999999999999","")) assertNull(value,EpisodeTarget.parse(value,536))

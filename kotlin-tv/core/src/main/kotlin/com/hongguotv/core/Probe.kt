@@ -26,10 +26,12 @@ fun main(args: Array<String>) {
     }
     val type=if(args.contains("--comic")) ContentType.COMIC else ContentType.SHORT
     val keyword=if(type==ContentType.COMIC) "修仙" else "总裁"
+    if (!args.contains("--playback-only")) {
     val search=repository.search(keyword,type=type); println("search=${search.items.size}; hasMore=${search.hasMore}")
     if(type==ContentType.COMIC && search.hasMore) {
         val next=repository.search(keyword,2,type)
         println("searchPage2=${next.items.size}; overlap=${search.items.map { it.id }.intersect(next.items.map { it.id }.toSet()).size}")
+    }
     }
     val home=repository.home(type=type); println("type=${type.label}; home=${home.items.size}; hasMore=${home.hasMore}")
     if(type==ContentType.COMIC) {
@@ -38,12 +40,21 @@ fun main(args: Array<String>) {
     }
     val detail=repository.detail(args.firstOrNull { it.matches(Regex("[0-9]{1,30}")) } ?: home.items.first().id)
     println("detail=${detail.series.title}; episodes=${detail.episodes.size}")
-    val stream=repository.stream(detail.episodes.first())
+    val stream=repository.stream(detail.episodes[args.firstOrNull { it.startsWith("--episode=") }?.substringAfter("=")?.toInt() ?: 0])
     RemoteVideo(repository.http,stream).use { remote ->
         remote.prepare(); val first=remote.read(0,1024*1024)
         val tail=remote.read((remote.total-65536).coerceAtLeast(0),65536)
         println("quality=${stream.quality}; total=${remote.total}; first=${first.size}; tail=${tail.size}; header=${String(first,4,4)}")
-        if(args.contains("--save")) java.io.File("/tmp/hongguo-kotlin-first.mp4").writeBytes(first)
+        if(args.contains("--save")) {
+            check(remote.total <= 64L*1024*1024) { "Probe sample exceeds 64 MB" }
+            java.io.File("/tmp/hongguo-kotlin-sample.mp4").outputStream().use { output ->
+                var offset=0L
+                while(offset<remote.total) {
+                    val bytes=remote.read(offset,minOf(1024L*1024,remote.total-offset).toInt())
+                    check(bytes.isNotEmpty()); output.write(bytes); offset+=bytes.size
+                }
+            }
+        }
     }
     repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown()
 }
