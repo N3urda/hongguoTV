@@ -8,7 +8,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import org.json.JSONObject
 import org.json.JSONArray
 import java.io.IOException
-import java.io.InterruptedIOException
 import java.util.concurrent.TimeUnit
 
 internal fun JSONArray.objects() = (0 until length()).mapNotNull { optJSONObject(it) }
@@ -71,7 +70,7 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         // The website search does not constrain content type. Never use it for comics.
         if(type==ContentType.COMIC) return appSearch(keyword,page,type)
         try { val result=appSearch(keyword,page,type); if(result.items.isNotEmpty() || !result.hasMore) return result } catch (e: Exception) {
-            if(e is SearchSessionExpiredException || e is InterruptedIOException || Thread.currentThread().isInterrupted) throw e
+            if(e is SearchSessionExpiredException || Thread.currentThread().isInterrupted) throw e
             /* Website fallback for short dramas only. RequestScope still prevents cancelled requests. */
         }
         val data=router("$site/search/${Signer.encode(keyword)}?page=$page")

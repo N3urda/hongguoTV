@@ -81,8 +81,21 @@ class SearchPayloadTest {
     @Test fun interruptedSearchDoesNotLaunchWebsiteFallback() {
         var requests = 0
         val cancelled = InterruptedIOException("cancelled")
-        val repository = ContentRepository(OkHttpClient.Builder().addInterceptor { requests++; throw cancelled }.build())
-        assertSame(cancelled, assertThrows(InterruptedIOException::class.java) { repository.search("测试", type = ContentType.SHORT) })
+        val repository = ContentRepository(OkHttpClient.Builder().addInterceptor { requests++; Thread.currentThread().interrupt(); throw cancelled }.build())
+        try { assertSame(cancelled, assertThrows(InterruptedIOException::class.java) { repository.search("测试", type = ContentType.SHORT) }) } finally { Thread.interrupted() }
         assertEquals(1, requests)
     }
+    @Test fun timedOutAppSearchStillUsesWebsiteFallback() {
+        var requests = 0
+        val repository = ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
+            requests++
+            if (requests == 1) throw java.net.SocketTimeoutException("read timed out")
+            okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(200).message("OK").body(okhttp3.ResponseBody.create(null,
+                    """_ROUTER_DATA={"loaderData":{"search_page":{"searchList":[{"series_id":"123","series_name":"测试"}]}}}""")).build()
+        }.build())
+        assertEquals("123", repository.search("测试", type = ContentType.SHORT).items.single().id)
+        assertEquals(2, requests)
+    }
+
 }

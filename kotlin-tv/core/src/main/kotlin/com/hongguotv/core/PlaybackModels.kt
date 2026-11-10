@@ -59,16 +59,20 @@ internal object PlaybackModels {
                 val codec = listOf(entry.str("codec_type"), entry.str("gear_des_key"), entry.optJSONObject("video_meta")?.str("codec_type").orEmpty()).joinToString(" ").lowercase()
                 if (codec.contains("bytevc2") || Regex("(^|[^a-z0-9])bvc2([^a-z0-9]|$)").containsMatchIn(codec)) return@runCatching null
                 val seed = model.str("key_seed").takeIf { it.isNotEmpty() }?.let(::decode64)
-                val key = entry.str("spade_a").takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
+                val encryption = entry.optJSONObject("encrypt_info")
+                val key = encryption?.str("spade_a").orEmpty().ifEmpty { entry.str("spade_a") }
+                    .takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
+                if (encryption != null && key == null && encryption.opt("encrypt") !in listOf(false, 0, "0", "false")) return@runCatching null
                 val resolved = listOf("main_url", "play_url", "backup_url_1").firstNotNullOfOrNull { field ->
                     runCatching {
                         val raw = cleanUrl(entry.str(field))
                         if(raw.isEmpty()) null else url(raw) ?: url(if(seed != null) MediaCrypto.decryptUrl(raw, seed) else String(decode64(raw), Charsets.UTF_8))
                     }.getOrNull()
                 } ?: return@runCatching null
-                val width=entry.optInt("vwidth",0); val height=entry.optInt("vheight",0)
+                val meta=entry.optJSONObject("video_meta")
+                val width=entry.optInt("vwidth",meta?.optInt("vwidth",0) ?: 0); val height=entry.optInt("vheight",meta?.optInt("vheight",0) ?: 0)
                 val dimensions=if(width>0 && height>0) minOf(width,height).toString() else ""
-                val quality=ContentRepository.qualityNumber(entry.str("quality_desc").ifEmpty { dimensions.ifEmpty { entry.str("height").ifEmpty { entry.str("vheight").ifEmpty { entry.str("quality").ifEmpty { name } } } } })
+                val quality=ContentRepository.qualityNumber(entry.str("quality_desc").ifEmpty { meta?.str("definition").orEmpty() }.ifEmpty { dimensions.ifEmpty { entry.str("height").ifEmpty { entry.str("vheight").ifEmpty { entry.str("quality").ifEmpty { name } } } } })
                 StreamInfo(resolved,key,quality.toString())
             }.getOrNull()
         }

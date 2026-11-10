@@ -101,4 +101,14 @@ class PlaybackModelsTest {
         assertEquals(PlaybackSourceException.Reason.INVALID_RESPONSE,error.reason)
     }
 
+    @Test fun nestedEncryptedVariantWithoutKeyIsNeverTreatedAsClearVideo() {
+        val encrypted=row().put("encrypt_info",JSONObject().put("encrypt",true))
+        assertTrue(PlaybackModels.candidates(model(encrypted)).isEmpty())
+    }
+    @Test fun nestedVideoMetadataPreservesQuality() {
+        val variant=row(0).put("video_meta",JSONObject().put("vwidth",720).put("vheight",1280).put("definition","720p"))
+            .put("encrypt_info",JSONObject().put("encrypt",false))
+        assertEquals("720P",PlaybackModels.pick(PlaybackModels.candidates(model(variant)),720).quality)
+    }
+
 }
