@@ -7,6 +7,12 @@
 - 本仓库对照源：`../server/vendor/hongguo.cjs`，取回于 2026-09-21。
 - 本版改动：完整 Kotlin 实现；签名只选择已验证的 hash branch 0；加密媒体通过 Media3 DataSource 直接读取；增加样本边界检查、子样本处理和 AVC 原始编码恢复。
 
+播放设备注册与 x-argus / x-ladon / Simon 签名、双模型选流是以下 GPL-3.0 源码的 Kotlin 移植（用于恢复被上游拒绝的固定设备播放路径）：
+
+- fqapp, `rust/src/sign/{argus,simon,ladon,gorgon,protobuf}.rs`、`rust/src/device/{register,crypto}.rs`、`rust/src/endpoints/video.rs`
+- https://github.com/ch6vip/fqapp
+- 测试使用其仓库自带的独立参考实现黄金向量（`rust/testdata/vectors.json`、`device_vectors.json`）。
+
 `kotlin-tv/` 原生应用源码和派生实现以 GPL-3.0-only 发布，许可证全文见 `LICENSE`。发布 APK 时同时提供本分支对应源码、Gradle 包装器和构建说明。APK 不包含 Node、React Native、JavaScript 引擎或该 JavaScript 源文件。`tools/signing-oracle.cjs` 仅为开发期生成对照测试数据的工具，不参与应用构建或运行。
 
 其他依赖：

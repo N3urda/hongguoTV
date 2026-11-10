@@ -40,7 +40,8 @@ fun main(args: Array<String>) {
     }
     val detail=repository.detail(args.firstOrNull { it.matches(Regex("[0-9]{1,30}")) } ?: home.items.first().id)
     println("detail=${detail.series.title}; episodes=${detail.episodes.size}")
-    val stream=repository.stream(detail.episodes[args.firstOrNull { it.startsWith("--episode=") }?.substringAfter("=")?.toInt() ?: 0])
+    val episode=detail.episodes[args.firstOrNull { it.startsWith("--episode=") }?.substringAfter("=")?.toInt() ?: 0]
+    val stream=if(args.contains("--registered")) repository.registeredStream(episode) else repository.stream(episode)
     RemoteVideo(repository.http,stream).use { remote ->
         remote.prepare(); val first=remote.read(0,1024*1024)
         val tail=remote.read((remote.total-65536).coerceAtLeast(0),65536)

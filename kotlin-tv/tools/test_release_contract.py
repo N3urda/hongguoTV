@@ -14,10 +14,14 @@ SPEC.loader.exec_module(r)
 
 class ReleaseContractTest(unittest.TestCase):
     def setUp(self):
-        self.build = (ROOT / 'kotlin-tv/app/build.gradle.kts').read_text()
+        self.build = 'versionName = env ?: "0.10.0"\nversionCode = env ?: 10\nminSdk = 21'
         self.tag = 'kotlin-v0.10.0'
         self.badging = "package: name='com.hongguotv.nativeapp' versionCode='10' versionName='0.10.0'\nsdkVersion:'21'"
         self.signature = f'Verified using v1 scheme (JAR signing): true\nSigner #1 certificate SHA-256 digest: {r.CERTIFICATE}'
+
+    def test_current_source_version(self):
+        build = (ROOT / 'kotlin-tv/app/build.gradle.kts').read_text()
+        self.assertEqual(('0.10.1', 11, 21), r.source_version(build, 'kotlin-v0.10.1'))
 
     def test_source_version(self):
         self.assertEqual(('0.10.0', 10, 21), r.source_version(self.build, self.tag))
