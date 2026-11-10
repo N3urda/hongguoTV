@@ -111,4 +111,16 @@ class PlaybackModelsTest {
         assertEquals("720P",PlaybackModels.pick(PlaybackModels.candidates(model(variant)),720).quality)
     }
 
+    @Test fun currentGetEndpointUnwrapsOnlyRequestedEpisode() {
+        val repo=ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
+            assertEquals("GET",chain.request().method)
+            assertEquals("/reading/bookapi/video_tab/multi_video_model/v1/",chain.request().url.encodedPath)
+            assertEquals("123",chain.request().url.queryParameter("video_id"))
+            val body=JSONObject().put("code",0).put("data",JSONObject().put("video_model_data",
+                JSONObject().put("123",JSONObject().put("video_model",model(row())))))
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK").body(body.toString().toResponseBody()).build()
+        }.build())
+        assertEquals("720P",repo.stream("123").quality)
+    }
+
 }

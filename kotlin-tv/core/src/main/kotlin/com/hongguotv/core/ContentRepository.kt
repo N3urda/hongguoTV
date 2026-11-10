@@ -27,10 +27,9 @@ class SearchSessionExpiredException: IOException("搜索结果已过期，请从
 class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build(), private val clock: () -> Long = System::currentTimeMillis) {
     private val signer = Signer()
     private val site = "https://hongguoduanju.com"
-    private data class SearchCursor(val searchId: String, val passback: String, val offset: Int?, val updatedAt: Long)
-    private val searchCursors=linkedMapOf<Triple<ContentType,String,Int>,SearchCursor>()
-    private fun text(url: String, signed: Signer.Request? = null): String {
+    private fun text(url: String, signed: Signer.Request? = null, websiteSearch: Boolean = false): String {
         val request = Request.Builder().url(url).header("User-Agent",VendorConstants.VIDEO_UA).header("Accept-Language","zh-CN,zh;q=0.9")
+        if (websiteSearch) request.header("User-Agent","Mozilla/5.0").header("Referer","$site/").header("Accept","application/json")
         signed?.headers?.forEach { (k,v) -> request.header(k,v) }
         signed?.body?.let { request.post(it.toRequestBody("application/json; charset=utf-8".toMediaType())) }
         return RequestScope.execute(http.newCall(request.build())) { response ->
@@ -67,42 +66,15 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     }
     fun search(keyword: String, page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
         require(keyword.isNotBlank() && keyword.length<=80 && page in 1..100)
-        // The website search does not constrain content type. Never use it for comics.
-        if(type==ContentType.COMIC) return appSearch(keyword,page,type)
-        try { val result=appSearch(keyword,page,type); if(result.items.isNotEmpty() || !result.hasMore) return result } catch (e: Exception) {
-            if(e is SearchSessionExpiredException || Thread.currentThread().isInterrupted) throw e
-            /* Website fallback for short dramas only. RequestScope still prevents cancelled requests. */
-        }
-        val data=router("$site/search/${Signer.encode(keyword)}?page=$page")
-        val section=data.optJSONObject("search_(keyword)/page") ?: data.optJSONObject("search_page") ?: throw IOException("搜索数据暂不可用")
+        val section=JSONObject(text("$site/api/search/result?query=${Signer.encode(keyword)}&page=$page",websiteSearch=true))
+        if(section.has("pageNum") && section.optInt("pageNum")!=page) throw IOException("搜索页码不匹配，请重新搜索")
         val rows=section.optJSONArray("searchList") ?: throw IOException("搜索数据结构已变化")
-        val items=valid(rows.objects().map(::card))
-        return CatalogPage(SearchPayload.prioritize(items,keyword),items.isNotEmpty() && page<100)
+        val genre=if(type==ContentType.COMIC) "205" else "203"
+        val items=valid(rows.objects().filter { it.optJSONObject("video_data")?.str("genre")==genre }.map(::card))
+        val more=if(section.has("hasMore")) section.optBoolean("hasMore") else page<section.optInt("totalPages",page)
+        return CatalogPage(SearchPayload.prioritize(items,keyword),more && page<100)
     }
-    private fun appSearch(keyword: String, page: Int, type: ContentType): CatalogPage {
-        val values=VendorConstants.device.toMutableMap()
-        for(k in listOf("version_code","manifest_version_code","update_version_code","pv_player")) values[k]="72232"
-        values["version_name"]="7.2.2.32"
-        values.putAll(linkedMapOf("query" to keyword,"count" to "20","offset" to ((page-1)*20).toString(),"tab_type" to type.searchTab.toString(),"bookshelf_search_plan" to "4","use_correct" to "true","user_is_login" to "0"))
-        val cursor=synchronized(searchCursors) {
-            val now=clock()
-            searchCursors.entries.removeAll { now-it.value.updatedAt>300000 || (page==1 && it.key.first==type && it.key.second==keyword) }
-            searchCursors[Triple(type,keyword,page-1)]
-        }
-        if(type==ContentType.COMIC && page>1 && cursor==null) throw SearchSessionExpiredException()
-        cursor?.let {
-            if(it.searchId.isNotBlank()) values["search_id"]=it.searchId
-            if(it.passback.isNotBlank()) values["passback"]=it.passback
-            it.offset?.takeIf { offset -> offset>=0 }?.let { offset -> values["offset"]=offset.toString() }
-        }
-        val signed=signer.sign("https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v",values)
-        val result=SearchPayload.parse(text(signed.url,signed),type,keyword)
-        synchronized(searchCursors) {
-            searchCursors[Triple(type,keyword,page)]=SearchCursor(result.searchId,result.passback,result.nextOffset,clock())
-            while(searchCursors.size>100) searchCursors.remove(searchCursors.keys.first())
-        }
-        return CatalogPage(result.items,result.hasMore && page<100)
-    }
+
     fun detail(id: String): Detail {
         require(id.matches(Regex("[0-9]{1,30}")))
         val o=router("$site/detail?series_id=$id").optJSONObject("detail_page")?.optJSONObject("seriesDetail") ?: throw IOException("剧集详情暂不可用")
@@ -113,14 +85,13 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     }
     fun stream(id: String, maxQuality: Int = 1080): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
-        val payload="""{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]}}""".toByteArray()
-        val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",VendorConstants.device,payload)
+        val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/",VendorConstants.device + mapOf("video_id" to id,"video_id_type" to "0","device_level" to "1","need_all_video_definition" to "1","need_mp4_align" to "0","use_os_player" to "0","video_platform" to "1024","source" to "0","from_video_id" to ""))
         val data=try { JSONObject(playbackText(signed.url,signed)) } catch(e: org.json.JSONException) {
             throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
         }
         PlaybackModels.checkStatus(data)
         val map=data.optJSONObject("data") ?: throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
-        val model=PlaybackModels.model(map,id) ?: throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
+        val model=PlaybackModels.model(map.optJSONObject("video_model_data") ?: map,id) ?: throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
         val direct=PlaybackModels.candidates(model)
         if(direct.isNotEmpty()) return PlaybackModels.pick(direct,maxQuality)
         val fallback=PlaybackModels.fallback(model) ?: throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)

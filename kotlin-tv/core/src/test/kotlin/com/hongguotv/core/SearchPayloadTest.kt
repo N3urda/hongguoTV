@@ -78,24 +78,17 @@ class SearchPayloadTest {
         assertEquals(listOf("3", "1", "2", "4"), SearchPayload.prioritize(items, "大佬，你该出手了第五季").map { it.id })
     }
 
-    @Test fun interruptedSearchDoesNotLaunchWebsiteFallback() {
-        var requests = 0
-        val cancelled = InterruptedIOException("cancelled")
-        val repository = ContentRepository(OkHttpClient.Builder().addInterceptor { requests++; Thread.currentThread().interrupt(); throw cancelled }.build())
-        try { assertSame(cancelled, assertThrows(InterruptedIOException::class.java) { repository.search("测试", type = ContentType.SHORT) }) } finally { Thread.interrupted() }
-        assertEquals(1, requests)
-    }
-    @Test fun timedOutAppSearchStillUsesWebsiteFallback() {
-        var requests = 0
-        val repository = ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
-            requests++
-            if (requests == 1) throw java.net.SocketTimeoutException("read timed out")
+
+    @Test fun websiteSearchFiltersGenresAndKeepsPagination() {
+        val repo=ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
+            assertEquals("/api/search/result",chain.request().url.encodedPath)
+            assertNotNull(chain.request().header("Referer"))
             okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1)
                 .code(200).message("OK").body(okhttp3.ResponseBody.create(null,
-                    """_ROUTER_DATA={"loaderData":{"search_page":{"searchList":[{"series_id":"123","series_name":"测试"}]}}}""")).build()
+                    """{"pageNum":1,"hasMore":true,"searchList":[{"video_data":{"series_id":"123","series_title":"漫剧","genre":"205"}},{"video_data":{"series_id":"456","series_title":"短剧","genre":"203"}}]}""")).build()
         }.build())
-        assertEquals("123", repository.search("测试", type = ContentType.SHORT).items.single().id)
-        assertEquals(2, requests)
+        assertEquals("123",repo.search("测试",type=ContentType.COMIC).items.single().id)
+        assertEquals("456",repo.search("测试",type=ContentType.SHORT).items.single().id)
+        assertTrue(repo.search("测试").hasMore)
     }
-
 }
