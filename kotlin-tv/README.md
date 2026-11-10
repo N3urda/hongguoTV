@@ -1,13 +1,13 @@
 # 红果 TV 原生独立版
 
-这是独立的 **Kotlin + Android 原生 View + Media3** 工程，最低 Android 8.0 / API 26。安装一个 APK，联网后可直接浏览和播放，无需部署 Node、Docker 或填写服务器地址。
+这是独立的 **Kotlin + Android 原生 View + Media3** 工程，最低 Android 5.0 / API 21。安装一个 APK，联网后可直接浏览和播放，无需部署内容服务或填写服务器地址。
 
 - 应用名称：红果 TV 原生版
 - 包名：`com.hongguotv.nativeapp`，与旧版 `com.hongguotv` 可以并存。
 - 收藏和历史独立保存在本机，不自动迁移旧版数据。
 - APK 不含 JNI 库，可由 Android 在 ARM32、ARM64、x86、x86_64 上运行；视频解码能力依赖设备。
 - 源码分支：`codex/kotlin-standalone`。
-- [下载正式签名 APK](https://github.com/N3urda/hongguoTV-updates/releases/latest)
+- [下载正式签名 APK](https://github.com/N3urda/hongguoTV/releases/latest)
 
 0.2.1 修复简介与设置切换后的焦点跳转，并适配放大字号的卡片高度。可直接覆盖安装 0.2.0，保留收藏和观看记录；见 [交付与验证记录](DELIVERY.md)。
 
@@ -100,6 +100,12 @@
 
 播放中：确认键暂停/播放；左右跳转 10 秒，长按连续跳转；向下直接打开选集，向上或菜单键打开播放、上下集、倍速等更多操作。返回键先关闭选集或收起进度条与菜单，再退出播放；从列表直接续播时回原列表，从详情开始播放时回详情。列表恢复原卡片和页码。
 
+## Android 5–7 兼容
+
+原生版支持安装到 API 21+，不支持 Android 4.x。启动、网络恢复、手机输入/备份与更新安装均按系统版本选择 API。Android 5–7 使用系统原有的「未知来源」安装控制；Android 8+ 使用每应用安装授权。解码器与厂商系统仍需实机验证，见 [兼容验证清单](ANDROID_COMPATIBILITY.md)。
+
+搜索结果焦点标题会滚动显示；长按卡片或按菜单键 →「查看完整标题」可查看完整名称。设置及播放设置中可选择 0°/90°/180°/270° 画面旋转（仅视频），以及「常驻播放进度」（默认关闭）。常驻进度不拦截返回键。详细回归清单见 [UI issues 回归](UI_ISSUES_REGRESSION.md)。
+
 ## 构建
 
 需要 JDK 17、Android SDK Platform 36 / Build Tools 36.0.0。Gradle 8.14.3 包装器已包含；不需要 npm、Node 或 React Native。设置 `ANDROID_HOME`，或在本目录的 `local.properties` 写入 `sdk.dir=SDK绝对路径`。
@@ -152,7 +158,7 @@ node kotlin-tv/tools/signing-oracle.cjs
 **0.7.0 最终验证待填写，发布前替换本段。** 首轮 69 项 JVM 测试通过，Release lint 为 0 错误、28 警告；后续回归仍在进行。最终 APK、签名与覆盖安装、遥控器焦点、播放器复用和性能证据见 [0.7.0 交付与验证](RELEASE_0.7.0.md)，不得将首轮结果当作最终验收。
 <!-- FINAL_0_7_0_VERIFICATION_END -->
 
-既往版本已进行 JVM 单元测试、Android lint、正式 APK 构建及 Android TV API 36 模拟器上的真实播放和遥控器检查；本版最终结果以上述发布记录为准。最低 API 26 配置和静态检查不等同于实体电视验收；**Android 8.0 实体电视的芯片解码、音频输出和长期稳定性尚待实机验证**。遇到设备解码失败可尝试 720P，仍失败需对应电视的日志。
+既往版本已进行 JVM 单元测试、Android lint、正式 APK 构建及 Android TV API 36 模拟器上的真实播放和遥控器检查；本版最终结果以上述发布记录为准。最低 API 21 配置和静态检查不等同于实体电视验收；**Android 8.0 实体电视的芯片解码、音频输出和长期稳定性尚待实机验证**。遇到设备解码失败可尝试 720P，仍失败需对应电视的日志。
 
 内容来自第三方接口；接口、签名、内容可用性或地区网络变化可能需要更新 APK。此版本不是内容平台官方客户端。
 

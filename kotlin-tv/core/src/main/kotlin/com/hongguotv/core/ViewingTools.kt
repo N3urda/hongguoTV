@@ -33,3 +33,24 @@ object EpisodeTarget {
         return clean.toIntOrNull()?.takeIf { it in 1..count }?.minus(1)
     }
 }
+
+/** Rotate only the video canvas; the screen-space controls retain their coordinates. */
+object VideoRotation {
+    val options = listOf(0, 90, 180, 270)
+    fun normalize(degrees: Int): Int = degrees.takeIf { it in options } ?: 0
+    fun usesTexture(degrees: Int): Boolean = normalize(degrees) != 0
+    fun requiresSurfaceRebuild(previous: Int, next: Int): Boolean = usesTexture(previous) != usesTexture(next)
+    data class Canvas(val width: Int, val height: Int)
+    fun canvas(width: Int, height: Int, degrees: Int): Canvas {
+        val swapped = normalize(degrees) in listOf(90, 270)
+        return if (swapped) Canvas(height.coerceAtLeast(0), width.coerceAtLeast(0))
+        else Canvas(width.coerceAtLeast(0), height.coerceAtLeast(0))
+    }
+}
+
+object PlaybackProgressDisplay {
+    fun visible(enabled: Boolean, playingScreen: Boolean, hudVisible: Boolean, failed: Boolean): Boolean =
+        enabled && playingScreen && !hudVisible && !failed
+    fun value(position: Long, duration: Long): Int =
+        if (duration <= 0) 0 else ((position.coerceIn(0, duration).toDouble() / duration) * 1000).toInt()
+}

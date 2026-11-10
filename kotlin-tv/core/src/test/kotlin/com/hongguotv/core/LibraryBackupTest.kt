@@ -9,8 +9,19 @@ class LibraryBackupTest {
     private fun series(id: String)=Series(id,"测试 $id","https://example.com/cover.jpg","", "已完结", "剧情")
     private fun progress(id: String,time: Long)=BackupProgress(series(id),"100$id",0,time,10000,false,time)
     private fun data()=BackupData(listOf(series("1")),listOf(progress("1",100)),setOf("1"),listOf(RecentSearch("你好",ContentType.COMIC)),BackupSettings())
+    @Test fun `legacy backups default display preferences and reject invalid new settings`() {
+        val legacy=JSONObject(LibraryBackup.encode(data()))
+        legacy.getJSONObject("settings").remove("rotation")
+        legacy.getJSONObject("settings").remove("alwaysShowProgress")
+        val decoded=LibraryBackup.decode(legacy.toString())
+        assertEquals(0,decoded.settings.rotation); assertFalse(decoded.settings.alwaysShowProgress)
+        legacy.getJSONObject("settings").put("rotation",45)
+        assertTrue(runCatching { LibraryBackup.decode(legacy.toString()) }.isFailure)
+        legacy.getJSONObject("settings").put("rotation",90).put("alwaysShowProgress","true")
+        assertTrue(runCatching { LibraryBackup.decode(legacy.toString()) }.isFailure)
+    }
     @Test fun `backup round trips records and settings with cover and text sanitization`() {
-        val original=data().copy(settings=BackupSettings(720,1.5f,false,ContentType.COMIC,VideoFrameMode.ZOOM))
+        val original=data().copy(settings=BackupSettings(720,1.5f,false,ContentType.COMIC,VideoFrameMode.ZOOM,270,true))
         assertEquals(original,LibraryBackup.decode(LibraryBackup.encode(original)))
         val sanitized=original.copy(favorites=listOf(series("1").copy(title="你\n好",cover="http://127.0.0.1/secret")))
         val result=LibraryBackup.decode(LibraryBackup.encode(sanitized))

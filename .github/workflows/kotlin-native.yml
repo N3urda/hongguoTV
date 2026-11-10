@@ -1,10 +1,8 @@
 name: Verify Kotlin standalone APK
 on:
   push:
-    branches: ['codex/kotlin-standalone']
-    tags: ['kotlin-v*']
+    branches: [main]
   pull_request:
-    paths: ['kotlin-tv/**', 'scripts/build-kotlin.sh', '.github/workflows/kotlin-native.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -14,6 +12,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Check release metadata contract without publishing
+        run: python3 -m unittest discover -s kotlin-tv/tools -p 'test_*.py'
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin

@@ -147,6 +147,9 @@ class MainActivity: Activity() {
     private var pausedForLifecycle=false
     private lateinit var hud: LinearLayout
     private lateinit var playbackText: TextView
+    private var persistentProgress: LinearLayout?=null
+    private var persistentTime: TextView?=null
+    private var persistentBar: ProgressBar?=null
     private lateinit var progressBar: ProgressBar
     private lateinit var controls: LinearLayout
     private var panel=false
@@ -162,7 +165,7 @@ class MainActivity: Activity() {
             if(!foreground || isDestroyed) return
             if(screen=="player") {
                 if(sleepTimer.poll()) stopForSleep()
-                if(hud.visibility==View.VISIBLE) updatePlaybackText()
+                if(hud.visibility==View.VISIBLE || library.alwaysShowProgress) updatePlaybackText()
                 maybePrefetch()
                 val now=android.os.SystemClock.elapsedRealtime()
                 if(player?.isPlaying==true && now-lastSaved>5000) { saveProgress(); lastSaved=now }
@@ -194,9 +197,12 @@ class MainActivity: Activity() {
         super.onCreate(state)
         window.decorView.systemUiVisibility=View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         library=Library(this); artwork=ArtworkLoader(this); tvTools=TvTools(this); root=FrameLayout(this).apply { setBackgroundColor(bg) }; setContentView(root)
+        root.addOnLayoutChangeListener { _,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom ->
+            if(right-left!=oldRight-oldLeft || bottom-top!=oldBottom-oldTop) applyVideoRotation()
+        }
         updater=AppUpdater(this) { foreground && library.isLoaded && screen=="catalog" && !tvTools.showing }
-        connectivity=getSystemService(ConnectivityManager::class.java)
-        runCatching { connectivity.registerDefaultNetworkCallback(networkCallback); networkRegistered=true }
+        connectivity=NetworkCompat.manager(this)
+        runCatching { NetworkCompat.register(connectivity, networkCallback); networkRegistered=true }
         favoriteMonitor=FavoriteMonitor(library,repository) { refreshFavoriteLabels() }
         mediaSession=TvMediaSession(this,{ if(foreground && screen=="player") requestPlayback(true) },{ if(foreground && screen=="player") requestPlayback(false) },{ position -> if(foreground && screen=="player") seekTo(position) },{ direction -> skipEpisode(direction) },{ if(foreground && screen=="player") returnToDetail() })
         message(base(),"正在读取本机记录…")
@@ -271,7 +277,7 @@ class MainActivity: Activity() {
     }
     private fun message(parent: LinearLayout,label: String) { parent.addView(text(label,17f,muted).apply { setPadding(0,dp(28),0,dp(18)) }) }
     private fun error(parent: LinearLayout,problem: Throwable,retry: ()->Unit) {
-        message(parent,"暂时无法加载，请检查网络后重试。")
+        message(parent,"内容暂时无法加载，请查看下方原因后重试。")
         val detail=if(problem is java.net.UnknownHostException) "无法连接内容网站" else if(problem is java.net.SocketTimeoutException) "连接超时" else problem.message.orEmpty().replace(Regex("https?://\\S+"),"[地址]").take(160)
         parent.addView(text(detail,13f,muted)); addButton(parent,"重试",onClick=retry).requestFocus()
     }
@@ -620,7 +626,9 @@ class MainActivity: Activity() {
             if(library.queued(series.id)) "移出稍后看" else "加入稍后看","查看剧集详情")
         if(tab==0) labels+="不在热门推荐中显示"
         if(tab==4) labels+="管理观看记录"
+        labels+="查看完整标题"
         tvTools.choose(series.title,labels,anchor,{ choice ->
+            if(choice==labels.lastIndex) { main.post { if(anchor.isAttachedToWindow) tvTools.info("完整标题",series.title,anchor) }; return@choose }
             when(choice) {
                 0 -> openDetail(series,true)
                 1 -> { val added=library.toggle(series); Toast.makeText(this,if(added) "已收藏" else "已取消收藏",Toast.LENGTH_SHORT).show(); refreshLibraryCards(series.id,!added && (tab==3 || collection=="updates")); if(added) favoriteMonitor.check() }
@@ -678,6 +686,13 @@ class MainActivity: Activity() {
         defaultSpeed=setting(playback,"默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(defaultSpeed,false) }
         lateinit var frame: TextView
         frame=setting(playback,"画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame,false) }
+        lateinit var rotationButton: TextView
+        rotationButton=setting(playback,"画面旋转  ·  ${library.videoRotation}°") { showRotationPicker(rotationButton) }
+        lateinit var progressButton: TextView
+        progressButton=setting(playback,"常驻播放进度  ·  ${if(library.alwaysShowProgress) "开启" else "关闭"}") {
+            library.alwaysShowProgress=!library.alwaysShowProgress
+            progressButton.text="常驻播放进度  ·  ${if(library.alwaysShowProgress) "开启" else "关闭"}"
+        }
         lateinit var autoNextButton: TextView
         autoNextButton=setting(playback,"自动连播  ·  ${if(library.autoNext) "开启" else "关闭"}") {
             library.autoNext=!library.autoNext
@@ -701,14 +716,14 @@ class MainActivity: Activity() {
         lateinit var updates: TextView
         updates=setting(device,"版本与更新  ·  ${BuildConfig.VERSION_NAME}") { updater.show(updates) }
         val license=setting(device,"开源许可") {
-            AlertDialog.Builder(this).setTitle("开源许可").setMessage("本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\nBouncy Castle：MIT\n完整源码和许可证见 GitHub：N3urda/hongguoTV-updates。").setPositiveButton("关闭",null).show()
+            AlertDialog.Builder(this).setTitle("开源许可").setMessage("本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\nBouncy Castle：MIT\n完整源码和许可证见 GitHub：N3urda/hongguoTV。").setPositiveButton("关闭",null).show()
         }
-        val left=listOf(qualityButton,defaultSpeed,frame,autoNextButton); val right=listOf(backup,hidden,updates,license)
+        val left=listOf(qualityButton,defaultSpeed,frame,rotationButton,progressButton,autoNextButton); val right=listOf(backup,hidden,updates,license)
         listOf(left,right).forEach { items -> items.forEachIndexed { index,view ->
             view.nextFocusUpId=items.getOrNull(index-1)?.id ?: nav[tab].id
             view.nextFocusDownId=items.getOrNull(index+1)?.id ?: view.id
         } }
-        left.forEachIndexed { i,v -> v.nextFocusLeftId=v.id; v.nextFocusRightId=right[i].id }
+        left.forEachIndexed { i,v -> v.nextFocusLeftId=v.id; v.nextFocusRightId=right[minOf(i,right.lastIndex)].id }
         right.forEachIndexed { i,v -> v.nextFocusLeftId=left[i].id; v.nextFocusRightId=v.id }
         nav.forEach { it.nextFocusDownId=qualityButton.id }
         parent.addView(text("红果 TV  /  ${BuildConfig.VERSION_NAME}    ·    收藏与进度保存在本机",12f,muted).apply { setPadding(dp(2),dp(18),0,dp(10)) })
@@ -799,11 +814,14 @@ class MainActivity: Activity() {
         episodes.forEachIndexed { i,v -> v.nextFocusLeftId=if(i%10==0) v.id else episodes[i-1].id; v.nextFocusRightId=if(i%10==9 || i==episodes.lastIndex) v.id else episodes[i+1].id; if(i>=10) v.nextFocusUpId=episodes[i-10].id; v.nextFocusDownId=if(i+10<episodes.size) episodes[i+10].id else v.id }
         if(focusEpisode) episodes.getOrNull((episodeIndex-group*20).coerceIn(0,episodes.lastIndex))?.requestFocus() else play.requestFocus()
     }
-    private fun playEpisode(index: Int,position: Long=0,autoplay: Boolean=true,recovering: Boolean=false) {
+    private fun playEpisode(index: Int,position: Long=0,autoplay: Boolean=true,recovering: Boolean=false,recreateView: Boolean=false) {
         updater.interrupt()
         val data=detail ?: return
         val playbackStarted=android.os.SystemClock.elapsedRealtime()
-        val reuse=screen=="player" && player!=null && playerView!=null && !recovering && !playError
+        val reuse=screen=="player" && player!=null && playerView!=null && !recovering && !playError && !recreateView
+            && ((playerView?.videoSurfaceView is TextureView)==VideoRotation.usesTexture(library.videoRotation))
+        // A failed decoder must never be reused by manual or automatic recovery.
+        if(player!=null && !reuse) android.util.Log.i("HongguoTV","Rebuilding player: recovery=$recovering failed=$playError rotationChanged=$recreateView")
         library.setWatched(data.series.id,false)
         val selectedIndex=index.coerceIn(0,data.episodes.lastIndex)
         val prefetched=if(position==0L && !recovering) preparedNext.take("${data.episodes[selectedIndex]}:${library.maxQuality}") else null
@@ -830,11 +848,22 @@ class MainActivity: Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if(!reuse) {
             root.removeAllViews(); root.setBackgroundColor(Color.BLACK)
-            val view=PlayerView(this).apply {
+            // Preserve SurfaceView's efficient default path on low-end TVs.
+            val view=(if(VideoRotation.usesTexture(library.videoRotation))
+                layoutInflater.inflate(R.layout.video_player,root,false) as PlayerView else PlayerView(this)).apply {
                 useController=false; resizeMode=frameResizeMode(); isFocusable=false
                 setKeepContentOnPlayerReset(true); setShutterBackgroundColor(Color.BLACK); setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
             }
-            playerView=view; root.addView(view,FrameLayout.LayoutParams(-1,-1))
+            playerView=view; root.addView(view,FrameLayout.LayoutParams(-1,-1,Gravity.CENTER))
+            view.post { if(playerView===view) applyVideoRotation() }
+            persistentTime=text("",12f,white)
+            persistentBar=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal).apply { max=1000; progressTintList=android.content.res.ColorStateList.valueOf(accent) }
+            persistentProgress=column().apply {
+                isFocusable=false; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                setPadding(dp(12),dp(4),dp(12),dp(6)); setBackgroundColor(Color.argb(160,0,0,0))
+                addView(persistentTime); addView(persistentBar,lp(-1,dp(3))); visibility=View.GONE
+            }
+            root.addView(persistentProgress,FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
             hud=column().apply { setPadding(dp(widthDp()*.05f),dp(20),dp(widthDp()*.05f),(resources.displayMetrics.heightPixels*.05f).toInt()); background=GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,intArrayOf(Color.TRANSPARENT,Color.argb(240,11,15,21))) }
             playbackTitle=text("",23f).apply { maxLines=1; ellipsize=TextUtils.TruncateAt.END; setTypeface(null,Typeface.BOLD) }; hud.addView(playbackTitle)
             playbackText=text("",15f,muted).apply { setPadding(0,dp(10),0,dp(9)) }; hud.addView(playbackText)
@@ -871,7 +900,7 @@ class MainActivity: Activity() {
                         }
                         playbackReady=true
                         if(firstReady) { firstReady=false; readySince=android.os.SystemClock.elapsedRealtime(); android.util.Log.i("HongguoTV","Playback ready episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${readySince-playbackStarted}") }
-                        if(hud.visibility==View.VISIBLE) updatePlaybackText()
+                        if(hud.visibility==View.VISIBLE || library.alwaysShowProgress) updatePlaybackText()
                     }
                     syncMediaSession()
                     if(state==Player.STATE_ENDED) {
@@ -931,7 +960,7 @@ class MainActivity: Activity() {
             } catch(_: Exception) { remote?.close() }
         }
     }
-    private fun networkAvailable(): Boolean = connectivity.getNetworkCapabilities(connectivity.activeNetwork)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)==true
+    private fun networkAvailable(): Boolean = NetworkCompat.available(connectivity)
     private fun currentPosition(): Long = pendingSeek ?: player?.currentPosition?.takeIf { playbackReady } ?: startPosition
     private fun cancelRecovery() { main.removeCallbacks(retryRunnable); retryPending=false; autoRecovery=false }
     private fun scheduleRecovery() {
@@ -946,22 +975,23 @@ class MainActivity: Activity() {
         retryPosition=currentPosition().coerceAtLeast(0); retryAutoplay=requestedAutoplay && !sleepStopped
         saveProgress(); cancelRecovery(); cancelPrefetch()
         playError=true; player?.pause(); progressBar.visibility=View.GONE; hud.visibility=View.VISIBLE; controls.removeAllViews(); controls.visibility=View.VISIBLE; panel=true
+        updatePersistentProgress()
         val decoding=problem is PlaybackException && problem.errorCode in 3000..4999
-        val retryable=if(problem is PlaybackException) problem.errorCode in 2000..2999 || problem.errorCode==PlaybackException.ERROR_CODE_TIMEOUT else problem is java.io.IOException
-        playbackText.text=if(decoding) "电视无法解码当前视频，可尝试更低清晰度。" else "播放失败，可重试或切换清晰度。"
+        val retryable=if(problem is PlaybackException) problem.errorCode in 2000..2999 || problem.errorCode==PlaybackException.ERROR_CODE_TIMEOUT else problem is java.io.IOException && problem !is com.hongguotv.core.PlaybackSourceException
+        playbackText.text=if(problem is com.hongguotv.core.PlaybackSourceException) problem.message else if(decoding) "电视无法解码当前视频，可尝试更低清晰度。" else "播放失败，可重试或切换清晰度。"
         val actions=row(); controls.addView(actions)
-        addButton(actions,"立即重试") { playEpisode(episodeIndex,retryPosition,retryAutoplay) }.requestFocus()
+        addButton(actions,if(decoding) "重建播放器" else "立即重试") { playEpisode(episodeIndex,retryPosition,retryAutoplay) }.requestFocus()
         addButton(actions,"尝试 720P") { library.maxQuality=720; playEpisode(episodeIndex,retryPosition,retryAutoplay) }
         addButton(actions,"返回选集") { returnToDetail(true) }
         if(retryable && !sleepStopped) {
             addButton(controls,"停止自动重试") { cancelRecovery(); playbackText.text="自动重试已停止，观看位置已保留。" }
             autoRecovery=true; scheduleRecovery()
         }
-        android.util.Log.w("HongguoTV","Playback failure: ${problem.javaClass.simpleName}"+(if(problem is PlaybackException) " code=${problem.errorCodeName}" else ""))
+        android.util.Log.w("HongguoTV","Playback failure: ${problem.javaClass.simpleName}"+(if(problem is PlaybackException) " code=${problem.errorCodeName}" else if(problem is com.hongguotv.core.PlaybackSourceException) " reason=${problem.reason} upstream=${problem.upstreamCode}" else ""))
     }
     private fun hidePlaybackOverlay() {
         main.removeCallbacks(hideHud)
-        panel=false; controls.visibility=View.GONE; controls.clearFocus(); hud.visibility=View.GONE
+        panel=false; controls.visibility=View.GONE; controls.clearFocus(); hud.visibility=View.GONE; updatePersistentProgress()
     }
     private fun showHud() {
         if(screen!="player") return
@@ -969,6 +999,7 @@ class MainActivity: Activity() {
         if(!panel && player?.isPlaying==true) main.postDelayed(hideHud,4500)
     }
     private fun updatePlaybackText() {
+        updatePersistentProgress()
         transportPlay?.text=if(player?.playWhenReady==true) "暂停" else "播放"
         sleepButton?.text="定时 ${sleepTimer.label()}"
         if(screen!="player" || playError) return
@@ -978,7 +1009,7 @@ class MainActivity: Activity() {
         val duration=p.duration.coerceAtLeast(0); val position=pendingSeek ?: p.currentPosition
         val state=when { p.playbackState==Player.STATE_BUFFERING -> "缓冲中"; p.playbackState==Player.STATE_ENDED -> "本集已结束"; !p.playWhenReady -> "已暂停"; else -> "正在播放" }
         playbackText.text="$state  ·  ${formatTime(position)} / ${formatTime(duration)}  ·  $quality  ·  ${PlaybackSpeed.label(p.playbackParameters.speed)}"+(if(sleepTimer.active) "  ·  定时 ${sleepTimer.label()}" else "")
-        progressBar.progress=if(duration>0) (position*1000/duration).toInt().coerceIn(0,1000) else 0
+        progressBar.progress=PlaybackProgressDisplay.value(position,duration)
     }
     private fun requestPlayback(play: Boolean) {
         requestedAutoplay=play; pausedForLifecycle=!play
@@ -1030,6 +1061,45 @@ class MainActivity: Activity() {
             if(anchor.tag!="playback-settings") anchor.text="定时 ${sleepTimer.label()}"; updatePlaybackText(); showHud()
         })
     }
+    private fun applyVideoRotation() {
+        val view=playerView ?: return
+        if(root.width<=0 || root.height<=0) return
+        val canvas=VideoRotation.canvas(root.width,root.height,library.videoRotation)
+        val params=view.layoutParams as FrameLayout.LayoutParams
+        if(params.width!=canvas.width || params.height!=canvas.height) {
+            params.width=canvas.width; params.height=canvas.height; params.gravity=Gravity.CENTER; view.layoutParams=params
+        }
+        view.rotation=library.videoRotation.toFloat()
+    }
+    private fun showRotationPicker(anchor: TextView) {
+        tvTools.choose("画面旋转 · 仅旋转视频",VideoRotation.options.map { "${it}°" },anchor,{ index ->
+            val previous=library.videoRotation; val next=VideoRotation.options[index]
+            if(previous==next) return@choose
+            val rebuild=screen=="player" && playerView!=null && VideoRotation.requiresSurfaceRebuild(previous,next)
+            val selectedEpisode=episodeIndex; val position=currentPosition()
+            val autoplay=if(playbackReady) player?.playWhenReady ?: requestedAutoplay else requestedAutoplay
+            val ticket=generation
+            library.videoRotation=next
+            if(rebuild) {
+                // Let the picker finish dismissal before replacing its anchor and the video view.
+                // Rebuild only for a SurfaceView/TextureView transition, never on a layout callback.
+                main.post {
+                    if(screen=="player" && generation==ticket)
+                        playEpisode(selectedEpisode,position,autoplay,recreateView=true)
+                }
+            } else applyVideoRotation()
+            if(anchor.tag!="playback-settings") anchor.text="画面旋转  ·  ${library.videoRotation}°"
+        })
+    }
+    private fun updatePersistentProgress() {
+        val visible=PlaybackProgressDisplay.visible(library.alwaysShowProgress,screen=="player",hud.visibility==View.VISIBLE,playError)
+        persistentProgress?.visibility=if(visible) View.VISIBLE else View.GONE
+        if(!visible) return
+        val duration=player?.duration?.coerceAtLeast(0) ?: 0L
+        val position=currentPosition().coerceAtLeast(0)
+        persistentTime?.text=if(playbackReady) "${formatTime(position)} / ${if(duration>0) formatTime(duration) else "--:--"}" else "正在准备…"
+        persistentBar?.progress=PlaybackProgressDisplay.value(position,duration)
+    }
     private fun frameResizeMode()=when(library.frameMode) {
         VideoFrameMode.FIT -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
         VideoFrameMode.ZOOM -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
@@ -1060,7 +1130,7 @@ class MainActivity: Activity() {
         episodes=addButton(options,"选集") { showEpisodePanel(episodes) }
         lateinit var more: TextView
         more=addButton(options,"播放设置") {
-            tvTools.choose("播放设置",listOf("倍速 ${PlaybackSpeed.label(library.playbackSpeed)}","清晰度 ${library.maxQuality}P","画面 ${library.frameMode.label}","定时 ${sleepTimer.label()}","从头播放"),more,{ choice ->
+            tvTools.choose("播放设置",listOf("倍速 ${PlaybackSpeed.label(library.playbackSpeed)}","清晰度 ${library.maxQuality}P","画面 ${library.frameMode.label}","定时 ${sleepTimer.label()}","从头播放","画面旋转 ${library.videoRotation}°","常驻播放进度 ${if(library.alwaysShowProgress) "开启" else "关闭"}"),more,{ choice ->
                 main.post {
                     if(screen=="player" && more.isAttachedToWindow) when(choice) {
                         0 -> showSpeedPicker(more)
@@ -1068,6 +1138,8 @@ class MainActivity: Activity() {
                         2 -> showFramePicker(more,true)
                         3 -> showSleepPicker(more)
                         4 -> { seekTo(0); hidePanel() }
+                        5 -> showRotationPicker(more)
+                        6 -> { library.alwaysShowProgress=!library.alwaysShowProgress; updatePersistentProgress(); Toast.makeText(this,if(library.alwaysShowProgress) "常驻播放进度已开启" else "常驻播放进度已关闭",Toast.LENGTH_SHORT).show() }
                     }
                 }
             })
@@ -1142,7 +1214,7 @@ class MainActivity: Activity() {
         speedDialog?.dismiss(); speedDialog=null
         main.removeCallbacks(hideHud); main.removeCallbacks(seekRunnable); pendingSeek=null
         playerListener?.let { player?.removeListener(it) }; playerListener=null
-        video?.close(); video=null; playerView?.player=null; playerView=null; player?.release(); player=null; playbackReady=false; transportPlay=null; sleepButton=null
+        video?.close(); video=null; playerView?.player=null; playerView=null; persistentProgress=null; persistentTime=null; persistentBar=null; player?.release(); player=null; playbackReady=false; transportPlay=null; sleepButton=null
         closeTransport(playbackHttp); playbackHttp=null
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }

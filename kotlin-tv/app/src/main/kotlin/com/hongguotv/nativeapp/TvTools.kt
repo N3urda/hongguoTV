@@ -5,8 +5,6 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -19,7 +17,6 @@ import com.hongguotv.core.EpisodeTarget
 import com.hongguotv.core.PhoneSearchServer
 import com.hongguotv.core.LibraryTransferServer
 import com.hongguotv.core.BackupData
-import java.net.Inet4Address
 import java.util.concurrent.Executors
 
 /** Native modal controls kept separate from catalog/player navigation. */
@@ -101,11 +98,8 @@ class TvTools(private val activity: Activity) {
         contentDescription="二维码"
     }
     fun phoneInput(anchor: View?,submit: (String)->Unit) {
-        val connectivity=activity.getSystemService(ConnectivityManager::class.java)
-        val network=connectivity.activeNetwork
-        val capabilities=connectivity.getNetworkCapabilities(network)
-        val address=connectivity.getLinkProperties(network)?.linkAddresses?.map { it.address }?.firstOrNull { it is Inet4Address && it.isSiteLocalAddress }?.hostAddress
-        if(address==null || capabilities==null || !(capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))) {
+        val address=NetworkCompat.lanAddress(NetworkCompat.manager(activity))
+        if(address==null) {
             info("手机输入","请让电视和手机连接同一局域网（Wi-Fi 或有线网络）后重试。",anchor); return
         }
         val content=column(); val status=label("正在生成二维码…"); content.addView(status)
@@ -128,10 +122,8 @@ class TvTools(private val activity: Activity) {
         }
     }
     fun libraryTransfer(backup: String,anchor: View?,restore: (BackupData,Boolean)->Unit) {
-        val connectivity=activity.getSystemService(ConnectivityManager::class.java)
-        val network=connectivity.activeNetwork; val capabilities=connectivity.getNetworkCapabilities(network)
-        val address=connectivity.getLinkProperties(network)?.linkAddresses?.map { it.address }?.firstOrNull { it is Inet4Address && it.isSiteLocalAddress }?.hostAddress
-        if(address==null || capabilities==null || !(capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))) {
+        val address=NetworkCompat.lanAddress(NetworkCompat.manager(activity))
+        if(address==null) {
             info("备份与恢复","请让电视和手机连接同一局域网后重试。",anchor); return
         }
         val content=column(); val status=label("正在生成二维码…"); content.addView(status)

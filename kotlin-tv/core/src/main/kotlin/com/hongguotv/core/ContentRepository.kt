@@ -8,6 +8,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import org.json.JSONObject
 import org.json.JSONArray
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.util.concurrent.TimeUnit
 
 internal fun JSONArray.objects() = (0 until length()).mapNotNull { optJSONObject(it) }
@@ -40,7 +41,7 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
             val input=body.byteStream(); val out=java.io.ByteArrayOutputStream(); val buffer=ByteArray(8192)
             while(out.size()<=16*1024*1024) { val n=input.read(buffer); if(n<0) break; out.write(buffer,0,n) }; val bytes=out.toByteArray()
             if(bytes.size > 16*1024*1024) throw IOException("内容响应过大")
-            String(bytes,Charsets.UTF_8)
+            String(bytes,Charsets.UTF_8).also { if (it.isBlank()) throw IOException("内容服务返回空内容，请稍后重试") }
         }
     }
     private fun router(url: String) = extractRouter(text(url)).getJSONObject("loaderData")
@@ -69,12 +70,15 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         require(keyword.isNotBlank() && keyword.length<=80 && page in 1..100)
         // The website search does not constrain content type. Never use it for comics.
         if(type==ContentType.COMIC) return appSearch(keyword,page,type)
-        try { val result=appSearch(keyword,page,type); if(result.items.isNotEmpty() || !result.hasMore) return result } catch (e: Exception) { if(e is SearchSessionExpiredException) throw e; /* Website fallback for short dramas only. */ }
+        try { val result=appSearch(keyword,page,type); if(result.items.isNotEmpty() || !result.hasMore) return result } catch (e: Exception) {
+            if(e is SearchSessionExpiredException || e is InterruptedIOException || Thread.currentThread().isInterrupted) throw e
+            /* Website fallback for short dramas only. RequestScope still prevents cancelled requests. */
+        }
         val data=router("$site/search/${Signer.encode(keyword)}?page=$page")
         val section=data.optJSONObject("search_(keyword)/page") ?: data.optJSONObject("search_page") ?: throw IOException("搜索数据暂不可用")
         val rows=section.optJSONArray("searchList") ?: throw IOException("搜索数据结构已变化")
         val items=valid(rows.objects().map(::card))
-        return CatalogPage(items,items.isNotEmpty() && page<100)
+        return CatalogPage(SearchPayload.prioritize(items,keyword),items.isNotEmpty() && page<100)
     }
     private fun appSearch(keyword: String, page: Int, type: ContentType): CatalogPage {
         val values=VendorConstants.device.toMutableMap()
@@ -93,27 +97,12 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
             it.offset?.takeIf { offset -> offset>=0 }?.let { offset -> values["offset"]=offset.toString() }
         }
         val signed=signer.sign("https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v",values)
-        val data=JSONObject(text(signed.url,signed))
-        if(data.optInt("code",-1)!=0) throw IOException("搜索接口暂不可用")
-        val tabs=data.optJSONArray("search_tabs") ?: data.optJSONObject("data")?.optJSONArray("search_tabs") ?: throw IOException("搜索格式异常")
-        val tab=tabs.objects().firstOrNull { it.optInt("tab_type")==type.searchTab } ?: throw IOException("${type.label}搜索暂不可用")
-        val list=mutableListOf<Series>()
-        for(cell in (tab.optJSONArray("data") ?: JSONArray()).objects()) {
-            val cells=mutableListOf(cell)
-            runCatching { JSONObject(cell.str("lynx_data")).optJSONArray("cell_data")?.objects() }.getOrNull()?.let { cells.addAll(it) }
-            for(row in cells) {
-                val video=row.optJSONArray("video_data")?.objects()?.firstOrNull() ?: continue
-                val id=video.str("series_id").ifEmpty { row.str("book_id").ifEmpty { row.str("search_result_id") } }
-                val title=row.optJSONObject("search_high_light")?.optJSONObject("title")?.str("text").orEmpty().ifEmpty { video.str("title").ifEmpty { row.str("cell_name") } }
-                val count=video.optInt("episode_cnt")
-                list+=Series(id,title,cleanUrl(video.str("cover").ifEmpty { video.str("cover_url") }),video.str("video_desc"),if(count>0) "全 $count 集" else video.str("rec_text"),video.str("sub_title"))
-            }
-        }
+        val result=SearchPayload.parse(text(signed.url,signed),type,keyword)
         synchronized(searchCursors) {
-            searchCursors[Triple(type,keyword,page)]=SearchCursor(tab.str("search_id"),tab.str("passback"),tab.str("next_offset").toIntOrNull(),clock())
+            searchCursors[Triple(type,keyword,page)]=SearchCursor(result.searchId,result.passback,result.nextOffset,clock())
             while(searchCursors.size>100) searchCursors.remove(searchCursors.keys.first())
         }
-        return CatalogPage(valid(list),tab.optBoolean("has_more",false) && page<100)
+        return CatalogPage(result.items,result.hasMore && page<100)
     }
     fun detail(id: String): Detail {
         require(id.matches(Regex("[0-9]{1,30}")))
@@ -127,28 +116,41 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         require(id.matches(Regex("[0-9]{1,30}")))
         val payload="""{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]}}""".toByteArray()
         val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",VendorConstants.device,payload)
-        val data=JSONObject(text(signed.url,signed))
-        if(data.optInt("Code",data.optInt("code",0))!=0) throw IOException("播放接口暂不可用")
-        val map=data.optJSONObject("data") ?: throw IOException("播放信息为空")
-        val entry=map.optJSONObject(id) ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull() ?: throw IOException("播放信息为空")
-        val model=entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
-        val raw=model.opt("fallback_api")
-        val fallback=when(raw) { is JSONObject -> raw.str("fallback_api"); is JSONArray -> raw.optString(0); else -> runCatching { JSONObject(raw.toString()).str("fallback_api") }.getOrDefault(raw.toString()) }
-        if(!fallback.startsWith("https://")) throw IOException("播放地址格式异常")
-        val info=JSONObject(text(fallback)).optJSONObject("video_info")?.optJSONObject("data") ?: throw IOException("没有播放资源")
-        val videoList=info.optJSONObject("video_list") ?: throw IOException("没有可用清晰度")
-        // ByteVC2 resources can expose playable audio but no video track in Android's MP4 extractor.
-        // Keep missing legacy codec labels usable, but never select a known incompatible variant.
-        val rows=videoList.keys().asSequence().mapNotNull { k -> videoList.optJSONObject(k)?.let { k to it } }.filter {
-            it.second.str("main_url").isNotEmpty() && it.second.str("codec_type").lowercase() !in setOf("bytevc2","bvc2")
-        }.map { (k,o) -> Triple(qualityNumber(o.str("quality_desc").ifEmpty { o.str("height").ifEmpty { o.str("vheight").ifEmpty { o.str("quality").ifEmpty { k } } } }),k,o) }.sortedByDescending { it.first }.toList()
-        val selected=rows.firstOrNull { it.first<=maxQuality } ?: rows.lastOrNull() ?: throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
-        val item=selected.third; var url=cleanUrl(item.str("main_url")); val seed=info.str("key_seed")
-        if(seed.isNotEmpty()) url=MediaCrypto.decryptUrl(url,decode64(seed))
-        if(!url.startsWith("https://") && !url.startsWith("http://")) throw IOException("播放地址无效")
-        val key=item.str("spade_a").takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
-        val quality=if(selected.first>0) "${selected.first}P"+(if(selected.first>maxQuality) "（兼容资源）" else "") else "自动"
-        return StreamInfo(url,key,quality)
+        val data=try { JSONObject(playbackText(signed.url,signed)) } catch(e: org.json.JSONException) {
+            throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
+        }
+        PlaybackModels.checkStatus(data)
+        val map=data.optJSONObject("data") ?: throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
+        val model=PlaybackModels.model(map,id) ?: throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
+        val direct=PlaybackModels.candidates(model)
+        if(direct.isNotEmpty()) return PlaybackModels.pick(direct,maxQuality)
+        val fallback=PlaybackModels.fallback(model) ?: throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
+        val response=try { JSONObject(playbackText(fallback)) } catch(e: org.json.JSONException) {
+            throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
+        }
+        PlaybackModels.checkStatus(response)
+        val info=response.optJSONObject("video_info")?.optJSONObject("data")
+            ?: throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
+        return PlaybackModels.pick(PlaybackModels.candidates(info),maxQuality)
+    }
+
+    /** Playback-only HTTP classification; catalog/search transport stays unchanged. */
+    private fun playbackText(url: String, signed: Signer.Request? = null): String {
+        val request=Request.Builder().url(url).header("User-Agent",VendorConstants.VIDEO_UA).header("Accept-Language","zh-CN,zh;q=0.9")
+        signed?.headers?.forEach { (key,value) -> request.header(key,value) }
+        signed?.body?.let { request.post(it.toRequestBody("application/json; charset=utf-8".toMediaType())) }
+        return RequestScope.execute(http.newCall(request.build())) { response ->
+            if(response.code in 400..499 && response.code !in setOf(408,429))
+                throw PlaybackSourceException(PlaybackSourceException.Reason.HTTP_REJECTED,response.code)
+            if(!response.isSuccessful) throw IOException("播放请求失败（HTTP ${response.code}）")
+            val body=response.body ?: throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
+            val limit=16*1024*1024
+            if(body.contentLength()>limit) throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
+            val out=java.io.ByteArrayOutputStream(); val buffer=ByteArray(8192); val input=body.byteStream()
+            while(out.size()<=limit) { val count=input.read(buffer); if(count<0) break; out.write(buffer,0,count) }
+            if(out.size()>limit) throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
+            String(out.toByteArray(),Charsets.UTF_8)
+        }
     }
     companion object {
         fun extractRouter(html: String): JSONObject {

@@ -14,7 +14,7 @@
 
 ## 接入状态
 
-公开仓库 `N3urda/hongguoTV-updates` 已创建。自动签名与源代码同步还需要授权配置 Actions Secrets 和专用部署密钥；在 `TV_UPDATES_ENABLED` 未设为 `true` 前，同步工作流跳过。
+历史方案曾计划使用独立 updates 仓库，但未完成正式发布。当前已改为主仓库标签发布，配置与迁移步骤以 [AUTO_UPDATES.md](AUTO_UPDATES.md) 为准。
 
 因此，这份记录不宣称已完成真实公开新版下载、系统安装授权、覆盖更新或云端自动发布的端到端验收。完成凭据配置后，应以实际云端 Release APK 和电视安装结果补充验证。
 
