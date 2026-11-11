@@ -22,12 +22,16 @@ internal class RankingScreen(
     private val load: (RankBoard, ((RankSnapshot?, String?) -> Unit)) -> Unit,
 ) : LinearLayout(activity) {
     private val controls = mutableListOf<TextView>()
-    private val heading = label("热播排行榜", 25f)
+    private val heading = label("热播排行榜", 22f)
     private val subtitle = label("", 12f, TvStyle.muted)
     private val body = LinearLayout(activity).apply { orientation = VERTICAL }
     private var filterButton: TextView
     private var refreshButton: TextView
     private var browser: ContinuousCatalogView? = null
+    private var headerOffset = 0
+    private var browseStep = 0
+    private var resetting = false
+    private var closed = false
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
@@ -44,13 +48,13 @@ internal class RankingScreen(
     private fun row() = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
 
     private fun button(value: String, action: () -> Unit) =
-        label(value, 15f).apply {
+        label(value, 14f).apply {
             id = View.generateViewId()
             isFocusable = true
             isClickable = true
             gravity = Gravity.CENTER
-            setPadding(dp(15), dp(10), dp(15), dp(10))
-            minHeight = dp(42)
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            minHeight = dp(36)
             fun paint() {
                 setTextColor(if (isSelected) TvStyle.accent else TvStyle.text)
                 background = TvStyle.card(activity, hasFocus(), isSelected)
@@ -62,7 +66,7 @@ internal class RankingScreen(
 
     init {
         orientation = VERTICAL
-        val title = row().apply { setPadding(0, dp(8), 0, dp(8)) }
+        val title = row().apply { setPadding(0, dp(2), 0, dp(4)) }
         heading.typeface = Typeface.DEFAULT_BOLD
         title.addView(heading, params(0).apply { weight = 1f })
         title.addView(label("方向键选剧  ·  确定看详情  ·  长按更多", 12f, TvStyle.muted))
@@ -106,12 +110,69 @@ internal class RankingScreen(
         }
         nav.forEach { it.nextFocusDownId = controls[state.board.ordinal].id }
         addView(bar)
-        subtitle.setPadding(0, dp(9), 0, dp(9))
+        subtitle.setPadding(0, dp(4), 0, dp(5))
         subtitle.maxLines = 2
         addView(subtitle)
         addView(body, params(-1, 0).apply { weight = 1f })
         markControls()
         render()
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.UNSPECIFIED) {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            return
+        }
+        val viewport = MeasureSpec.getSize(heightMeasureSpec)
+        super.onMeasure(
+            widthMeasureSpec,
+            MeasureSpec.makeMeasureSpec(viewport + headerOffset, MeasureSpec.EXACTLY),
+        )
+        setMeasuredDimension(measuredWidth, viewport)
+    }
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        super.onLayout(changed, l, t, r, b + headerOffset)
+        scrollTo(0, headerOffset)
+    }
+
+    private fun resetHeaderOffset() {
+        val changed = headerOffset != 0
+        headerOffset = 0
+        if (scrollY != 0) scrollTo(0, 0)
+        if (changed) requestLayout()
+    }
+
+    private fun updateHeaderOffset(
+        position: Int = browser?.grid?.selectedItemPosition?.coerceAtLeast(0) ?: 0
+    ) {
+        val list = browser ?: return
+        if (resetting) {
+            if (position > 0) resetting = false else return
+        }
+        val header = getChildAt(0).height + getChildAt(1).height + subtitle.height
+        if (header <= 0) return
+        val cardHeight = list.grid.getChildAt(0)?.height ?: 0
+        if (browseStep == 0 && cardHeight > 0) browseStep = cardHeight + dp(10)
+        val step = if (browseStep > 0) browseStep else dp(180) + dp(10)
+        val row = position / 6
+        val offset =
+            if (row > 0) minOf(header, row * step)
+            else if (list.grid.hasFocus() && cardHeight > 0 && height > 0) {
+                val nonGrid = (list.height - list.grid.height).coerceAtLeast(0)
+                val baseGrid = height - header - nonGrid
+                (cardHeight + dp(6) - baseGrid).coerceIn(0, header)
+            } else 0
+        if (headerOffset != offset) {
+            headerOffset = offset
+            if (offset == 0 && scrollY != 0) scrollTo(0, 0)
+            requestLayout()
+        }
+    }
+
+    override fun requestChildFocus(child: View, focused: View) {
+        if (child !== body) resetHeaderOffset()
+        super.requestChildFocus(child, focused)
     }
 
     private fun markControls() {
@@ -129,7 +190,35 @@ internal class RankingScreen(
         if (focusNav) nav[2].requestFocus() else controls[state.board.ordinal].requestFocus()
         // 进入页面时 TTL 内的缓存直接展示；是否续期由状态机判断，不做模态等待。
         maybeRefresh(state.board, force = force && !state.isFresh(state.board))
-        if (!state.isRefreshing(state.board) && !focusNav && state.selectedId.isNotEmpty()) browser?.enter()
+        if (!state.isRefreshing(state.board) && !focusNav && state.selectedId.isNotEmpty()) {
+            browser?.enter()
+            post { if (!closed) updateHeaderOffset() }
+        } else {
+            resetHeaderOffset()
+        }
+    }
+
+    fun backToTop() {
+        resetting = true
+        headerOffset = 0
+        scrollTo(0, 0)
+        browser?.resetToTop()
+        state.selectedId =
+            state.snapshots[state.board]?.filtered(state.topic)?.firstOrNull()?.id.orEmpty()
+        requestLayout()
+        post {
+            if (!closed && browser?.grid?.hasFocus() != true) {
+                resetting = false
+                resetHeaderOffset()
+            }
+        }
+    }
+
+    fun close() {
+        if (closed) return
+        closed = true
+        browser?.close()
+        browser = null
     }
 
     /** 单一入口：按 TTL 决定是否拉取当前/目标榜单；同榜在途自动去重，跨榜并行。 */
@@ -195,6 +284,7 @@ internal class RankingScreen(
         val enterRows = browser?.grid?.hasFocus() == true
         browser?.close()
         body.removeAllViews()
+        if (!enterRows) resetHeaderOffset()
         val snapshot = state.snapshots[state.board]
         filterButton.text = if (state.topic.isBlank()) "筛选题材" else "题材：${state.topic}"
         filterButton.isEnabled = snapshot != null
@@ -208,6 +298,7 @@ internal class RankingScreen(
             subtitle.text = subtitle.text.toString() + "  ·  正在后台更新…"
         if (all.isEmpty()) {
             browser = null
+            resetHeaderOffset()
             body.addView(
                 label(
                     if (snapshot == null) "正在准备榜单，请稍候…" else "本榜暂无符合条件的作品，可切换题材",
@@ -219,7 +310,8 @@ internal class RankingScreen(
             return
         }
         val saved = state.selectedId
-        val list =
+        lateinit var list: ContinuousCatalogView
+        list =
             ContinuousCatalogView(
                 activity,
                 6,
@@ -241,6 +333,15 @@ internal class RankingScreen(
                 },
                 {},
             )
+        list.onBrowsePosition = { position -> updateHeaderOffset(position) }
+        list.onGridFocus = { focused ->
+            if (focused) {
+                resetting = false
+                updateHeaderOffset()
+            } else if (resetting || list.grid.selectedItemPosition < 6 || !hasFocus()) {
+                resetHeaderOffset()
+            }
+        }
         browser = list
         body.addView(list, params(-1, 0).apply { weight = 1f })
         list.show(
@@ -249,6 +350,9 @@ internal class RankingScreen(
             saved.takeIf { it.isNotBlank() }?.let { ContinuousCatalogView.Position(it, 0) },
         )
         controls.forEach { it.nextFocusDownId = list.grid.id }
-        if (enterRows) list.enter()
+        if (enterRows) {
+            list.enter()
+            post { if (!closed) updateHeaderOffset() }
+        }
     }
 }

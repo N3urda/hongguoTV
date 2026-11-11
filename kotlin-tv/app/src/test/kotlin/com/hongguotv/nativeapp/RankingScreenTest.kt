@@ -393,4 +393,235 @@ class RankingScreenTest {
             controller.pause().stop().destroy()
         }
     }
+
+    private fun unclippedRectInRoot(view: View, root: View): android.graphics.Rect {
+        val rect = android.graphics.Rect(0, 0, view.width, view.height)
+        var current: View = view
+        while (current !== root) {
+            val parent = current.parent as? ViewGroup ?: break
+            rect.offset(current.left - parent.scrollX, current.top - parent.scrollY)
+            val left = if (parent.clipToPadding) parent.paddingLeft else 0
+            val top = if (parent.clipToPadding) parent.paddingTop else 0
+            val right =
+                parent.width - if (parent.clipToPadding) parent.paddingRight else 0
+            val bottom =
+                parent.height - if (parent.clipToPadding) parent.paddingBottom else 0
+            if (!rect.intersect(left, top, right, bottom)) {
+                return android.graphics.Rect()
+            }
+            current = parent
+        }
+        if (!rect.intersect(0, 0, root.width, root.height)) {
+            return android.graphics.Rect()
+        }
+        return rect
+    }
+
+    @Test
+    @Config(sdk = [26], qualifiers = "w960dp-h540dp-land-xhdpi")
+    fun fullHd320DpiSelectedFirstRowCardKeepsPosterAspectAndShowsFullTwoLineTitleAndHeat() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create().visible()
+        val activity = controller.get()
+        try {
+            val library =
+                MainActivity::class.java.getDeclaredField("library").apply { isAccessible = true }
+                    .get(activity) as Library
+            (Library::class.java.getDeclaredField("loader").apply { isAccessible = true }
+                    .get(library) as java.util.concurrent.ExecutorService)
+                .submit {}
+                .get(5, java.util.concurrent.TimeUnit.SECONDS)
+            val account =
+                MainActivity::class.java.getDeclaredField("cloudAccount").apply {
+                        isAccessible = true
+                    }
+                    .get(activity) as AccountController
+            (AccountController::class.java.getDeclaredField("worker").apply { isAccessible = true }
+                    .get(account) as java.util.concurrent.ExecutorService)
+                .submit {}
+                .get(5, java.util.concurrent.TimeUnit.SECONDS)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+            val rankState =
+                MainActivity::class.java.getDeclaredField("rankBrowser").apply {
+                        isAccessible = true
+                    }
+                    .get(activity) as RankBrowserState
+            val items =
+                listOf(Series("rank-1", "万妖图录传\n第十四季", tags = "玄幻")) +
+                    (2..24).map { Series("rank-$it", "热播榜单测试剧\n第${it}季", tags = "都市") }
+            val positions =
+                items.mapIndexed { idx, s ->
+                    s.id to RankPosition(idx + 1, if (idx == 0) "9437万热度" else "${9000 - idx}万热度")
+                }.toMap()
+            rankState.endRefresh(
+                RankBoard.ALL,
+                RankSnapshot(RankBoard.ALL, items, ComicRanking(positions, 1, "今日已更新")),
+            )
+
+            MainActivity::class
+                .java
+                .getDeclaredMethod("switchTab", Int::class.javaPrimitiveType)
+                .apply { isAccessible = true }
+                .invoke(activity, 2)
+            val decor = activity.window.decorView
+            fun layoutFullHd() {
+                decor.measure(
+                    View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+                )
+                decor.layout(0, 0, 1920, 1080)
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            }
+            layoutFullHd()
+            layoutFullHd()
+
+            val screen = views(decor).filterIsInstance<RankingScreen>().single()
+            val allButton = controlButtons(screen)[RankBoard.ALL.ordinal]
+            assertTrue(allButton.requestFocus())
+            layoutFullHd()
+            assertTrue("Expected 综合 tab button to hold focus", allButton.hasFocus())
+
+            val browser = views(screen).filterIsInstance<ContinuousCatalogView>().single()
+            val unfocusedFirstCard = browser.grid.getChildAt(0) as CatalogPosterCard
+            assertEquals(
+                "First-row card heat badge should already fit before moving focus down",
+                unfocusedFirstCard.badge.height,
+                unclippedRectInRoot(unfocusedFirstCard.badge, decor).height(),
+            )
+
+            assertEquals(browser.grid.id, allButton.nextFocusDownId)
+            val nextFocus = decor.findViewById<View>(allButton.nextFocusDownId)
+            assertTrue(nextFocus.requestFocus())
+            layoutFullHd()
+            layoutFullHd()
+            assertTrue(browser.grid.hasFocus())
+            assertEquals(0, browser.grid.selectedItemPosition)
+
+            val firstCard = browser.grid.getChildAt(0) as CatalogPosterCard
+            val expectedPosterHeight =
+                (firstCard.poster.width / TvStyle.POSTER_ASPECT).let { kotlin.math.round(it).toInt() }
+            assertTrue(
+                "Expected 7:10 poster height ~$expectedPosterHeight for width ${firstCard.poster.width}, got ${firstCard.poster.height}",
+                kotlin.math.abs(firstCard.poster.height - expectedPosterHeight) <= 1,
+            )
+            assertEquals("万妖图录传\n第十四季", firstCard.title.text.toString())
+            assertEquals(2, firstCard.title.lineCount)
+            assertEquals("9437万热度", firstCard.badge.text.toString())
+            assertTrue(firstCard.badge.height > 0)
+
+            val visibleTitle = unclippedRectInRoot(firstCard.title, decor)
+            val visibleBadge = unclippedRectInRoot(firstCard.badge, decor)
+            val visibleCard = unclippedRectInRoot(firstCard, decor)
+            assertEquals(
+                "Selected card 2-line title must not be clipped at the bottom",
+                firstCard.title.height,
+                visibleTitle.height(),
+            )
+            assertEquals(
+                "Selected card heat badge must be 100% visible in viewport",
+                firstCard.badge.height,
+                visibleBadge.height(),
+            )
+            assertEquals(
+                "Entire selected first-row card must fit inside GridView and RankingScreen viewport",
+                firstCard.height,
+                visibleCard.height(),
+            )
+
+            // Scrolling to lower rows expands the grid smoothly, and Back to top nav resets cleanly.
+            browser.grid.setSelection(12)
+            layoutFullHd()
+            layoutFullHd()
+            assertTrue(screen.scrollY > 0)
+            @Suppress("DEPRECATION")
+            activity.onBackPressed()
+            layoutFullHd()
+            layoutFullHd()
+            assertEquals(0, screen.scrollY)
+        } finally {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            controller.destroy()
+        }
+    }
+
+    @Test
+    @Config(sdk = [26], qualifiers = "w960dp-h540dp-land-xhdpi", fontScale = 1.3f)
+    fun largeFontAndWrappedFullTitleStillKeepSelectedCardTitleAndHeatFullyVisible() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val tools = TvTools(activity)
+        try {
+            val state = RankBrowserState()
+            val longTitle = "万妖图录传之九霄神雷破苍穹\n无上仙帝归来逆天改命\n第十四季大结局"
+            val items =
+                listOf(Series("1", longTitle, tags = "玄幻")) +
+                    (2..18).map { Series("$it", "大字号榜单作品\n第${it}季", tags = "古装") }
+            val positions =
+                items.mapIndexed { idx, s -> s.id to RankPosition(idx + 1, "${9437 - idx}万热度") }
+                    .toMap()
+            state.endRefresh(
+                RankBoard.ALL,
+                RankSnapshot(RankBoard.ALL, items, ComicRanking(positions, 1, "今日已更新")),
+            )
+            val nav =
+                (0..6).map {
+                    TextView(activity).apply {
+                        id = View.generateViewId()
+                        isFocusable = true
+                    }
+                }
+            val screen =
+                RankingScreen(
+                    activity,
+                    state,
+                    nav,
+                    tools,
+                    { _, _ -> },
+                    {},
+                    { _, _ -> },
+                ) { _, _ -> }
+            val root =
+                FrameLayout(activity).apply {
+                    addView(screen, FrameLayout.LayoutParams(1728, 854))
+                }
+            activity.setContentView(root)
+            val decor = activity.window.decorView
+            fun layoutCompact() {
+                decor.measure(
+                    View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+                )
+                decor.layout(0, 0, 1920, 1080)
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            }
+            screen.start(false, false)
+            layoutCompact()
+            val browser = views(screen).filterIsInstance<ContinuousCatalogView>().single()
+            browser.enter()
+            layoutCompact()
+            layoutCompact()
+
+            val firstCard = browser.grid.getChildAt(0) as CatalogPosterCard
+            assertEquals(2, firstCard.title.lineCount)
+            assertEquals("9437万热度", firstCard.badge.text.toString())
+            assertEquals(
+                "grid=${browser.grid.height}, card=${firstCard.height}, scrollY=${screen.scrollY}",
+                firstCard.title.height,
+                unclippedRectInRoot(firstCard.title, root).height(),
+            )
+            assertEquals(
+                "grid=${browser.grid.height}, card=${firstCard.height}, scrollY=${screen.scrollY}",
+                firstCard.badge.height,
+                unclippedRectInRoot(firstCard.badge, root).height(),
+            )
+
+            controlButtons(screen)[0].requestFocus()
+            layoutCompact()
+            layoutCompact()
+            assertEquals(0, screen.scrollY)
+        } finally {
+            tools.destroy()
+            controller.pause().stop().destroy()
+        }
+    }
 }

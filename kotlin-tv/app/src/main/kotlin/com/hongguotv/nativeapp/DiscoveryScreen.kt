@@ -51,6 +51,7 @@ internal class DiscoveryScreen(
     private var headerOffset = 0
     private var browseStep = state.browseStep
     private var restoring = true
+    private var resetting = false
     private var serial = 0
     var navigationChanged: (() -> Unit)? = null
 
@@ -83,16 +84,13 @@ internal class DiscoveryScreen(
                 more,
                 { if (!loading) request(state.next) },
             )
-        browser.onBrowsePosition = { position ->
-            if (!restoring) {
-                val header = getChildAt(0).height + scroll.height + summary.height
-                if (browseStep == 0)
-                    browseStep = (browser.grid.getChildAt(0)?.height ?: dp(180)) + dp(10)
-                val offset = if (state.expanded) minOf(header, (position / 6) * browseStep) else 0
-                if (headerOffset != offset) {
-                    headerOffset = offset
-                    requestLayout()
-                }
+        browser.onBrowsePosition = { position -> updateHeaderOffset(position) }
+        browser.onGridFocus = { focused ->
+            if (focused) {
+                resetting = false
+                updateHeaderOffset()
+            } else if (resetting || browser.grid.selectedItemPosition < 6 || !hasFocus()) {
+                resetHeaderOffset()
             }
         }
         browser.useRemoteNavigation()
@@ -135,12 +133,44 @@ internal class DiscoveryScreen(
         scrollTo(0, headerOffset)
     }
 
-    override fun requestChildFocus(child: View, focused: View) {
-        if (child !== browser && headerOffset != 0) {
-            headerOffset = 0
-            scrollTo(0, 0)
+    private fun resetHeaderOffset() {
+        val changed = headerOffset != 0
+        headerOffset = 0
+        state.headerOffset = 0
+        if (scrollY != 0) scrollTo(0, 0)
+        if (changed) requestLayout()
+    }
+
+    private fun updateHeaderOffset(
+        position: Int = browser.grid.selectedItemPosition.coerceAtLeast(0)
+    ) {
+        if (restoring) return
+        if (resetting) {
+            if (position > 0) resetting = false else return
+        }
+        val header = getChildAt(0).height + scroll.height + summary.height
+        if (header <= 0) return
+        val cardHeight = browser.grid.getChildAt(0)?.height ?: 0
+        if (browseStep == 0 && cardHeight > 0) browseStep = cardHeight + dp(10)
+        val step = if (browseStep > 0) browseStep else dp(180) + dp(10)
+        val row = position / 6
+        val offset =
+            if (!state.expanded) 0
+            else if (row > 0) minOf(header, row * step)
+            else if (browser.grid.hasFocus() && cardHeight > 0 && height > 0) {
+                val nonGrid = (browser.height - browser.grid.height).coerceAtLeast(0)
+                val baseGrid = height - header - nonGrid
+                (cardHeight + dp(6) - baseGrid).coerceIn(0, header)
+            } else 0
+        if (headerOffset != offset) {
+            headerOffset = offset
+            if (offset == 0 && scrollY != 0) scrollTo(0, 0)
             requestLayout()
         }
+    }
+
+    override fun requestChildFocus(child: View, focused: View) {
+        if (child !== browser) resetHeaderOffset()
         super.requestChildFocus(child, focused)
     }
 
@@ -440,6 +470,7 @@ internal class DiscoveryScreen(
     fun entry(): View = controls["genre" to state.selection.values["genre"].orEmpty()] ?: toggle
 
     fun backToTop() {
+        resetting = true
         headerOffset = 0
         state.headerOffset = 0
         state.filterVerticalOffset = 0
@@ -448,6 +479,12 @@ internal class DiscoveryScreen(
         browser.resetToTop()
         state.position = state.items.firstOrNull()?.let { it.id to 0 }
         requestLayout()
+        post {
+            if (!closed && !browser.grid.hasFocus()) {
+                resetting = false
+                resetHeaderOffset()
+            }
+        }
     }
 
     fun start(focus: Boolean) {
