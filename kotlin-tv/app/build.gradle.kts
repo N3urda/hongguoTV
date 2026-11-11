@@ -24,6 +24,15 @@ android {
         versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 15
         versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.13.0"
     }
+    // Formal publishing always requests all three installable APKs.
+    splits {
+        abi {
+            isEnable = providers.gradleProperty("releaseAbis").orNull == "true"
+            reset()
+            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            isUniversalApk = true
+        }
+    }
     buildFeatures { buildConfig = true }
     testOptions {
         unitTests.isIncludeAndroidResources = true
