@@ -16,7 +16,6 @@ import org.robolectric.annotation.Config
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [23])
-@org.junit.Ignore("本仓库最低支持 Android 8，Android 6 专用安装路径不适用")
 class UpdateInstallerIntentsApi23Test {
     private val content = Uri.parse("content://com.hongguotv.nativeapp.updates/updates/app.apk")
     private val file = Uri.parse("file:///storage/emulated/0/Android/data/com.hongguotv.nativeapp/files/Download/guoying-tv-update.apk")

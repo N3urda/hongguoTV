@@ -21,6 +21,17 @@ class LibraryBackupTest {
             BackupSettings(),
         )
 
+    @Test fun `legacy backups default display preferences and reject invalid new settings`() {
+        val legacy=JSONObject(LibraryBackup.encode(data()))
+        legacy.getJSONObject("settings").remove("rotation")
+        legacy.getJSONObject("settings").remove("alwaysShowProgress")
+        val decoded=LibraryBackup.decode(legacy.toString())
+        assertEquals(0,decoded.settings.rotation); assertFalse(decoded.settings.alwaysShowProgress)
+        legacy.getJSONObject("settings").put("rotation",45)
+        assertTrue(runCatching { LibraryBackup.decode(legacy.toString()) }.isFailure)
+        legacy.getJSONObject("settings").put("rotation",90).put("alwaysShowProgress","true")
+        assertTrue(runCatching { LibraryBackup.decode(legacy.toString()) }.isFailure)
+    }
     @Test
     fun `backup round trips records and settings with cover and text sanitization`() {
         val original =

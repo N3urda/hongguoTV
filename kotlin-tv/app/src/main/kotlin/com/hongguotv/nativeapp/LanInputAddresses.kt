@@ -22,7 +22,7 @@ internal object LanInputAddresses {
             .distinct()
 
     fun find(connectivity: ConnectivityManager): List<LanInputAddress> {
-        val active = connectivity.activeNetwork
+        val active = if (android.os.Build.VERSION.SDK_INT >= 23) connectivity.activeNetwork else null
         val rows =
             connectivity.allNetworks
                 .sortedBy { if (it == active) 0 else 1 }

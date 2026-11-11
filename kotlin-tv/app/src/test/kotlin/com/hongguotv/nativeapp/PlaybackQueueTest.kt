@@ -38,7 +38,7 @@ class PlaybackQueueTest {
     private fun invoke(target: Any, name: String, vararg args: Any): Any? {
         val method = target.javaClass.declaredMethods.single { it.name == name }
         method.isAccessible = true
-        return method.invoke(target, *args)
+        return if (name == "playEpisode") method.invoke(target, *args, false) else method.invoke(target, *args)
     }
 
     private fun blockDuplicateMetadataRequests(activity: MainActivity): AtomicInteger {

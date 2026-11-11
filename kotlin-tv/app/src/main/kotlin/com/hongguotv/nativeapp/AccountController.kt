@@ -31,11 +31,39 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /** Credentials stay in an Android Keystore encrypted partition, outside library exports. */
-private class AccountStore(context: Context) {
+private class AccountStore(private val context: Context) {
     private val prefs = context.getSharedPreferences("cloud_account_secure", Context.MODE_PRIVATE)
     private val alias = "hongguotv.cloud.account.v1"
 
+    // Android 5 使用 Keystore RSA 包装随机 AES 密钥；磁盘不保存明文密钥。
+    @Suppress("DEPRECATION")
+    private fun legacyKey(): SecretKey {
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val rsaAlias = "$alias.rsa"
+        val wrapped = prefs.getString("wrapped_key", null)
+        if (!store.containsAlias(rsaAlias)) {
+            check(wrapped == null) { "账号加密密钥已丢失，请重新登录" }
+            val start = java.util.Calendar.getInstance()
+            val end = java.util.Calendar.getInstance().apply { add(java.util.Calendar.YEAR, 30) }
+            java.security.KeyPairGenerator.getInstance("RSA", "AndroidKeyStore").apply {
+                initialize(android.security.KeyPairGeneratorSpec.Builder(context)
+                    .setAlias(rsaAlias).setSubject(javax.security.auth.x500.X500Principal("CN=HongguoTV"))
+                    .setSerialNumber(java.math.BigInteger.ONE).setStartDate(start.time).setEndDate(end.time).build())
+            }.generateKeyPair()
+        }
+        val cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
+        if (wrapped != null) {
+            cipher.init(Cipher.DECRYPT_MODE, store.getKey(rsaAlias, null))
+            return javax.crypto.spec.SecretKeySpec(cipher.doFinal(Base64.decode(wrapped, Base64.NO_WRAP)), "AES")
+        }
+        val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
+        cipher.init(Cipher.ENCRYPT_MODE, store.getCertificate(rsaAlias).publicKey)
+        check(prefs.edit().putString("wrapped_key", Base64.encodeToString(cipher.doFinal(key.encoded), Base64.NO_WRAP)).commit())
+        return key
+    }
+
     private fun key(): SecretKey {
+        if (android.os.Build.VERSION.SDK_INT < 23 || prefs.contains("wrapped_key")) return legacyKey()
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(alias, null) as? SecretKey)?.let {
             return it

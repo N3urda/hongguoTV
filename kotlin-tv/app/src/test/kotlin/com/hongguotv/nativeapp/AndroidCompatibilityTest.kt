@@ -17,7 +17,7 @@ import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.LooperMode
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26], qualifiers = "land")
+@Config(sdk = [21, 23, 26], qualifiers = "land")
 @LooperMode(LooperMode.Mode.PAUSED)
 @GraphicsMode(GraphicsMode.Mode.LEGACY)
 class AndroidCompatibilityTest {
@@ -92,7 +92,7 @@ class AndroidCompatibilityTest {
     }
 
     @Test
-    fun legacyExternalCopyCanReachExplicitFileInstallerOnlyOnApi23() {
+    fun legacyExternalCopyCanReachExplicitFileInstallerBeforeApi24() {
         val controller = Robolectric.buildActivity(InstallerActivity::class.java).setup()
         val activity = controller.get()
         val updater = AppUpdater(activity) { false }
@@ -105,8 +105,8 @@ class AndroidCompatibilityTest {
             activity.acceptedScheme = "file"
             activity.requireComponent = true
             val launch = AppUpdater::class.java.getDeclaredMethod("launchInstaller", Uri::class.java).apply { isAccessible = true }
-            assertEquals(Build.VERSION.SDK_INT == 23, launch.invoke(updater, Uri.parse("content://${activity.packageName}.updates/updates/update.apk")))
-            if (Build.VERSION.SDK_INT == 23) {
+            assertEquals(Build.VERSION.SDK_INT < 24, launch.invoke(updater, Uri.parse("content://${activity.packageName}.updates/updates/update.apk")))
+            if (Build.VERSION.SDK_INT < 24) {
                 val opened = activity.attempts.last()
                 assertEquals(staged.readText(), java.io.File(opened.data!!.path!!).readText())
                 assertFalse(staged.path.startsWith(activity.cacheDir.path))
@@ -138,7 +138,7 @@ class AndroidCompatibilityTest {
 
     @Test
     fun mainActivityCreatesAndClosesOnSupportedSystems() {
-        assertTrue(Build.VERSION.SDK_INT in listOf(23, 26))
+        assertTrue(Build.VERSION.SDK_INT in listOf(21, 23, 26))
         val controller =
             Robolectric.buildActivity(MainActivity::class.java).create().start().resume()
         try {

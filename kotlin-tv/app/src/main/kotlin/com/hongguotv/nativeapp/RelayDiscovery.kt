@@ -19,7 +19,7 @@ internal object RelayDiscovery {
      * 必须在主线程调用；API 28 的 resolveService 不可并发，内部按队列串行解析。
      */
     fun discover(context: Context, timeoutMs: Long = 5_000, onResult: (List<String>) -> Unit): Boolean {
-        val nsd = context.getSystemService(NsdManager::class.java) ?: return false
+        val nsd = (context.getSystemService(android.content.Context.NSD_SERVICE) as? NsdManager) ?: return false
         val main = Handler(Looper.getMainLooper())
         val found: MutableSet<String> =
             java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())

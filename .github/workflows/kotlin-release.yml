@@ -1,0 +1,77 @@
+name: Publish signed Kotlin APK
+on:
+  push:
+    tags: ['kotlin-v*']
+permissions:
+  contents: read
+# One publisher across all versions. Never cancel an upload halfway through.
+concurrency:
+  group: kotlin-stable-release
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.repository == 'N3urda/hongguoTV'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag and offline release contracts
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 -m unittest discover -s kotlin-tv/tools -p 'test_*.py'
+          python3 scripts/release_tv.py validate "$RELEASE_TAG"
+      - name: Require all original signing secrets
+        env:
+          HONGGUOTV_KEYSTORE_B64: ${{ secrets.HONGGUOTV_KEYSTORE_B64 }}
+          HONGGUOTV_STORE_PASSWORD: ${{ secrets.HONGGUOTV_STORE_PASSWORD }}
+          HONGGUOTV_KEY_ALIAS: ${{ secrets.HONGGUOTV_KEY_ALIAS }}
+          HONGGUOTV_KEY_PASSWORD: ${{ secrets.HONGGUOTV_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in HONGGUOTV_KEYSTORE_B64 HONGGUOTV_STORE_PASSWORD HONGGUOTV_KEY_ALIAS HONGGUOTV_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required original signing secret: $name. No debug-signing fallback is allowed."
+              exit 1
+            fi
+          done
+          umask 077
+          printf '%s' "$HONGGUOTV_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          test -s "$RUNNER_TEMP/release.jks"
+          echo "HONGGUOTV_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: platform-tools
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Core tests, Release lint, and signed APK
+        env:
+          HONGGUOTV_STORE_PASSWORD: ${{ secrets.HONGGUOTV_STORE_PASSWORD }}
+          HONGGUOTV_KEY_ALIAS: ${{ secrets.HONGGUOTV_KEY_ALIAS }}
+          HONGGUOTV_KEY_PASSWORD: ${{ secrets.HONGGUOTV_KEY_PASSWORD }}
+        run: ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:testDebugUnitTest :app:lintRelease :app:assembleRelease --console=plain
+      - name: Validate signer and publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/release_tv.py publish "$RELEASE_TAG"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: kotlin-release-verification
+          path: |
+            kotlin-tv/core/build/reports/tests/test/
+            kotlin-tv/app/build/reports/lint-results-release.*
+            outputs/update.json
+            outputs/SHA256SUMS
+      - name: Remove temporary signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"

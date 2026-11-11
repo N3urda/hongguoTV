@@ -31,6 +31,8 @@ data class BackupSettings(
     val autoNext: Boolean = true,
     val type: ContentType = ContentType.COMIC,
     val frame: VideoFrameMode = VideoFrameMode.FIT,
+    val rotation: Int = 0,
+    val alwaysShowProgress: Boolean = false,
 ) {
     fun json() =
         JSONObject()
@@ -39,6 +41,8 @@ data class BackupSettings(
             .put("autoNext", autoNext)
             .put("type", type.storedValue)
             .put("frame", frame.name)
+            .put("rotation", rotation)
+            .put("alwaysShowProgress", alwaysShowProgress)
 }
 
 data class BackupData(
@@ -239,7 +243,9 @@ object LibraryBackup {
             history,
             watchedIds,
             searches,
-            BackupSettings(quality, speed.toFloat(), autoNext, type, frame),
+            BackupSettings(quality, speed.toFloat(), autoNext, type, frame,
+                if (settings.has("rotation")) settings.number("rotation", 270).toInt().also { require(it in VideoRotation.options) } else 0,
+                if (settings.has("alwaysShowProgress")) settings.get("alwaysShowProgress").also { require(it is Boolean) } as Boolean else false),
             later,
             hiddenIds,
         )

@@ -1,5 +1,7 @@
 # v0.1.1：TV 操作与展示适配
 
+> 历史记录：本文描述旧 React Native 版本及当时的验证结果，不代表当前交付方式。当前仅交付独立 APK，见 [项目首页](../README.md)；容器构建、发布配置与部署指南已移除。
+
 本版继续使用 React Native TV，最低 Android 8.0 / API 26，应用 ID 保持 `com.hongguotv`。Android versionCode 为 2，使用与 v0.1.0 相同的本地签名，支持覆盖升级，保留设置、收藏与观看记录。
 
 ## 下载与部署
@@ -10,14 +12,7 @@
 adb install -r hongguotv-0.1.1-android8.apk
 ```
 
-使用根目录 Compose 时，将 `.env` 中 `HONGGUOTV_VERSION` 改为 `0.1.1`，然后执行：
-
-```sh
-docker compose --env-file .env pull
-docker compose --env-file .env up -d
-```
-
-私有镜像需要 GHCR 登录；不便登录时可使用 Release 内的 Docker 部署包从源码构建。完整步骤见 [Docker 部署指南](DOCKER.md)。签名密钥不包含在源码或附件中，不要先卸载旧版。
+以上为旧版附件记录，不再提供容器部署步骤。签名密钥不包含在源码或附件中，同签名升级不要先卸载旧版。
 
 ## 改动
 

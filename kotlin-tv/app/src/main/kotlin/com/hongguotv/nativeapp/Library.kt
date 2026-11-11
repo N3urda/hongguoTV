@@ -323,6 +323,12 @@ class Library(context: Context) {
             }
         }
 
+    var videoRotation: Int
+        get() = state().settings.rotation
+        set(value) { val next = VideoRotation.normalize(value); if (next != videoRotation) { state().settings = state().settings.copy(rotation = next); put("videoRotation", next) } }
+    var alwaysShowProgress: Boolean
+        get() = state().settings.alwaysShowProgress
+        set(value) { if (value != alwaysShowProgress) { state().settings = state().settings.copy(alwaysShowProgress = value); put("alwaysShowProgress", value) } }
     fun snapshot() = state().snapshot()
 
     fun restore(incoming: BackupData, restoreSettings: Boolean) {
@@ -344,6 +350,8 @@ class Library(context: Context) {
                 "autoNext" to { merged.settings.autoNext },
                 "contentType" to { merged.settings.type.storedValue },
                 "frameMode" to { merged.settings.frame.name },
+                "videoRotation" to { merged.settings.rotation },
+                "alwaysShowProgress" to { merged.settings.alwaysShowProgress },
             )
         )
         flush()

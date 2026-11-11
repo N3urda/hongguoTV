@@ -1,5 +1,7 @@
 # TV 功能同步（2026-11-11）
 
+> 下文按阶段记录当时结果；合入 main 后的 Android 5 兼容、更新渠道和最终验证见 [MAIN_INTEGRATION.md](MAIN_INTEGRATION.md)。
+
 来源：[tsukiyo-zero/hongguoTV](https://github.com/tsukiyo-zero/hongguoTV/tree/49532eb2110dcbf66814ca250d43f222e7193895)，固定提交 `49532eb2110dcbf66814ca250d43f222e7193895`（上游 TV 0.1.30）。同步 Kotlin TV 的应用、核心协议和自动测试，GPL 与依赖声明见 NOTICE.md。本分支未同步 Mac 客户端、伴机服务端及上游发布自动化。
 
 ## 已接入的功能

@@ -1,42 +1,43 @@
-# GitHub 自动发布与电视应用内更新
+# GitHub 发布与电视应用内更新
 
-公开渠道：`N3urda/hongguoTV-updates`。原开发仓库仍为私有。首次需要手动把带更新功能的正式 APK 安装到电视，此后不用逐次传文件。
+唯一发布渠道：[N3urda/hongguoTV Releases](https://github.com/N3urda/hongguoTV/releases)。不再同步到占位的 updates 仓库。旧正式版可能没有 update.json；此时新版客户端提示尚无可用自动更新版本，不代表新版本已发布。
 
-## 电视上的行为
+## 验证与发布
 
-- 前台浏览时每 6 小时检查一次最新正式版；首次进入应用延迟 8 秒，避免抢首屏。播放或离开前台会取消更新请求，返回浏览页后可继续下载。
-- 默认自动检查并下载，设置 → 版本与更新可以关闭，也可以手动检查。下载失败保留当前应用；部分文件清理，自动下载重试至少间隔 30 分钟。
-- 下载完显示版本信息，选择「安装新版」。第一次需允许本应用安装未知来源应用，之后调用系统安装确认。普通 Android 8 没有静默安装权限，仍须确认。
-- 选择「稍后」推迟该版本提醒一天；不会中断正在播放的视频。同版本、旧版本和要求更高 Android 版本的安装包不会自动安装。
-- APK 写入应用私有缓存，仅临时授权系统安装程序读取。下载使用 HTTPS、文件长度和 SHA-256 校验，并验证 APK 实际包名、版本号、最低 SDK 和当前安装应用的签名；不在 APK 中保存 GitHub 令牌。
+- main 推送、所有 PR 和手动运行 `kotlin-native.yml`：离线发布合约测试、core 测试、lintDebug、assembleDebug，并上传开发 APK 与报告。开发包不能覆盖原正式签名安装。
+- **仅推送 `kotlin-vMAJOR.MINOR.PATCH` 标签触发 `kotlin-release.yml`**，main 推送不发布。fork 不运行正式发布任务，PR 不接触签名 Secrets。
+- 标签必须精确匹配 `kotlin-tv/app/build.gradle.kts` 的默认 versionName；versionCode 手动递增，不按 run_number 重写。当前源码为 0.10.0 / 10。创建标签前提交全部改动并完成评审及设备验证。
+- 正式流水线先检查四个签名 Secrets，再跑 core 测试、Release lint 与正式构建。验证实际 APK 包名、版本、API21、原证书以及 v1 签名后才创建草稿。
+- 产物：APK、该提交完整源码 ZIP（保留 GPL 和第三方许可）、update.json、SHA256SUMS。上传后逐一核对 GitHub 返回的 SHA-256、大小、状态，再发布并验证 latest。未通过时保留草稿供排查，不冒充成功。
+- 全仓库发布任务串行。已发布标签重跑不覆盖附件；同提交草稿可重试。旧版本、未知正式标签格式、低 versionCode、不同提交草稿或额外附件均拒绝发布，需维护者检查，不会自动删除。
 
-## 从推送到发布
+## 首次启用需要原签名
 
-1. 向私有仓库 `codex/kotlin-standalone` 推送原生客户端改动。
-2. `kotlin-public-sync.yml` 导出 HEAD 中跟踪的原生工程、构建文件及许可证到公开仓库 main。不会复制私有 Git 历史、未跟踪文件、构建目录或本地签名材料。
-3. 公开仓库 `release.yml` 执行 JVM 测试、Release lint 和正式签名构建。
-4. 构建成功后，先创建草稿、上传 APK、源码 ZIP、`update.json` 与 `SHA256SUMS`，确认 GitHub 附件摘要一致，再正式发布并设为 latest。构建失败不替换旧版。
-5. 电视通过公开 Release 的 `latest/download/update.json` 获取新版本，无需 GitHub 登录。
+在主仓库 Settings → Secrets and variables → Actions 配置以下四个 Secrets：
 
-同步只对原生代码、构建和同步流程相关路径触发；不因旧 React Native 服务或无关研究资料的提交发布 APK。旧的验证 workflow 继续保留。
+- `HONGGUOTV_KEYSTORE_B64`：原正式 keystore 的 Base64。
+- `HONGGUOTV_STORE_PASSWORD`
+- `HONGGUOTV_KEY_ALIAS`
+- `HONGGUOTV_KEY_PASSWORD`
 
-## 签名与同步配置
+原证书 SHA-256 固定为 `3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98`。缺少任何项或证书不符直接失败，不生成新签名、不降级为 debug。密钥只恢复到 runner 临时目录，结束时删除，不上传密钥或签名配置。无需跨仓库 deploy key、PAT 或 TV_UPDATES_ENABLED。
 
-配置动作需仓库所有者授权。公开仓库的 Actions Secrets：
+维护者需要确保 Actions 可使用仓库 GITHUB_TOKEN 的 contents:write 权限，并保护 main、发布标签和 workflow 文件。不要将签名 Secrets 配置到不受信任 fork，批准或合并 PR 前应审查工作流变更。建议使用受保护标签规则并限制创建/移动正式标签。不得移动已发布标签或手工覆盖正式 APK。维护者的手工发布也应遵守版本递增与同签名约束。
 
-- `HONGGUOTV_KEYSTORE_B64`：与旧正式版相同的 keystore 的 Base64 编码。
-- `HONGGUOTV_STORE_PASSWORD`、`HONGGUOTV_KEY_ALIAS`、`HONGGUOTV_KEY_PASSWORD`：原签名配置。
+本地验证（不需 Secrets、不发布）：
 
-私有仓库的 `TV_UPDATES_DEPLOY_KEY` 是独立 SSH 私钥，对应公钥只授予公开更新仓库写入权限。签名私钥只在运行签名构建的临时目录中恢复，任务结束删除；源码和 APK 均不包含这些凭据。
+```sh
+python3 -m unittest discover -s kotlin-tv/tools -p 'test_*.py'
+python3 scripts/release_tv.py validate kotlin-v0.10.0
+./kotlin-tv/gradlew -p kotlin-tv :core:test :app:lintDebug :app:assembleDebug
+```
 
-完成授权及凭据配置后，将私有仓库 Actions variable `TV_UPDATES_ENABLED` 设为 `true`，下一次相关推送即启用同步。在未启用时，同步任务跳过，常规构建验证照常执行。
+复现正式构建需 JDK 17、Android SDK 36 / Build Tools 36.0.0，在对应标签源码上配置自己的签名后执行 `scripts/build-kotlin.sh`。自己的签名无法覆盖原正式版；发布流水线仅接受原证书。不要传版本覆盖环境变量到正式流水线，脚本会核对 APK 与标签源码版本一致。首次正式发布前仍需原签名持有人配置 Secrets；本仓库源码本身不证明签名发布已成功。
 
-不要改成在 APK 中嵌入 PAT，也不要向公开仓库同步私有 Git 历史。撤销自动发布时可禁用同步工作流并删除该部署密钥；签名 Secrets 可以单独撤销。
+## 电视上的行为与迁移
 
-## 版本规则与本地构建
+前台浏览每 6 小时检查 latest/download/update.json；首次延迟 8 秒，播放或离开前台取消请求。设置 → 版本与更新可手动检查、关闭自动下载。下载会验证 HTTPS、长度、SHA-256，以及 APK 包名、版本、最低 SDK 和已安装应用签名。不在 APK 保存 GitHub 令牌。
 
-云端 `versionCode = 10000 + release workflow run_number`，显示版本为 `0.9.0+run_number`。同一次已发布构建的重跑不覆盖原 APK；旧构建重跑也不能取代更新的 latest。保留此工作流的递增编号，后续调整版本显示名称时仍维持 versionCode 单调递增。
+安装由 Android 系统确认，不是静默安装。GitHub 不可达、系统无安装器或禁止未知来源时不能完成更新。下载失败不影响已安装应用。
 
-本地未传环境变量时生成 0.9.0 / versionCode 9，供首次验证。复现云端源码时，应从该 Release 的 `update.json` 读取版本，传入 `HONGGUOTV_VERSION_CODE` 和 `HONGGUOTV_VERSION_NAME`；本地低版本号的 APK 无法覆盖较高云端版本。正式分发以云端签名包为准。
-
-电视系统没有安装器、禁止未知来源或无法访问 GitHub 时，自动更新不能完成；旧版仍可继续使用。最低 API 26 不等于 Android 8 实体电视已验收。
+0.10.0 如实声明 minSdk 21，旧 0.9 更新器不识别该元数据，首次需手动同签名覆盖安装，请勿先卸载。最低 Android 5.0 不等于旧电视解码、音频、遥控器及安装流程已验收。公开搜索接口曾返回 HTTP 502 / signature_unavailable；本版改善本地解析和错误处理，不宣称上游搜索、播放已恢复。

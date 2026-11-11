@@ -21,9 +21,10 @@ class SeriesPreview(context: Context) : LinearLayout(context) {
 
     private val title =
         label(22f, TvStyle.text).apply {
-            minLines = 1
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.MARQUEE
+            marqueeRepeatLimit = -1
+            isSelected = true
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         }
     private val meta =

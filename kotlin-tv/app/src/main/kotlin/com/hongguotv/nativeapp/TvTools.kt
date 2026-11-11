@@ -390,7 +390,7 @@ class TvTools(private val activity: Activity) {
         val addresses =
             runCatching {
                     LanInputAddresses.find(
-                        activity.getSystemService(ConnectivityManager::class.java)
+                        NetworkCompat.manager(activity)
                     )
                 }
                 .getOrDefault(emptyList())
@@ -515,22 +515,8 @@ class TvTools(private val activity: Activity) {
     }
 
     fun libraryTransfer(backup: String, anchor: View?, restore: (BackupData, Boolean) -> Unit) {
-        val connectivity = activity.getSystemService(ConnectivityManager::class.java)
-        val network = connectivity.activeNetwork
-        val capabilities = connectivity.getNetworkCapabilities(network)
-        val address =
-            connectivity
-                .getLinkProperties(network)
-                ?.linkAddresses
-                ?.map { it.address }
-                ?.firstOrNull { it is Inet4Address && it.isSiteLocalAddress }
-                ?.hostAddress
-        if (
-            address == null ||
-                capabilities == null ||
-                !(capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
-        ) {
+        val address = NetworkCompat.lanAddress(NetworkCompat.manager(activity))
+        if (address == null) {
             info("备份与恢复", "请让电视和手机连接同一局域网后重试。", anchor)
             return
         }

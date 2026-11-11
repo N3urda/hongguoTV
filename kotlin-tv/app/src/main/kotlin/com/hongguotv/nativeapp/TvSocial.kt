@@ -440,7 +440,8 @@ class TvSocial(
         body.addView(load)
         body.addView(label("上下浏览，到底继续加载。发送、回复未接入。", 13f))
         body.addView(button("关闭") { d.dismiss() })
-        scroll.setOnScrollChangeListener { _: View, _: Int, y: Int, _: Int, _: Int ->
+        scroll.viewTreeObserver.addOnScrollChangedListener {
+            val y = scroll.scrollY
             if (!reviewMode && y > 0 && y + scroll.height >= list.height - dp(80)) read()
         }
         d.setContentView(body)

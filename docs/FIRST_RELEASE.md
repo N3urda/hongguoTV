@@ -1,5 +1,7 @@
 # hongguoTV 0.1.0 首版交付
 
+> 历史记录：本文描述旧 React Native 版本及当时的验证结果，不代表当前交付方式。当前仅交付独立 APK，见 [项目首页](../README.md)；容器构建、发布配置与部署指南已移除。
+
 交付日期：2026-09-21。用途：自家电视侧载安装。客户端采用 React Native TV + TypeScript，内容服务独立部署，后续平台可复用业务模型和服务协议。
 
 ## 交付文件
@@ -12,7 +14,7 @@
 | `outputs/hongguotv-0.1.0-docker.zip` | 独立服务源码、Dockerfile、两种 Compose、示例环境变量及部署说明 |
 | `outputs/SHA256SUMS` | 交付文件的 SHA-256 校验值 |
 
-下载入口：[GitHub v0.1.0 Release](https://github.com/N3urda/hongguoTV/releases/tag/v0.1.0)。使用电脑或 NAS 容器部署时，直接参阅 [Docker 部署指南](DOCKER.md)。
+下载入口：[GitHub v0.1.0 Release](https://github.com/N3urda/hongguoTV/releases/tag/v0.1.0)。此链接仅供查阅旧版交付记录。
 
 应用标识为 `com.hongguotv`，版本名 `0.1.0`，版本号 `1`。包内包含 `armeabi-v7a` 和 `arm64-v8a`，最低系统为 Android 8.0 / API 26，targetSdk 为 36。首版使用开发密钥签名，面向个人安装；密钥不随源码包分发。请保留本机 `android/app/debug.keystore`，后续覆盖升级需使用相同密钥。卸载应用会清除本地收藏与观看记录。
 

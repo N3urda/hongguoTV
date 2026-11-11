@@ -66,7 +66,7 @@ class ArtworkLoader(context: Context) {
 
     private val main = Handler(Looper.getMainLooper())
     private val lowRam =
-        context.applicationContext.getSystemService(ActivityManager::class.java)?.isLowRamDevice ==
+        (context.applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.isLowRamDevice ==
             true
     private val cacheBytes = (if (lowRam) 4 else 8) * 1024 * 1024
     private val cache =

@@ -367,14 +367,14 @@ internal class Media3TrialPlayback(context: Context) : TrialPlayback {
                     // Keep parsed tracks and existing samples during hand-off; NOT_PRELOADED clears
                     // them.
                     if (!preloading || index == currentIndex)
-                        DefaultPreloadManager.PreloadStatus.PRELOAD_STATUS_TRACKS_SELECTED
+                        DefaultPreloadManager.PreloadStatus.TRACKS_SELECTED
                     else
                         when (index - currentIndex) {
                             1 -> DefaultPreloadManager.PreloadStatus.specifiedRangeLoaded(1500L)
                             -1 -> DefaultPreloadManager.PreloadStatus.specifiedRangeLoaded(1000L)
                             2,
-                            3 -> DefaultPreloadManager.PreloadStatus.PRELOAD_STATUS_TRACKS_SELECTED
-                            else -> DefaultPreloadManager.PreloadStatus.PRELOAD_STATUS_NOT_PRELOADED
+                            3 -> DefaultPreloadManager.PreloadStatus.TRACKS_SELECTED
+                            else -> null
                         }
                 },
             )
@@ -383,7 +383,6 @@ internal class Media3TrialPlayback(context: Context) : TrialPlayback {
                 DefaultLoadControl.Builder()
                     .setBufferDurationsMs(2500, 10000, 500, 1000)
                     .setTargetBufferBytes(6 * 1024 * 1024)
-                    .setPlayerTargetBufferBytes("preload", 4 * 1024 * 1024)
                     .setPrioritizeTimeOverSizeThresholds(false)
                     .build()
             )

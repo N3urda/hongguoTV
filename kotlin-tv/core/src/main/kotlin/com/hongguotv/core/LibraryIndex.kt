@@ -188,6 +188,8 @@ object LibraryDisk {
                 values["autoNext"] as? Boolean ?: true,
                 ContentType.fromStored(values["contentType"] as? String),
                 VideoFrameMode.fromStored(values["frameMode"] as? String),
+                VideoRotation.normalize((values["videoRotation"] as? Number)?.toInt() ?: 0),
+                values["alwaysShowProgress"] as? Boolean ?: false,
             )
         return LibraryIndex(
             BackupData(

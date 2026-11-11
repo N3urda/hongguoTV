@@ -307,6 +307,9 @@ class MainActivity : Activity() {
     private var playbackReady = false
     private var pausedForLifecycle = false
     private lateinit var hud: LinearLayout
+    private var persistentProgress: LinearLayout? = null
+    private var persistentTime: TextView? = null
+    private var persistentBar: ProgressBar? = null
     private lateinit var playbackText: TextView
     private lateinit var progressBar: ProgressBar
     private lateinit var controls: LinearLayout
@@ -331,7 +334,7 @@ class MainActivity : Activity() {
                 if (screen == "player") {
                     if (sleepTimer.poll()) stopForSleep()
                     updateClock()
-                    if (hud.visibility == View.VISIBLE) updatePlaybackText()
+                    if (hud.visibility == View.VISIBLE || library.alwaysShowProgress) updatePlaybackText()
                     maybePrefetch()
                     maybePrepareSeason()
                     updateSeasonBanner()
@@ -497,7 +500,7 @@ class MainActivity : Activity() {
                     !tvTools.showing &&
                     !cloudAccount.showing
             }
-        connectivity = getSystemService(ConnectivityManager::class.java)
+        connectivity = NetworkCompat.manager(this)
         runCatching {
             if (android.os.Build.VERSION.SDK_INT >= 24)
                 connectivity.registerDefaultNetworkCallback(networkCallback)
@@ -2151,6 +2154,7 @@ class MainActivity : Activity() {
                     )
                     if (added) favoriteMonitor.check()
                 }
+        actions += "查看完整标题" to { tvTools.info("完整标题", series.title, anchor) }
         if (isLocalHistory()) actions += "管理观看记录" to { manageHistory(series, anchor) }
         tvTools.choose(
             series.title,
@@ -2274,8 +2278,8 @@ class MainActivity : Activity() {
                 isClickable = false
                 isFocusable = false
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                thumbTintList = android.content.res.ColorStateList.valueOf(white)
-                trackTintList = android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(accent, TvStyle.outline))
+                if (android.os.Build.VERSION.SDK_INT >= 23) thumbTintList = android.content.res.ColorStateList.valueOf(white)
+                if (android.os.Build.VERSION.SDK_INT >= 23) trackTintList = android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(accent, TvStyle.outline))
             }
             view.addView(control)
             view.setOnFocusChangeListener { _, focused ->
@@ -2324,6 +2328,9 @@ class MainActivity : Activity() {
                     speed = setting("默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(speed, false) }
                     lateinit var frame: TextView
                     frame = setting("画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame, false) }
+                    lateinit var rotationButton: TextView
+                    rotationButton = setting("画面旋转  ·  ${library.videoRotation}°") { showRotationPicker(rotationButton) }
+                    toggle("常驻播放进度", library.alwaysShowProgress) { library.alwaysShowProgress = it }
                     toggle("自动连播", library.autoNext) { library.autoNext = it }
                     toggle("跨季自动连播（需开启自动连播）", library.seasonAutoplay) { library.seasonAutoplay = it }
                 }
@@ -2845,6 +2852,7 @@ class MainActivity : Activity() {
         recovering: Boolean = false,
         autoDowngrade: Boolean = false,
         automaticNext: Boolean = false,
+        recreateView: Boolean = false,
     ) {
         cancelNextSeason()
         seasonSuppressed = false
@@ -2854,7 +2862,8 @@ class MainActivity : Activity() {
         var playbackStarted = android.os.SystemClock.elapsedRealtime()
         val keepRecoveryStatus = recovering || (screen == "player" && playError && index == episodeIndex)
         val reuse =
-            screen == "player" && player != null && playerView != null && (!playError || recovering)
+            screen == "player" && player != null && playerView != null && (!playError || recovering) && !recreateView
+                && ((playerView?.videoSurfaceView is TextureView) == VideoRotation.usesTexture(library.videoRotation))
         library.setWatched(data.series.id, false)
         val selectedIndex = index.coerceIn(0, data.episodes.lastIndex)
         if (
@@ -2953,7 +2962,8 @@ class MainActivity : Activity() {
             root.removeAllViews()
             root.setBackgroundColor(Color.BLACK)
             val view =
-                PlayerView(this).apply {
+                (if (VideoRotation.usesTexture(library.videoRotation))
+                    layoutInflater.inflate(R.layout.video_player, root, false) as PlayerView else PlayerView(this)).apply {
                     useController = false
                     resizeMode = frameResizeMode()
                     isFocusable = false
@@ -2962,7 +2972,20 @@ class MainActivity : Activity() {
                     setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
                 }
             playerView = view
-            root.addView(view, FrameLayout.LayoutParams(-1, -1))
+            root.addView(view, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+            view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyVideoRotation() }
+            view.post { if (playerView === view) applyVideoRotation() }
+            persistentTime = text("", 12f, white)
+            persistentBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000; progressTintList = android.content.res.ColorStateList.valueOf(accent) }
+            persistentProgress = column().apply {
+                isFocusable = false
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                setPadding(dp(12), dp(4), dp(12), dp(6))
+                setBackgroundColor(Color.argb(160, 0, 0, 0))
+                addView(persistentTime); addView(persistentBar, lp(-1, dp(3)))
+                visibility = View.GONE
+            }
+            root.addView(persistentProgress, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
             social.attach(root)
             playbackClock = TextClock(this).apply {
                 format12Hour = "HH:mm"
@@ -3118,7 +3141,7 @@ class MainActivity : Activity() {
                                         "Playback ready episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${readySince-playbackStarted}",
                                     )
                                 }
-                                if (hud.visibility == View.VISIBLE) updatePlaybackText()
+                                if (hud.visibility == View.VISIBLE || library.alwaysShowProgress) updatePlaybackText()
                             }
                             syncMediaSession()
                             if (state == Player.STATE_ENDED) {
@@ -3499,10 +3522,7 @@ class MainActivity : Activity() {
         return true
     }
 
-    private fun networkAvailable(): Boolean =
-        connectivity
-            .getNetworkCapabilities(connectivity.activeNetwork)
-            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+    private fun networkAvailable(): Boolean = NetworkCompat.available(connectivity)
 
     private fun currentPosition(): Long =
         pendingSeek ?: player?.currentPosition?.takeIf { playbackReady } ?: startPosition
@@ -3748,7 +3768,7 @@ class MainActivity : Activity() {
                             if (state == Player.STATE_READY) {
                                 playbackReady = true
                                 episodeDuration = p.duration.coerceAtLeast(0)
-                                if (hud.visibility == View.VISIBLE) updatePlaybackText()
+                                if (hud.visibility == View.VISIBLE || library.alwaysShowProgress) updatePlaybackText()
                             }
                             syncMediaSession()
                             if (state == Player.STATE_ENDED) {
@@ -4116,6 +4136,7 @@ class MainActivity : Activity() {
         controls.visibility = View.GONE
         controls.clearFocus()
         hud.visibility = View.GONE
+        updatePersistentProgress()
         updateClock()
     }
 
@@ -4169,6 +4190,7 @@ class MainActivity : Activity() {
     }
 
     private fun updatePlaybackText() {
+        updatePersistentProgress()
         transportPlay?.text = if (player?.playWhenReady == true) "暂停" else "播放"
         sleepButton?.text = "定时 ${sleepTimer.label()}"
         if (screen != "player" || playError) return
@@ -4322,6 +4344,46 @@ class MainActivity : Activity() {
         )
     }
 
+    private fun applyVideoRotation() {
+        val view=playerView ?: return
+        if(root.width<=0 || root.height<=0) return
+        val canvas=VideoRotation.canvas(root.width,root.height,library.videoRotation)
+        val params=view.layoutParams as FrameLayout.LayoutParams
+        if(params.width!=canvas.width || params.height!=canvas.height) {
+            params.width=canvas.width; params.height=canvas.height; params.gravity=Gravity.CENTER; view.layoutParams=params
+        }
+        view.rotation=library.videoRotation.toFloat()
+    }
+    private fun showRotationPicker(anchor: TextView) {
+        tvTools.choose("画面旋转 · 仅旋转视频",VideoRotation.options.map { "${it}°" },anchor,{ index ->
+            val previous=library.videoRotation; val next=VideoRotation.options[index]
+            if(previous==next) return@choose
+            val rebuild=screen=="player" && playerView!=null && VideoRotation.requiresSurfaceRebuild(previous,next)
+            val selectedEpisode=episodeIndex; val position=currentPosition()
+            val autoplay=if(playbackReady) player?.playWhenReady ?: requestedAutoplay else requestedAutoplay
+            val ticket=generation
+            library.videoRotation=next
+            if(rebuild) {
+                // Let the picker finish dismissal before replacing its anchor and the video view.
+                // Rebuild only for a SurfaceView/TextureView transition, never on a layout callback.
+                main.post {
+                    if(screen=="player" && generation==ticket)
+                        playEpisode(selectedEpisode,position,autoplay,recreateView=true)
+                }
+            } else applyVideoRotation()
+            if(anchor.tag!="playback-settings") anchor.text="画面旋转  ·  ${library.videoRotation}°"
+        })
+    }
+    private fun updatePersistentProgress() {
+        if (persistentProgress == null || !library.isLoaded) return
+        val visible=PlaybackProgressDisplay.visible(library.alwaysShowProgress,screen=="player",hud.visibility==View.VISIBLE,playError)
+        persistentProgress?.visibility=if(visible) View.VISIBLE else View.GONE
+        if(!visible) return
+        val duration=player?.duration?.coerceAtLeast(0) ?: 0L
+        val position=currentPosition().coerceAtLeast(0)
+        persistentTime?.text=if(playbackReady) "${formatTime(position)} / ${if(duration>0) formatTime(duration) else "--:--"}" else "正在准备…"
+        persistentBar?.progress=PlaybackProgressDisplay.value(position,duration)
+    }
     private fun frameResizeMode() =
         when (library.frameMode) {
             VideoFrameMode.FIT -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -4417,6 +4479,8 @@ class MainActivity : Activity() {
                             "伴机代解码 ${if (relayStore.enabled) "开" else "关"}",
                             "从头播放",
                             "重置设备能力记录",
+                            "画面旋转 ${library.videoRotation}°",
+                            "常驻播放进度 ${if (library.alwaysShowProgress) "开启" else "关闭"}",
                         ),
                         more,
                         { choice ->
@@ -4432,6 +4496,8 @@ class MainActivity : Activity() {
                                             seekTo(0)
                                             hidePanel()
                                         }
+                                        7 -> showRotationPicker(more)
+                                        8 -> { library.alwaysShowProgress = !library.alwaysShowProgress; updatePersistentProgress() }
                                         6 -> {
                                             val count = CodecCapabilities.learnedCount()
                                             CodecCapabilities.resetLearned()
@@ -4651,6 +4717,9 @@ class MainActivity : Activity() {
         video = null
         playerView?.player = null
         playerView = null
+        persistentProgress = null
+        persistentTime = null
+        persistentBar = null
         player?.release()
         player = null
         playbackReady = false
