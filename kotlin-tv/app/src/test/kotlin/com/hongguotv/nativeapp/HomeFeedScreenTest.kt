@@ -61,7 +61,8 @@ class HomeFeedScreenTest {
         }
     }
 
-    private class Playback(activity: Activity) : TrialPlayback {
+    private class Playback(activity: Activity, private val prefetchEnabled: Boolean = true) : TrialPlayback {
+        override fun canPrefetch() = prefetchEnabled
         override val view = View(activity)
         override var status: ((TrialStatus) -> Unit)? = null
         val queued = mutableMapOf<String, TrialClip>()
@@ -196,7 +197,9 @@ class HomeFeedScreenTest {
         val activity = controller.get()
         val state = DramaFeedState()
         val backend = Backend(5)
-        val player = Playback(activity)
+        // This test isolates foreground debounce; prefetch has its own tests below.
+        // Otherwise a concurrent preload of work 4 can race with the close assertion.
+        val player = Playback(activity, prefetchEnabled = false)
         val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {}, { _, _ -> }, { "收藏" }, backend, player)
         try {
             activity.setContentView(screen)
