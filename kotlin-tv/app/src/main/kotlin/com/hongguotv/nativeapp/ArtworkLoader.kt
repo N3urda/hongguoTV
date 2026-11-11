@@ -260,6 +260,30 @@ class ArtworkLoader(context: Context) {
         if (clearMemory) cache.evictAll()
     }
 
+    /** Disk-only warming on the gradual worker: no bitmap allocation on startup. */
+    internal fun warm(url: String) {
+        if (closed || !url.startsWith("https://") || disk.get(url) != null) return
+        synchronized(signal) { if (jobs.isNotEmpty()) return }
+        com.hongguotv.core.RequestScope.execute(http.newCall(Request.Builder().url(url).build())) { response ->
+            if (!response.isSuccessful) return@execute
+            val body = response.body ?: return@execute
+            if (body.contentLength() > MAX_BYTES) return@execute
+            val bytes = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            body.byteStream().use { input ->
+                while (true) {
+                    com.hongguotv.core.RequestScope.ensureActive()
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    if (bytes.size() + n > MAX_BYTES) return@execute
+                    bytes.write(buffer, 0, n)
+                }
+            }
+            com.hongguotv.core.RequestScope.ensureActive()
+            if (bytes.size() > 0) disk.put(url, bytes.toByteArray())
+        }
+    }
+
     fun cancelAll(clearMemory: Boolean = false) = cancelPage(clearMemory)
 
     @Suppress("DEPRECATION") // Android 8 devices still report the running-memory pressure levels.

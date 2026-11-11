@@ -438,7 +438,22 @@ constructor(
         return ComicRank.parse(text("$site/rank/hot-comic-drama?page=$page"), page)
     }
 
-    fun rankPage(board: RankBoard, page: Int = 1): CatalogPage {
+    private val warmRanks = WarmPageCache<CatalogPage>(20)
+    private val warmDiscovery = WarmPageCache<FilteredDiscoveryPage>(4)
+    private val warmDetails = WarmPageCache<Detail>(12)
+
+    fun warmRankPage(board: RankBoard, page: Int): CatalogPage = fetchRankPage(board, page).also {
+        warmRanks.put("${board.name}:$page", it)
+    }
+    fun warmDiscovery(): FilteredDiscoveryPage = fetchFilteredDiscovery(DiscoverySelection(), null).also {
+        warmDiscovery.put("default", it)
+    }
+    fun warmDetail(id: String) { warmDetails.put(id, fetchDetail(id)) }
+
+    fun rankPage(board: RankBoard, page: Int = 1): CatalogPage =
+        warmRanks.take("${board.name}:$page") ?: fetchRankPage(board, page)
+
+    private fun fetchRankPage(board: RankBoard, page: Int): CatalogPage {
         require(page in 1..100)
         // 榜单走收紧超时的专用客户端并重试一次瞬时失败；ttwid 由内存 Cookie 罐自动携带。
         val body =
@@ -483,7 +498,11 @@ constructor(
     fun filteredDiscovery(
         selection: DiscoverySelection,
         cursor: DiscoveryCursor? = null,
-    ): FilteredDiscoveryPage {
+    ): FilteredDiscoveryPage =
+        (if (cursor == null && selection.values.isEmpty()) warmDiscovery.take("default") else null)
+            ?: fetchFilteredDiscovery(selection, cursor)
+
+    private fun fetchFilteredDiscovery(selection: DiscoverySelection, cursor: DiscoveryCursor?): FilteredDiscoveryPage {
         val values = VendorConstants.device.toMutableMap()
         for (key in
             listOf(
@@ -757,7 +776,9 @@ constructor(
         throw IOException("相关作品暂时无法加载，请重试", failure)
     }
 
-    fun detail(id: String): Detail {
+    fun detail(id: String): Detail = warmDetails.take(id) ?: fetchDetail(id)
+
+    private fun fetchDetail(id: String): Detail {
         require(id.matches(Regex("[0-9]{1,30}")))
         val o =
             router("$site/detail?series_id=$id")

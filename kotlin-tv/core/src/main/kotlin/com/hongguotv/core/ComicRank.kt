@@ -12,15 +12,16 @@ internal object ComicRank {
     fun parse(html: String, page: Int, board: RankBoard = RankBoard.COMIC): CatalogPage {
         try {
             val document = Jsoup.parse(html)
-            val updatedText =
-                runCatching {
-                        ContentRepository.extractRouter(html)
-                            .optJSONObject("loaderData")
-                            ?.optJSONObject(board.loader)
-                            ?.str("updatedText")
-                    }
-                    .getOrNull()
-                    .orEmpty()
+            val route = runCatching {
+                ContentRepository.extractRouter(html).optJSONObject("loaderData")?.optJSONObject(board.loader)
+            }.getOrNull()
+            val updatedText = route?.str("updatedText").orEmpty()
+            val payloads = mutableListOf<JSONObject>()
+            route?.optJSONObject("content")?.let {
+                if (route.str("rankKey") != board.key || route.optInt("pageNum") != page)
+                    throw IOException("剧集分页信息异常")
+                payloads += it
+            }
             for (tag in document.select("script[data-fn-name][data-fn-args]")) {
                 val name = tag.attr("data-fn-name")
                 if (name != "r" && name != "mergeLoaderData") continue
@@ -44,6 +45,9 @@ internal object ComicRank {
                         is String -> JSONObject(raw)
                         else -> continue
                     }
+                payloads += payload
+            }
+            for (payload in payloads) {
                 if (!payload.optBoolean("isSuccess")) throw IOException("剧集榜单暂不可用")
                 val rows = payload.optJSONArray("rankList") ?: throw IOException("剧集榜单格式已变化")
                 val pagination =

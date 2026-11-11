@@ -1073,6 +1073,25 @@ class ContentRepositoryTest {
     }
 
     @Test
+    fun resolvedRouterRankingDoesNotDependOnRenderedPaginationLabel() {
+        val route = JSONObject().put("rankKey", "comic").put("pageNum", 1)
+            .put("updatedText", "今日已更新").put("content", rankPayload(1, 5))
+        val html = "<script>_ROUTER_DATA=" + JSONObject().put("loaderData",
+            JSONObject().put("rank_hot-comic-drama/page", route)) + ";</script>"
+        var calls = 0
+        val repo = repository { calls++; html }
+        repo.warmRankPage(RankBoard.COMIC, 1)
+        val result = repo.rankPage(RankBoard.COMIC, 1)
+        assertEquals(1, calls)
+        assertEquals("123", result.items.single().id)
+        assertEquals(5, result.ranking!!.totalPages)
+        assertTrue(result.hasMore)
+        repo.rankPage(RankBoard.COMIC, 1)
+        assertEquals(2, calls)
+        assertThrows(IOException::class.java) { repo.rankPage(RankBoard.COMIC, 2) }
+    }
+
+    @Test
     fun renderedRankingPreservesPageTwoRankAndHeat() {
         val repo = repository {
             """<script>_ROUTER_DATA={"loaderData":{"rank_hot-comic-drama/page":{"rankKey":"comic","pageNum":2,"updatedText":"今日已更新"}}};</script>
