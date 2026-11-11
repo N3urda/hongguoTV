@@ -21,6 +21,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.FileProvider
 import com.hongguotv.core.AppUpdate
+import com.hongguotv.core.AppUpdateSource
 import com.hongguotv.core.AppUpdateRepository
 import com.hongguotv.core.UpdateFiles
 import java.io.File
@@ -29,10 +30,13 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
 /** Foreground-only updater: no background service, and no networking or prompts during playback. */
-class AppUpdater(private val activity: Activity, private val idle: () -> Boolean) {
+class AppUpdater(
+    private val activity: Activity,
+    private val repository: AppUpdateSource = AppUpdateRepository(),
+    private val idle: () -> Boolean,
+) {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
-    private val repository = AppUpdateRepository()
     private val preferences = activity.getSharedPreferences("app_updates", Activity.MODE_PRIVATE)
     private val apk = File(activity.cacheDir, "updates/update.apk")
     private var task: Future<*>? = null
@@ -50,7 +54,6 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
     private var anchor: View? = null
     private var status = "当前版本 ${BuildConfig.VERSION_NAME}"
     private var retryAfter = 0L
-    private var promptedCode = 0L
     private val auto
         get() = preferences.getBoolean("automatic", true)
 
@@ -63,15 +66,8 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                     val last = preferences.getLong("last_attempt", 0)
                     val update = available
                     when {
-                        ready &&
-                            update != null &&
-                            promptedCode != update.versionCode &&
-                            !deferred(update) -> {
-                            promptedCode = update.versionCode
-                            show(activity.currentFocus)
-                        }
-                        update != null && !ready && now >= retryAfter -> download(false)
-                        now < last || now - last >= 6 * 60 * 60 * 1000L -> check(false)
+                        update != null && !ready && now >= retryAfter -> download()
+                        !ready && (now < last || now - last >= 6 * 60 * 60 * 1000L) -> check()
                     }
                 }
                 main.postDelayed(this, 15000)
@@ -86,7 +82,6 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         sessionState.getString("result_text", null)?.let {
             sessionState.edit().remove("result_text").apply()
             updateStatus(it)
-            show(anchor)
         }
         if (permissionRequested) {
             permissionRequested = false
@@ -125,10 +120,6 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         status = text
         statusView?.text = text
     }
-
-    private fun deferred(update: AppUpdate) =
-        preferences.getLong("deferred_code", 0) == update.versionCode &&
-            preferences.getLong("deferred_until", 0) > System.currentTimeMillis()
 
     private fun renderActions() {
         dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.apply {
@@ -177,7 +168,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         )
         body.addView(
             TextView(activity).apply {
-                text = "只在应用前台浏览时检查，播放中不打扰。下载后需确认系统安装，收藏与观看记录保留。"
+                text = "后台检查与下载不会弹窗或打断浏览。请在此处主动安装新版，收藏与观看记录保留。"
                 textSize = 13f
                 setTextColor(TvStyle.muted)
                 setPadding(0, (8 * dp).toInt(), 0, (8 * dp).toInt())
@@ -202,18 +193,11 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         next.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             when {
                 ready -> install()
-                available != null -> download(true)
-                else -> check(true)
+                available != null -> download()
+                else -> check()
             }
         }
         next.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
-            available?.let {
-                preferences
-                    .edit()
-                    .putLong("deferred_code", it.versionCode)
-                    .putLong("deferred_until", System.currentTimeMillis() + 24 * 60 * 60 * 1000L)
-                    .apply()
-            }
             next.dismiss()
         }
         renderActions()
@@ -253,7 +237,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
             }
     }
 
-    private fun check(manual: Boolean) {
+    private fun check() {
         if (busy || !active || !idle()) return
         preferences.edit().putLong("last_attempt", System.currentTimeMillis()).apply()
         updateStatus("正在检查新版…")
@@ -277,12 +261,12 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                 updateStatus(
                     "发现 ${update.versionName} · ${"%.1f".format(update.size/1048576.0)} MB\n${update.notes}"
                 )
-                if (manual || auto) download(manual)
+                if (auto || dialog != null) download()
             }
         }
     }
 
-    private fun download(manual: Boolean) {
+    private fun download() {
         val update = available ?: return
         if (busy || !active || !idle()) return
         updateStatus("正在下载 ${update.versionName}…")
@@ -298,10 +282,6 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         }) {
             ready = true
             updateStatus("${update.versionName} 已下载并校验\n${update.notes}\n\n确认后由系统覆盖安装，保留本机记录。")
-            if (idle() && dialog == null && (manual || !deferred(update))) {
-                promptedCode = update.versionCode
-                show(activity.currentFocus)
-            }
         }
     }
 

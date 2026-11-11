@@ -21,8 +21,8 @@ android {
         applicationId = "com.hongguotv.nativeapp"
         minSdk = 21
         targetSdk = 36
-        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 15
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.13.0"
+        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 16
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.13.1"
     }
     // Formal publishing always requests all three installable APKs.
     splits {

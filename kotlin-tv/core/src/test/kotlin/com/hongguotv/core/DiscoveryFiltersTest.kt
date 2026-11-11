@@ -66,6 +66,18 @@ class DiscoveryFiltersTest {
             )
 
     @Test
+    fun workMetadataNeverBecomesDiscoveryFilterOptions() {
+        val raw = response()
+        raw.getJSONObject("data").getJSONArray("video_data").getJSONObject(0)
+            .put("category_schema", JSONArray()
+                .put(JSONObject().put("name", "姜月初"))
+                .put(JSONObject().put("name", "百花宗主")).toString())
+        val parsed = FilteredDiscoveryParser.parse(raw.toString(), null)
+        assertEquals("姜月初 · 百花宗主", parsed.items.single().tags)
+        assertEquals(listOf("重生"), parsed.groups.flatMap { it.options }.map { it.label })
+    }
+
+    @Test
     fun conditionsCombineAndFemaleZeroIsNotAnAllSentinel() {
         val choice =
             DiscoverySelection()
