@@ -1,4 +1,14 @@
+# 本次同步来源
+
+2026-11-11：TV 功能与测试同步自 tsukiyo-zero/hongguoTV，提交 `49532eb2110dcbf66814ca250d43f222e7193895`（GPL-3.0）。保留原作者声明；本分支适配原包名、更新渠道及品牌。
+
 # 原生版第三方声明
+
+本地播放兼容修改参考 FanchangWang 的 GPL-3.0 项目贡献：
+https://github.com/N3urda/hongguoTV/pull/22 。播放请求使用独立设备标识和无签名请求，复用本项目原有的响应大小限制、请求取消及媒体解析逻辑。
+
+2026-10-21 账号测试功能参考 charlie901208/HGTV 的 `feat/phone-login` 分支（GPL-3.0-only）：
+https://github.com/charlie901208/HGTV/tree/feat/phone-login 。`DeviceRegister.kt`、`PhoneLogin.kt` 由该分支移植并修改；账号读写的路径和字段参照其 `Account.kt`、`ContentRepository.kt`。本地实现补充有界响应读取、登录态加密存储、错误验证码停止重试与云端精确进度字段保留；账号界面和同步调度为本地实现。未合并该分支的广告、遥测、界面重构或其他功能。原作者著作权保留。
 
 `core` 中内容请求签名、Spade URL / key 处理、MP4 CENC 处理是以下 GPL-3.0 源码的 Kotlin 移植：
 
@@ -22,3 +32,42 @@
 - JUnit（仅测试）：https://github.com/junit-team/junit4 — EPL-1.0
 
 应用图标和 TV banner 沿用本仓库素材。这里的应用不是内容平台官方客户端。
+
+
+Mac/TV 共用评论签名的第三方许可：
+# Mac 第三方声明
+
+本集评论的协议字段参考 yangbin1322/hongguo-player 公开发行包中的接口线索（https://github.com/yangbin1322/hongguo-player/releases/tag/v1.2.11），以匿名请求核实数据来源和游标推进后独立实现；未纳入该客户端的代码、资源或二进制。
+
+弹幕评论签名的通用 Argus / Simon 结构参考并改写自 tr4cex/TikTok-Encryption（MIT）：
+https://github.com/tr4cex/TikTok-Encryption 。Gorgon、Ladon 基于本仓库已有 GPL core Signer 改写。红果请求字段为匿名读取验证的协议参数。未纳入许可证未确认的 guoapp 实现。
+
+MIT License
+
+Copyright (c) 2024 TikTok Encryption Project
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+EDUCATIONAL USE DISCLAIMER:
+This software is intended for educational and research purposes only.
+Users are responsible for ensuring their use complies with applicable laws
+and terms of service. The authors disclaim any responsibility for misuse
+of this software.
+
+评论表情图使用 Microsoft Fluent Emoji（MIT），通过 GPL HGTV 参考项目取得；许可全文随 APK assets/comment_emoji/LICENSE.txt 分发。为通用替代表情，非红果官方贴图。

@@ -1,4 +1,9 @@
+<!--
+    base 允许明文：伴机（果映伴机）地址为用户自填的局域网 IP，无法预先列入域名白名单。
+    明文面仅限「电视 ↔ 用户自家伴机」一段；CDN/接口等敏感流量仍为 https。
+    M3 加固方向：伴机升级 TLS（自签证书）或固定 .local 主机名后收紧回 false。
+-->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false"/>
+    <base-config cleartextTrafficPermitted="true"/>
     <domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="true">douyinvod.com</domain><domain includeSubdomains="true">byteicdn.com</domain><domain includeSubdomains="true">byteimg.com</domain></domain-config>
 </network-security-config>

@@ -1,5 +1,9 @@
 # hongguoTV
 
+## 当前开发分支：登录与预约同步
+
+已同步 tsukiyo-zero/hongguoTV 的 TV 功能：扫码登录、账户收藏与观看历史、预约列表与相关季预约，以及找剧、评论弹幕和播放修复。保留本仓库包名、签名配置和更新渠道。尚未发布，真实账号和电视验收待完成。详见 [同步范围与验证记录](kotlin-tv/UPSTREAM_SYNC.md)。以下旧版本说明用于历史参考，账号尚未实现、稍后看及备份入口等描述以本次同步记录为准。
+
 当前分支提供 **Kotlin 原生独立 APK**：安装后联网即可使用，无需 Node / Docker。最低 Android 8.0，电视遥控器操作。
 
 **[下载原生版 APK](https://github.com/N3urda/hongguoTV-updates/releases/latest)** · [原生版说明与构建](kotlin-tv/README.md)
