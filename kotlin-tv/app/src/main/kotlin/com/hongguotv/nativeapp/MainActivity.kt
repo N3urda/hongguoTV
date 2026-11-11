@@ -3658,9 +3658,7 @@ class MainActivity : Activity() {
                         .setTargetBufferBytes(12 * 1024 * 1024)
                         .build()
                 val renderers =
-                    androidx.media3.exoplayer
-                        .DefaultRenderersFactory(this)
-                        .setEnableDecoderFallback(true)
+                    playbackRenderers(this)
                 ExoPlayer.Builder(this, renderers).setLoadControl(load).build().also {
                     player = it
                     playerView?.player = it

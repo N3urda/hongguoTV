@@ -21,7 +21,7 @@ jobs:
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           packages: platform-tools
-      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006'
       - name: Unit tests, Android lint, and installable development APK
         run: ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --console=plain
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

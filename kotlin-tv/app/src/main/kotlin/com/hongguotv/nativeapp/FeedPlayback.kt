@@ -378,7 +378,7 @@ internal class Media3TrialPlayback(context: Context) : TrialPlayback {
                         }
                 },
             )
-            .setRenderersFactory(DefaultRenderersFactory(context).setEnableDecoderFallback(true))
+            .setRenderersFactory(playbackRenderers(context))
             .setLoadControl(
                 DefaultLoadControl.Builder()
                     .setBufferDurationsMs(2500, 10000, 500, 1000)
