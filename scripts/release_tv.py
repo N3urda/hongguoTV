@@ -94,6 +94,19 @@ def api(endpoint, *args):
     return json.loads(run('gh', 'api', f'repos/{REPOSITORY}/{endpoint}', *args))
 
 
+def release_including_draft(tag):
+    # GitHub's /releases/tags/{tag} endpoint only resolves published releases.
+    # Authenticated release listings include drafts, including older recovery drafts.
+    page = 1
+    while True:
+        batch = api(f'releases?per_page=100&page={page}')
+        found = next((release for release in batch if release['tag_name'] == tag), None)
+        if found is not None:
+            return found
+        require(len(batch) == 100, 'Release missing from authenticated release listing')
+        page += 1
+
+
 def prepare(tag):
     version, code, sdk = source_version((ROOT / 'kotlin-tv/app/build.gradle.kts').read_text(), tag)
     commit = run('git', 'rev-parse', 'HEAD')
@@ -186,7 +199,7 @@ def publish(tag, local=False):
         run('gh', 'release', 'create', tag, '--repo', REPOSITORY, '--verify-tag', '--target', data['sourceCommit'], '--draft', '--title', f'红果 TV {data["versionName"]}', '--notes-file', str(notes))
     # Only drafts are replaceable. Workflow serialization prevents two publishers racing.
     run('gh', 'release', 'upload', tag, '--repo', REPOSITORY, *map(str, files), '--clobber')
-    draft = api('releases/tags/' + tag)
+    draft = release_including_draft(tag)
     require(draft['draft'], 'Release unexpectedly published before validation')
     verify_assets(draft['assets'], files)
     run('gh', 'release', 'edit', tag, '--repo', REPOSITORY, '--draft=false', '--latest=true', '--notes-file', str(notes))
