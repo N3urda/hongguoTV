@@ -21,7 +21,7 @@ class ReleaseContractTest(unittest.TestCase):
 
     def test_current_source_version(self):
         build = (ROOT / 'kotlin-tv/app/build.gradle.kts').read_text()
-        self.assertEqual(('0.10.1', 11, 21), r.source_version(build, 'kotlin-v0.10.1'))
+        self.assertEqual(('0.11.0', 12, 21), r.source_version(build, 'kotlin-v0.11.0'))
 
     def test_source_version(self):
         self.assertEqual(('0.10.0', 10, 21), r.source_version(self.build, self.tag))
@@ -92,6 +92,24 @@ class ReleaseContractTest(unittest.TestCase):
         for name in ['KEYSTORE_B64', 'STORE_PASSWORD', 'KEY_ALIAS', 'KEY_PASSWORD']:
             self.assertIn('secrets.HONGGUOTV_' + name, workflow)
         self.assertFalse((ROOT / '.github/workflows/kotlin-public-sync.yml').exists())
+
+    def test_latest_preview_version_is_compared_without_loosening_release_tags(self):
+        self.assertEqual((0, 10, 1), r.released_native_version('preview-v0.10.1-20261111'))
+        with self.assertRaises(ValueError):
+            r.version_tuple('preview-v0.10.1-20261111')
+        with self.assertRaises(ValueError):
+            r.released_native_version('unknown-v99')
+
+    def test_local_publish_requires_both_main_and_tag_to_match(self):
+        head = 'a' * 40
+        for tag_head in [head, 'b' * 40]:
+            refs = f'{head}\trefs/heads/main\n{tag_head}\trefs/tags/{self.tag}'
+            with patch.dict(r.os.environ, {}, clear=True), patch.object(r, 'run', side_effect=[f'https://github.com/{r.REPOSITORY}.git', '', head, refs]):
+                if tag_head == head:
+                    r.validate_local_publish(self.tag)
+                else:
+                    with self.assertRaises(ValueError):
+                        r.validate_local_publish(self.tag)
 
     def test_publish_forbidden_from_fork_or_branch(self):
         for env in [dict(GITHUB_REPOSITORY='fork/hongguoTV', GITHUB_REF='refs/tags/' + self.tag), dict(GITHUB_REPOSITORY=r.REPOSITORY, GITHUB_REF='refs/heads/main')]:

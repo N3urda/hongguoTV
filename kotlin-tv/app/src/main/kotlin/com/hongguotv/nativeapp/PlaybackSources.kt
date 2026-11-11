@@ -130,7 +130,7 @@ internal fun openStream(
     speculative: Boolean = false,
     supportsTrack: (VideoTracks.Track?) -> Boolean,
 ): OpenedStream? {
-    val ladder = repository.streamLadder(id, metadataAhead, speculative)
+    val ladder = repository.streamLadderWithCompatibility(id, metadataAhead, speculative)
     for (rendition in ladder.playbackOrder(maxQuality, supportsRendition)) {
         val video = RemoteVideo(http, rendition.toStreamInfo())
         try {

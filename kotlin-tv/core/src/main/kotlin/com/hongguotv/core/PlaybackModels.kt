@@ -46,7 +46,11 @@ internal object PlaybackModels {
         it.username.isEmpty() && it.password.isEmpty()
     }?.toString()
 
-    fun candidates(model: JSONObject): List<StreamInfo> {
+    fun candidates(model: JSONObject): List<StreamInfo> = renditions(model).map {
+        StreamInfo(it.url, it.key, it.quality.toString())
+    }
+
+    fun renditions(model: JSONObject): List<Rendition> {
         val list = model.opt("video_list")
         val entries = when(list) {
             is JSONObject -> list.keys().asSequence().mapNotNull { key -> list.optJSONObject(key)?.let { key to it } }.toList()
@@ -73,7 +77,8 @@ internal object PlaybackModels {
                 val width=entry.optInt("vwidth",meta?.optInt("vwidth",0) ?: 0); val height=entry.optInt("vheight",meta?.optInt("vheight",0) ?: 0)
                 val dimensions=if(width>0 && height>0) minOf(width,height).toString() else ""
                 val quality=ContentRepository.qualityNumber(entry.str("quality_desc").ifEmpty { meta?.str("definition").orEmpty() }.ifEmpty { dimensions.ifEmpty { entry.str("height").ifEmpty { entry.str("vheight").ifEmpty { entry.str("quality").ifEmpty { name } } } } })
-                StreamInfo(resolved,key,quality.toString())
+                val label = entry.str("codec_type").ifEmpty { meta?.str("codec_type").orEmpty() }.lowercase()
+                Rendition(quality, label, width.takeIf { it > 0 }, height.takeIf { it > 0 }, resolved, key)
             }.getOrNull()
         }
     }

@@ -41,3 +41,22 @@ python3 scripts/release_tv.py validate kotlin-v0.10.0
 安装由 Android 系统确认，不是静默安装。GitHub 不可达、系统无安装器或禁止未知来源时不能完成更新。下载失败不影响已安装应用。
 
 0.10.0 如实声明 minSdk 21，旧 0.9 更新器不识别该元数据，首次需手动同签名覆盖安装，请勿先卸载。最低 Android 5.0 不等于旧电视解码、音频、遥控器及安装流程已验收。公开搜索接口曾返回 HTTP 502 / signature_unavailable；本版改善本地解析和错误处理，不宣称上游搜索、播放已恢复。
+
+
+## 本地签名发布（0.11.0 起）
+
+Android 5 AAC 兼容库从固定版本源码编译；需 Python 3.12+、curl、make、JDK 17、
+Android SDK 36 / build-tools 36.0.0 和 NDK 27.1.12297006。详见
+`decoder-ffmpeg/README.md`。公开仓库的验证工作流仍保留。
+
+在修复已合入远端 main、工作区干净、版本及原签名 APK 已验证后，把对应
+`kotlin-vX.Y.Z` 标签推送到同一 main 提交，再执行：
+
+```sh
+python3 scripts/release_tv.py publish kotlin-vX.Y.Z --local
+```
+
+本地发布显式核验 canonical origin、远端 main/tag、原签名、四种 ABI、版本递增和
+上传资产哈希；使用已登录的 gh，不需要把私钥或签名密码上传到 GitHub。
+源码 ZIP 同时包含 FFmpeg 对应源码归档和重编译所需的桥接代码、脚本与许可。
+仓库未配置签名 secrets 时，标签触发的云端发布不会成功；本地发布可独立完成。

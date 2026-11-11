@@ -7,13 +7,15 @@ import os
 import re
 import shutil
 import subprocess
+import zipfile
+import importlib.util
 from pathlib import Path
 
 REPOSITORY = 'N3urda/hongguoTV'
 PACKAGE = 'com.hongguotv.nativeapp'
 CERTIFICATE = '3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98'
 ROOT = Path(__file__).resolve().parents[1]
-NOTES = '改善本地搜索解析、播放候选选择和错误诊断。上游公开搜索接口曾返回 HTTP 502 / signature_unavailable；本版不代表上游搜索或播放已恢复。'
+NOTES = '支持扫码登录、账户收藏与预约同步；修复播放信息接口空响应/拒绝时的兼容回退，以及 Android 5 重启后的登录态恢复。Android 5 优先使用 AAC 软件音频解码，解决系统解码器卡在首帧的问题。'
 
 
 def require(condition, message):
@@ -105,19 +107,53 @@ def prepare(tag):
     buildtools = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
     validate_apk(run(str(buildtools / 'aapt'), 'dump', 'badging', str(apk)),
                  run(str(buildtools / 'apksigner'), 'verify', '--verbose', '--min-sdk-version', '21', '--print-certs', str(apk)), version, code, sdk)
+    with zipfile.ZipFile(apk) as package:
+        required = {f'lib/{abi}/libffmpegJNI.so' for abi in ('armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64')}
+        require(required <= set(package.namelist()), 'APK missing Android 5 AAC native decoder ABI')
     data = metadata(tag, version, code, sdk, commit, apk.name, apk.stat().st_size, sha256(apk))
     manifest = out / 'update.json'
     manifest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
     source = out / f'hongguotv-{tag}-source.zip'
     run('git', 'archive', '--format=zip', f'--prefix=hongguotv-{tag}/', '--output', str(source), 'HEAD')
+    # Ship the exact native dependency sources alongside wrapper/relink build scripts.
+    spec = importlib.util.spec_from_file_location('native_audio', ROOT / 'kotlin-tv/decoder-ffmpeg/tools/build_native.py')
+    native_audio = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(native_audio)
+    archive = native_audio.source_archive()
+    with zipfile.ZipFile(source, 'a', compression=zipfile.ZIP_STORED) as bundle:
+        bundle.write(archive, f'hongguotv-{tag}/third-party/{archive.name}')
     checks = out / 'SHA256SUMS'
     checks.write_text(''.join(f'{sha256(p)}  {p.name}\n' for p in (apk, source, manifest)))
-    (out / 'release-notes.md').write_text(f'''红果 TV {version}（versionCode {code}），Android 5.0+。\n\n{NOTES}\n\n原发布证书签名，可同签名覆盖安装并保留本机记录。旧 0.9 更新器不识别 API21 元数据，首次需手动安装，请勿先卸载。\n\n源码提交：{commit}。附 APK、对应完整源码 ZIP（含 GPL-3.0 和第三方许可）、update.json、SHA256SUMS。通过 core 测试和 Release lint 不等于实机验收，Android 5/6/7 解码、音频和安装仍需验证。\n\n构建要求与步骤见源码 kotlin-tv/AUTO_UPDATES.md；版本取自该标签的 Gradle 配置，不使用运行次数改写版本。\n''')
+    (out / 'release-notes.md').write_text(f'''红果 TV {version}（versionCode {code}），Android 5.0+。\n\n{NOTES}\n\n原发布证书签名，可同签名覆盖安装并保留本机记录。旧 0.9 更新器不识别 API21 元数据，首次需手动安装，请勿先卸载。\n\n源码提交：{commit}。附 APK、对应完整源码 ZIP（含 GPL-3.0 和第三方许可）、update.json、SHA256SUMS。验收基于 Android 模拟器，不代表覆盖所有厂商真机。\n\n构建要求与步骤见源码 kotlin-tv/AUTO_UPDATES.md；版本取自该标签的 Gradle 配置，不使用运行次数改写版本。\n''')
     return data, [apk, source, manifest, checks]
 
 
-def publish(tag):
-    require(os.environ.get('GITHUB_REPOSITORY') == REPOSITORY and os.environ.get('GITHUB_REF') == 'refs/tags/' + tag, 'Publishing only allowed from canonical repository tag workflow')
+def released_native_version(tag):
+    # Earlier native preview builds were sometimes marked stable/latest.
+    preview = re.fullmatch(r'preview-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-\d{8}', tag)
+    return tuple(map(int, preview.groups())) if preview else version_tuple(tag)
+
+
+def validate_local_publish(tag):
+    version_tuple(tag)
+    require(not os.environ.get('GITHUB_ACTIONS'), 'Use workflow publishing inside Actions')
+    require(run('git', 'remote', 'get-url', 'origin') in
+            (f'https://github.com/{REPOSITORY}.git', f'https://github.com/{REPOSITORY}', f'git@github.com:{REPOSITORY}.git'),
+            'Local release requires canonical origin')
+    require(not run('git', 'status', '--porcelain'), 'Local release requires a clean checkout')
+    head = run('git', 'rev-parse', 'HEAD')
+    refs = run('git', 'ls-remote', 'origin', 'refs/heads/main', f'refs/tags/{tag}', f'refs/tags/{tag}^{{}}')
+    remote = dict(line.split()[::-1] for line in refs.splitlines())
+    require(remote.get('refs/heads/main') == head, 'Local release must match remote main')
+    require(remote.get(f'refs/tags/{tag}^{{}}', remote.get(f'refs/tags/{tag}')) == head,
+            'Local release tag must already point to remote main')
+
+
+def publish(tag, local=False):
+    if local:
+        validate_local_publish(tag)
+    else:
+        require(os.environ.get('GITHUB_REPOSITORY') == REPOSITORY and os.environ.get('GITHUB_REF') == 'refs/tags/' + tag, 'Publishing only allowed from canonical repository tag workflow')
     data, files = prepare(tag)
     # List successfully before interpreting absence. Authentication/network errors fail closed.
     pages = json.loads(run('gh', 'api', '--paginate', '--slurp', f'repos/{REPOSITORY}/releases?per_page=100'))
@@ -141,7 +177,7 @@ def publish(tag):
             require(previous < (0, 10, 0), 'Published native release missing update.json; review manually')
     if published:
         latest = api('releases/latest')
-        require(version_tuple(latest['tag_name']) < version_tuple(tag), 'Latest cannot go backwards')
+        require(released_native_version(latest['tag_name']) < version_tuple(tag), 'Latest cannot go backwards')
     notes = ROOT / 'outputs/release-notes.md'
     if existing:
         require(existing['target_commitish'] == data['sourceCommit'], 'Draft belongs to a different commit')
@@ -165,13 +201,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=['validate', 'prepare', 'publish'])
     parser.add_argument('tag')
+    parser.add_argument('--local', action='store_true', help='Publish verified remote main/tag using local signing and gh authentication')
     args = parser.parse_args()
     if args.action == 'validate':
         print(source_version((ROOT / 'kotlin-tv/app/build.gradle.kts').read_text(), args.tag))
     elif args.action == 'prepare':
         prepare(args.tag)
     else:
-        publish(args.tag)
+        publish(args.tag, local=args.local)
 
 
 if __name__ == '__main__':

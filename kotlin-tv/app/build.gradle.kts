@@ -21,8 +21,8 @@ android {
         applicationId = "com.hongguotv.nativeapp"
         minSdk = 21
         targetSdk = 36
-        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 11
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.10.1"
+        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 12
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.11.0"
     }
     buildFeatures { buildConfig = true }
     testOptions {
@@ -72,6 +72,7 @@ dependencies {
     implementation("com.google.zxing:core:3.5.3")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation(project(":decoder-ffmpeg"))
     implementation(project(":core")) { exclude(group = "org.json") }
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-exoplayer-hls:1.8.0")

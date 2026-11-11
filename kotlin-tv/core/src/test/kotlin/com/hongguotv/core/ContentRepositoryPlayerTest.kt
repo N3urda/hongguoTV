@@ -42,6 +42,44 @@ class ContentRepositoryPlayerTest {
     private fun entry(height: Int, codec: String, url: String, width: Int = 0) = JSONObject()
         .put("vheight", height).put("vwidth", width).put("codec_type", codec).put("main_url", url)
 
+    @Test fun foregroundFallbackKeepsAllCodecAndDimensionChoicesForEmptyOrRejectedModelService() {
+        for (status in listOf(200, 403)) {
+            ContentRepository.deviceStore = FakeStore()
+            var compatibleRequests = 0
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                val compatible = request.url.encodedPath == "/novel/player/video_model/v1/"
+                if (compatible) compatibleRequests++
+                val body = if (compatible) JSONObject().put("code", 0).put("data", JSONObject().put("video_model",
+                    JSONObject().put("video_list", list(
+                        entry(1280, "h265", "https://example.com/hevc", 720),
+                        entry(854, "h264", "https://example.com/avc", 480))))).toString() else ""
+                Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                    .code(if (compatible) 200 else status).message("test").body(body.toResponseBody()).build()
+            }.build()
+            val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+            val ladder = repo.streamLadderWithCompatibility("123")
+            assertEquals(1, compatibleRequests)
+            assertEquals(2, ladder.renditions.size)
+            assertEquals("https://example.com/avc", ladder.select(1080) { it.codec == "h264" }!!.url)
+            assertEquals(480, ladder.renditions.first { it.codec == "h264" }.width)
+            assertEquals(1280, ladder.renditions.first { it.codec == "h265" }.height)
+        }
+    }
+
+    @Test fun speculativeEmptyResponseNeverStartsCompatibilityRequests() {
+        ContentRepository.deviceStore = FakeStore()
+        var compatibleRequests = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            if (chain.request().url.encodedPath == "/novel/player/video_model/v1/") compatibleRequests++
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(200).message("test").body("".toResponseBody()).build()
+        }.build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadderWithCompatibility("123", speculative = true) }
+        assertEquals(0, compatibleRequests)
+    }
+
     @Test fun shortplayModelListResolvesWithoutAnyFallbackCall() {
         val (repo, _) = repository { request ->
             when (request.url.host) {
