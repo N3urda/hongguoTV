@@ -97,6 +97,7 @@ class PosterCoverFillTest {
             DiscoveryBrowserState().apply {
                 loaded = true
                 this.groups = groups
+                expanded = true // This case verifies scrolling with the filter header expanded.
                 items = (1..18).map { Series("$it", "找剧作品$it", badge = "全80集") }
             }
         val screen =
