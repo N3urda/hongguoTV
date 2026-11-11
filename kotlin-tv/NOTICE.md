@@ -77,3 +77,10 @@ and terms of service. The authors disclaim any responsibility for misuse
 of this software.
 
 评论表情图使用 Microsoft Fluent Emoji（MIT），通过 GPL HGTV 参考项目取得；许可全文随 APK assets/comment_emoji/LICENSE.txt 分发。为通用替代表情，非红果官方贴图。
+
+## 2026-11-11 单集播放协议修复
+
+`PlayerSignature.kt` 基于本仓库 `CommentSignature.kt` 的 Argus/Simon/AES 和 Ladon 实现，按单集播放协议补齐设备、版本、请求体摘要和 Gorgon 参数。协议对照来源：qq294716498/HongguoTV-Phone-TV-NoAds，固定提交 `8eafa3908e9191c0a5ae186d5beff11e3a971f3c` 的 `native/core/provider_hongguo_player_sign.go`、`provider_hongguo_registered_media.go` 和 `provider_hongguo_app.go`：
+https://github.com/qq294716498/HongguoTV-Phone-TV-NoAds/tree/8eafa3908e9191c0a5ae186d5beff11e3a971f3c/native/core 。保留原 MIT/GPL 声明与许可；未引入该项目的应用界面或账号数据。
+
+`core/src/test/resources/player-signing.json` 使用该固定 Go 实现、固定时间和 nonce 独立生成，用于逐字节校验，不含真实设备身份、账号或媒体地址。正式播放优先使用 `/novel/player/video_model/v1/` 和完整 Gorgon/Argus/Ladon，旧批量签名仅保留为有界兼容回退；前述历史“无签名播放请求”说明不再描述当前主路径。

@@ -41,6 +41,7 @@ class DiscoveryScreenTest {
             }
         val state =
             DiscoveryBrowserState().apply {
+                expanded = true // This test restores an explicitly expanded filter panel.
                 loaded = true
                 selection = DiscoverySelection(mapOf("category_dim_role" to "cate_29"))
                 groups =
@@ -202,6 +203,7 @@ class DiscoveryScreenTest {
         val activity = controller.get()
         val state =
             DiscoveryBrowserState().apply {
+                expanded = true // This test restores an explicitly expanded filter panel.
                 loaded = true
                 items = page("1").items
                 groups = this@DiscoveryScreenTest.groups

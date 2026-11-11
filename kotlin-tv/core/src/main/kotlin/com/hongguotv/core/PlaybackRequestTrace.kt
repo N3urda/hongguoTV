@@ -8,7 +8,7 @@ import okhttp3.Protocol
 
 /** 只记录一轮有界模型请求；不保留地址、请求头、身份或异常原文。 */
 internal class PlaybackRequestTrace {
-    enum class Stage { GET, POST }
+    enum class Stage { GET, POST, SINGLE }
     private val entries = mutableListOf<String>()
 
     fun response(stage: Stage, host: String, status: Int, bytes: Int?, protocol: Protocol) {
@@ -33,7 +33,7 @@ internal class PlaybackRequestTrace {
     private fun add(stage: Stage, host: String, result: String) {
         if (entries.size >= 5) return
         val tag = if (host in PlayRetryPlan.hosts) PlayRetryPlan.tag(host) else "other"
-        entries += "${if (stage == Stage.GET) "G" else "P"}:$tag=$result"
+        entries += "${when (stage) { Stage.GET -> "G"; Stage.POST -> "P"; Stage.SINGLE -> "S" }}:$tag=$result"
     }
 
     fun summary() = entries.joinToString(" ")

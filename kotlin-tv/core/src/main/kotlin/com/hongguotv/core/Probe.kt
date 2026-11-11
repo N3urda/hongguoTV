@@ -6,6 +6,26 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 fun main(args: Array<String>) {
     val repository = ContentRepository()
+    if (args.contains("--verify-playback")) {
+        val at = args.indexOf("--verify-playback")
+        val seriesId = args.getOrNull(at + 1) ?: error("用法: --verify-playback <seriesId> [count]")
+        val count = args.getOrNull(at + 2)?.toIntOrNull()?.coerceIn(1, 5) ?: 2
+        try {
+            val detail = repository.detail(seriesId)
+            println("verify title=${detail.series.title}; episodes=${detail.episodes.size}")
+            detail.episodes.take(count).forEachIndexed { index, id ->
+                val stream = repository.stream(id, 720)
+                RemoteVideo(repository.http, stream).use { remote ->
+                    remote.prepare()
+                    val first = remote.read(0, minOf(remote.total, 1024 * 1024).toInt())
+                    val tail = remote.read((remote.total - 65536).coerceAtLeast(0), minOf(remote.total, 65536).toInt())
+                    check(first.size > 8 && String(first, 4, 4) == "ftyp" && tail.isNotEmpty())
+                    println("verify episode=${index + 1}; quality=${stream.quality}; mediaBytes=${remote.total}; head=${first.size}; tail=${tail.size}; mp4=true")
+                }
+            }
+        } finally { repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() }
+        return
+    }
     if (args.contains("--category-recommendations")) {
         try {
             for (category in listOf(DramaCategory.COMIC, DramaCategory.REAL)) {
@@ -373,7 +393,7 @@ fun main(args: Array<String>) {
                 }
             }
         } catch (e: Exception) {
-            println("ladder episode=$episodeId; error=${e.message?.take(150)}")
+            println("ladder episode=$episodeId; error=${e.message?.take(150)}; trace=${(e as? EmptyPlaybackResponseException)?.detail.orEmpty()}")
         } finally {
             repository.http.connectionPool.evictAll()
             repository.http.dispatcher.executorService.shutdown()

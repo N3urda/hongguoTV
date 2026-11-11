@@ -37,9 +37,9 @@ class PlaybackRetryConnectionTest {
             val error = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
             val requests = (1..4).map { server.takeRequest(5, TimeUnit.SECONDS)!! }
             assertEquals(listOf(0, 0, 0, 0), requests.map { it.sequenceNumber })
-            assertTrue(requests[0].path!!.startsWith("/reading/bookapi/video_tab/"))
+            assertTrue(requests[0].path!!.startsWith("/novel/player/video_model/"))
             assertTrue(requests.drop(1).all { it.path!!.startsWith("/novel/player/") })
-            assertTrue(error.detail.orEmpty().contains("G:b=200/0B/h2"))
+            assertTrue(error.detail.orEmpty().contains("S:b=200/0B/h2"))
             assertTrue(error.detail.orEmpty().contains("P:hl=200/0B/h2"))
             assertEquals(4, error.detail.orEmpty().split(" ").size)
             server.enqueue(MockResponse().setBody("still usable"))

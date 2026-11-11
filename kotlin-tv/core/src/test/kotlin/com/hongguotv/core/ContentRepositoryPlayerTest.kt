@@ -48,7 +48,8 @@ class ContentRepositoryPlayerTest {
             var compatibleRequests = 0
             val http = OkHttpClient.Builder().addInterceptor { chain ->
                 val request = chain.request()
-                val compatible = request.url.encodedPath == "/novel/player/video_model/v1/"
+                val compatible = request.url.host == "api3-normal-sinfonlinea.fqnovel.com" &&
+                    request.url.encodedPath == "/novel/player/video_model/v1/"
                 if (compatible) compatibleRequests++
                 val body = if (compatible) JSONObject().put("code", 0).put("data", JSONObject().put("video_model",
                     JSONObject().put("video_list", list(
@@ -71,7 +72,8 @@ class ContentRepositoryPlayerTest {
         ContentRepository.deviceStore = FakeStore()
         var compatibleRequests = 0
         val http = OkHttpClient.Builder().addInterceptor { chain ->
-            if (chain.request().url.encodedPath == "/novel/player/video_model/v1/") compatibleRequests++
+            if (chain.request().url.host == "api3-normal-sinfonlinea.fqnovel.com" &&
+                chain.request().url.encodedPath == "/novel/player/video_model/v1/") compatibleRequests++
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
                 .code(200).message("test").body("".toResponseBody()).build()
         }.build()

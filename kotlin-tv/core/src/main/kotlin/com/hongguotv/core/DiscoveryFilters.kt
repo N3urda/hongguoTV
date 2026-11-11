@@ -81,7 +81,7 @@ class DiscoveryBrowserState {
     var next: DiscoveryCursor? = null
     var loaded = false
     var position: Pair<String, Int>? = null
-    var expanded = true
+    var expanded = false
     var headerOffset = 0
     var browseStep = 0
     var filterVerticalOffset = 0

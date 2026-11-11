@@ -158,6 +158,8 @@ class DramaDiscoveryScreenTest {
             assertNotNull(
                 root.findViewById<View>((get(activity, "searchInput") as EditText).nextFocusDownId)
             )
+            assertFalse((get(activity, "discoveryBrowser") as DiscoveryBrowserState).expanded)
+            texts(root).single { it.text.toString() == "展开筛选" }.performClick()
             for (label in listOf("主题", "设定", "背景", "推荐", "受众", "时间")) assertTrue(
                 label,
                 texts(root).any { it.text.toString() == label },
@@ -192,6 +194,7 @@ class DramaDiscoveryScreenTest {
             texts(root).single { it.text.toString() == "搜索" }.performClick()
             pump(activity)
             assertTrue(texts(root).any { it.text.toString() == "大佬搜索结果剧" })
+            assertTrue("Explicit search should focus results", views(root).filterIsInstance<ContinuousCatalogView>().single().grid.hasFocus())
             val count = requests.size
             texts(root).single { it.text.toString() == "返回分类" }.performClick()
             layout(activity)

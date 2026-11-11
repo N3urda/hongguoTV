@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.core
 
-// 首页试播的数据状态与选择规则，供界面层驱动作品切换。
+// 首页连续播放的数据状态与选择规则，供界面层驱动作品切换。
 
-/** Trial navigation only. Deliberately has no library, account or progress-upload dependency. */
+/** Homepage feed navigation and in-session episode position. Deliberately has no library, account or progress-upload dependency. */
 class DramaFeedState {
     var recommendationCursor = RecommendationCursor()
         private set
@@ -40,6 +40,7 @@ class DramaFeedState {
     var hasMore = true
         private set
 
+    var episodeIndex = 0
     var position = 0L
     var userPaused = false
     var ended = false
@@ -127,6 +128,7 @@ class DramaFeedState {
     }
 
     private fun resetPlayback() {
+        episodeIndex = 0
         position = 0
         userPaused = false
         ended = false

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.nativeapp
 
-// 首页试播组件：组装分类栏、视频区和操作栏，并管理试播请求及遥控器焦点。
+// 首页播放组件：组装分类栏、视频区和操作栏，并管理播放请求及遥控器焦点。
 
 import android.app.Activity
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
@@ -17,7 +18,7 @@ import com.hongguotv.core.*
 import java.io.Closeable
 import java.util.concurrent.Executors
 
-/** 独立首页试播，不写入本机观看记录，也不上传账户进度。 */
+/** 首页连续播放，共享观看记录和播放偏好，保留独立的横向浏览状态。 */
 internal class HomeFeedScreen(
     private val activity: Activity,
     private val state: DramaFeedState,
@@ -28,6 +29,11 @@ internal class HomeFeedScreen(
     private val backend: FeedBackend,
     private val playback: TrialPlayback,
     private val autoPreview: Boolean = true,
+    private val loadCover: (ImageView, String) -> Unit = { _, _ -> },
+    private val related: (Series, View) -> Unit = { _, _ -> },
+    private val autoNext: Boolean = true,
+    private val restoreProgress: (String) -> WatchProgress? = { null },
+    private val saveProgress: (WatchProgress, Int, Boolean) -> Unit = { _, _, _ -> },
 ) : LinearLayout(activity), Closeable {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
@@ -50,6 +56,10 @@ internal class HomeFeedScreen(
     private var prefetchSeries: String? = null
     private var prefetchReadyAt = 0L
     private var clip: TrialClip? = null
+    private var playbackReady = false
+    private var restoredSeries: String? = null
+    private var lastCheckpoint = 0L
+    private var lastSaved: Triple<String, Long, Boolean>? = null
     private var closed = false
     private var active = false
     private var manuallyStarted: String? = null
@@ -64,14 +74,53 @@ internal class HomeFeedScreen(
     private var healTarget: String? = null
     private var healAttempts = 0
     private val stage = FrameLayout(activity)
+    private val hero = FrameLayout(activity)
+    private val cover = ImageView(activity).apply { scaleType = ImageView.ScaleType.CENTER_CROP; alpha = .25f }
+    private val poster = ImageView(activity).apply { scaleType = ImageView.ScaleType.FIT_CENTER; setBackgroundColor(Color.BLACK) }
+    private val previousCover = ImageView(activity).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+    private val nextCover = ImageView(activity).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+    private val previousTitle = label("", 14f)
+    private val nextTitle = label("", 14f)
+    private lateinit var previousCard: View
+    private lateinit var nextCard: View
+    private var slideDirection = 1
+    private val positionLabel = label("正在发现好剧", 12f, Color.rgb(103, 211, 255))
+    private lateinit var relatedButton: TextView
+    private var describedId: String? = null
+    private val relatedCounts = linkedMapOf<String, Pair<Int, Int>>()
+    private var relatedProbe: Runnable? = null
+    private var relatedScope: RequestScope? = null
+    private var relatedJob: java.util.concurrent.Future<*>? = null
+
+    private fun probeRelated(series: Series?) {
+        relatedProbe?.let(main::removeCallbacks)
+        relatedScope?.cancel()
+        relatedJob?.cancel(true)
+        if (series == null || relatedCounts.containsKey(series.id)) return
+        relatedProbe = Runnable {
+            if (closed || !active || state.current?.id != series.id) return@Runnable
+            val requestScope = RequestScope()
+            relatedScope = requestScope
+            relatedJob = worker.submit {
+                val rows = runCatching { requestScope.run { backend.related(series) } }.getOrNull()
+                main.post {
+                    if (!closed && active && state.current?.id == series.id && relatedScope === requestScope && rows != null) {
+                        relatedCounts[series.id] = rows.size to rows.count { it.upcoming }
+                        while (relatedCounts.size > 12) relatedCounts.remove(relatedCounts.keys.first())
+                        paintActions()
+                    }
+                }
+            }
+        }.also { main.postDelayed(it, 1000) }
+    }
     private val title = label("发现下一部好剧", 25f)
-    private val meta = label("第一集试播", 13f, TvStyle.accent)
-    private val intro = label("喜欢这部作品，就选择观看全集。", 15f, TvStyle.muted)
+    private val meta = label("首页播放", 13f, Color.rgb(103, 211, 255))
+    private val intro = label("左右换剧，当前作品自动连播。", 15f, TvStyle.muted)
     private val status = label("正在准备热门作品…", 15f)
-    private val tag = label("热门发现", 12f, TvStyle.accent)
+    private val tag = label("热门发现", 12f, Color.rgb(103, 211, 255))
+    private val info = LinearLayout(activity).apply { orientation = VERTICAL; gravity = Gravity.CENTER_VERTICAL }
     private val actions = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
     private val buttons = mutableListOf<TextView>()
-    private val pauseButton: TextView
     private val watchButton: TextView
     private lateinit var favoriteButton: TextView
     private val recommendButton: TextView
@@ -97,16 +146,21 @@ internal class HomeFeedScreen(
             isFocusableInTouchMode = true
             isClickable = true
             gravity = Gravity.CENTER
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                setAutoSizeTextTypeUniformWithConfiguration(10, 14, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
+            }
             minHeight = dp(44)
             setPadding(dp(10), dp(10), dp(10), dp(10))
-            background = TvStyle.card(activity, false)
+            background = HomeGlass.panel(activity)
             setOnFocusChangeListener { _, _ -> paintButton(this) }
             setOnClickListener { action() }
         }
 
     private fun paintButton(button: TextView) {
-        button.background = TvStyle.card(activity, button.hasFocus(), button.isSelected)
-        button.setTextColor(if (button.isSelected) TvStyle.accent else TvStyle.text)
+        button.background = HomeGlass.panel(activity, button.hasFocus(), button.isSelected)
+        button.setTextColor(if (button.isSelected) Color.rgb(103, 211, 255) else TvStyle.text)
         button.setTypeface(null, if (button.isSelected) Typeface.BOLD else Typeface.NORMAL)
     }
 
@@ -151,80 +205,110 @@ internal class HomeFeedScreen(
             b.nextFocusRightId = typeChoices.getOrNull(i + 1)?.id ?: b.id
         }
         addView(types, lp(-1, dp(48)))
-        val content = LinearLayout(activity)
+        val carousel = FrameLayout(activity).apply { clipChildren = false; clipToPadding = false }
+        fun side(image: ImageView, caption: TextView, delta: Int): View = FrameLayout(activity).apply {
+            background = HomeGlass.panel(activity)
+            clipToOutline = true
+            alpha = .6f
+            scaleY = .84f
+            rotationY = if (delta < 0) 10f else -10f
+            cameraDistance = dp(6000).toFloat()
+            addView(image, FrameLayout.LayoutParams(-1, -1))
+            addView(View(activity).apply {
+                background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                    intArrayOf(0x44101828, 0xee0b101a.toInt()))
+            }, FrameLayout.LayoutParams(-1, -1))
+            caption.maxLines = 3
+            caption.ellipsize = TextUtils.TruncateAt.END
+            caption.setPadding(dp(10), dp(10), dp(10), dp(16))
+            addView(caption, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+            addView(label(if (delta < 0) "‹" else "›", 30f).apply { gravity = Gravity.CENTER },
+                FrameLayout.LayoutParams(-1, -1))
+            isClickable = true
+            isFocusable = false
+            contentDescription = if (delta < 0) "上一部" else "下一部"
+            setOnClickListener { move(delta) }
+        }
+        previousCard = side(previousCover, previousTitle, -1)
+        nextCard = side(nextCover, nextTitle, 1)
+        carousel.addView(previousCard, FrameLayout.LayoutParams(dp(112), -1, Gravity.START))
+        carousel.addView(nextCard, FrameLayout.LayoutParams(dp(112), -1, Gravity.END))
+        hero.background = HomeGlass.panel(activity)
+        hero.clipToOutline = true
+        hero.elevation = dp(8).toFloat()
+        hero.setPadding(dp(2), dp(2), dp(2), dp(2))
+        hero.addView(cover, FrameLayout.LayoutParams(-1, -1))
+        hero.addView(View(activity).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0x3310192a, 0xbb0b101a.toInt()))
+        }, FrameLayout.LayoutParams(-1, -1))
+        val body = LinearLayout(activity).apply { orientation = VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(4)) }
+        hero.addView(body, FrameLayout.LayoutParams(-1, -1))
+        tag.setPadding(dp(10), dp(5), dp(10), dp(5))
+        tag.background = HomeGlass.panel(activity, selected = true)
+
+        val content = LinearLayout(activity).apply { setPadding(0, 0, 0, 0) }
         stage.isFocusable = true
         stage.isFocusableInTouchMode = true
         stage.isClickable = true
-        stage.setPadding(dp(3), dp(3), dp(3), dp(3))
-        stage.background = TvStyle.shape(activity, Color.BLACK)
+        stage.contentDescription = "左右换剧，确定暂停或继续，下键进入操作"
+        stage.background = HomeGlass.panel(activity)
+        stage.clipToOutline = true
         stage.addView(playback.view, FrameLayout.LayoutParams(-1, -1))
-        tag.setPadding(dp(12), dp(8), dp(12), dp(8))
-        tag.background = TvStyle.shape(activity, Color.argb(210, 11, 15, 21))
-        stage.addView(
-            tag,
-            FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply {
-                setMargins(dp(10), dp(10), dp(10), 0)
-            },
-        )
+        stage.addView(poster, FrameLayout.LayoutParams(-1, -1))
+        stage.addView(tag, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
         status.gravity = Gravity.CENTER
-        status.setPadding(dp(14), dp(12), dp(14), dp(12))
+        status.textSize = 12f
+        status.setPadding(dp(8), dp(6), dp(8), dp(6))
         status.background = TvStyle.shape(activity, Color.argb(215, 11, 15, 21))
-        stage.addView(
-            status,
-            FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
-                setMargins(dp(10), 0, dp(10), dp(10))
-            },
-        )
-        content.addView(
-            stage,
-            lp(0, -1).apply {
-                weight = 2.2f
-                rightMargin = dp(22)
-            },
-        )
-        val info =
-            LinearLayout(activity).apply {
-                orientation = VERTICAL
-                setPadding(0, dp(14), 0, dp(10))
-            }
+        stage.addView(status, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+        content.addView(stage, lp(-1, -1))
         title.typeface = Typeface.DEFAULT_BOLD
-        title.maxLines = 3
+        title.textSize = 19f
+        title.maxLines = 2
         title.ellipsize = TextUtils.TruncateAt.END
         info.addView(title)
-        meta.maxLines = 2
-        meta.setPadding(0, dp(12), 0, dp(12))
+        meta.maxLines = 1
+        meta.ellipsize = TextUtils.TruncateAt.END
+        meta.setPadding(0, dp(4), 0, dp(4))
         info.addView(meta)
-        intro.maxLines = 6
+        intro.maxLines = 2
+        intro.textSize = 14f
         intro.ellipsize = TextUtils.TruncateAt.END
         info.addView(intro)
-        info.addView(Space(activity), lp(1, 0).apply { weight = 1f })
-        info.addView(
-            label("↑ ↓  换一部\n确定  打开操作\n返回  顶部导航", 13f, TvStyle.muted).apply {
-                setLineSpacing(dp(6).toFloat(), 1f)
-            }
-        )
-        content.addView(info, lp(0, -1).apply { weight = 1f })
-        addView(content, lp(-1, 0).apply { weight = 1f })
-        pauseButton = button("暂停试播") { toggle() }
+        info.setPadding(dp(12), dp(10), dp(12), dp(10))
+        info.background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(0xbb0b101a.toInt(), 0x000b101a))
+        stage.addView(info, FrameLayout.LayoutParams(dp(220), -2, Gravity.START or Gravity.BOTTOM).apply {
+            setMargins(dp(12), dp(8), dp(12), dp(32))
+        })
+        body.addView(content, lp(-1, 0).apply { weight = 1f })
+        carousel.addView(hero, FrameLayout.LayoutParams(-1, -1).apply {
+            setMargins(dp(76), dp(8), dp(76), dp(8))
+        })
+        addView(carousel, lp(-1, 0).apply { weight = 1f })
         watchButton =
-            button("观看全集") {
-                state.current?.let {
-                    remember()
-                    pause()
-                    watch(it)
-                }
-            }
+            button("详情 / 选集") { openCurrent() }
         favoriteButton =
             button("账户收藏") {
                 state.current?.let {
                     state.userPaused = true
                     playback.pause()
-                    remember()
+                    remember(force = true)
                     paintActions()
                     favorite(it, favoriteButton)
                 }
             }
-        buttons += listOf(pauseButton, watchButton, favoriteButton)
+        relatedButton = button("相关剧集 / 预约") {
+            state.current?.let {
+                state.userPaused = true
+                playback.pause()
+                remember(force = true)
+                paintActions()
+                related(it, relatedButton)
+            }
+        }
+        buttons += listOf(watchButton, favoriteButton, relatedButton)
         buttons.forEachIndexed { index, b ->
             actions.addView(
                 b,
@@ -239,12 +323,17 @@ internal class HomeFeedScreen(
             b.nextFocusDownId = b.id
         }
         actions.setPadding(0, dp(10), 0, 0)
-        actions.visibility = View.GONE
-        addView(actions)
+        body.addView(actions)
+        positionLabel.gravity = Gravity.CENTER
+        positionLabel.setPadding(0, 0, 0, 0)
+        addView(positionLabel, lp(-1, dp(24)))
+        addView(label("← →  换剧     OK  暂停 / 继续     ↓  操作     ↑  分类", 12f, TvStyle.muted).apply {
+            gravity = Gravity.CENTER
+        }, lp(-1, dp(24)))
         stage.nextFocusLeftId = stage.id
         stage.nextFocusRightId = stage.id
-        stage.nextFocusUpId = stage.id
-        stage.nextFocusDownId = stage.id
+        stage.nextFocusUpId = recommendButton.id
+        stage.nextFocusDownId = watchButton.id
         nav.forEach {
             it.nextFocusDownId =
                 (if (state.recommendation) recommendButton
@@ -252,20 +341,30 @@ internal class HomeFeedScreen(
                     .id
         }
         stage.setOnFocusChangeListener { _, focused ->
-            stage.background = TvStyle.shape(activity, Color.BLACK, if (focused) TvVisual.focusedValue else TvStyle.outline)
+            hero.background = HomeGlass.panel(activity, focused)
+            hero.animate().translationZ(if (focused) dp(4).toFloat() else 0f).setDuration(180).start()
         }
-        stage.setOnClickListener { showActions() }
+        stage.setOnClickListener { toggle() }
+        hero.setOnClickListener { toggle() }
         stage.setOnKeyListener { _, key, event ->
             when (key) {
-                KeyEvent.KEYCODE_DPAD_UP,
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    if (event.action == KeyEvent.ACTION_DOWN) recommendButton.requestFocus()
+                    true
+                }
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (event.action == KeyEvent.ACTION_DOWN) showActions()
+                    true
+                }
+                KeyEvent.KEYCODE_DPAD_LEFT,
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
                     if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
-                        move(if (key == KeyEvent.KEYCODE_DPAD_UP) -1 else 1)
+                        move(if (key == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1)
                     true
                 }
                 KeyEvent.KEYCODE_DPAD_CENTER,
                 KeyEvent.KEYCODE_ENTER -> {
-                    if (event.action == KeyEvent.ACTION_UP) showActions()
+                    if (event.action == KeyEvent.ACTION_UP) toggle()
                     true
                 }
                 else -> false
@@ -277,30 +376,25 @@ internal class HomeFeedScreen(
                 when (value) {
                     TrialStatus.BUFFERING -> {
                         status.visibility = View.VISIBLE
-                        status.text = "正在加载第一集…"
+                        status.text = "正在加载当前集…"
                     }
                     TrialStatus.READY -> {
+                        playbackReady = true
+                        poster.visibility = View.GONE
                         status.visibility = if (state.userPaused) View.VISIBLE else View.GONE
                         failed = false
-                        status.text = if (state.userPaused) "试播已暂停" else "第一集试播 · 喜欢就看全集"
+                        status.text = if (state.userPaused) "播放已暂停" else "首页播放 · 喜欢就看全集"
                         paintActions()
                         prefetchUpcoming()
                     }
-                    TrialStatus.ENDED -> {
-                        status.visibility = View.VISIBLE
-                        remember()
-                        state.ended = true
-                        state.userPaused = true
-                        status.text = "本集试播结束 · 看全集或按 ↓ 换一部"
-                        paintActions()
-                        if (active && stage.hasFocus()) showActions()
-                    }
+                    TrialStatus.ENDED -> finishEpisode()
                     TrialStatus.ERROR -> {
+                        poster.visibility = View.VISIBLE
                         playback.pause()
                         if (!selfHealTrial()) {
                             failed = true
                             status.visibility = View.VISIBLE
-                            status.text = "试播暂不可用 · 可重试、换剧或查看全集"
+                            status.text = "播放暂不可用 · 可重试、换剧或查看全集"
                         }
                         paintActions()
                     }
@@ -310,7 +404,7 @@ internal class HomeFeedScreen(
         paintActions()
     }
 
-    // 设置进入首页时的初始焦点，并在应用位于前台时启动试播流程。
+    // 设置进入首页时的初始焦点，并在应用位于前台时启动播放流程。
     fun start(foreground: Boolean, focusNav: Boolean) {
         if (focusNav) nav[0].requestFocus() else stage.requestFocus()
         if (foreground) resume()
@@ -321,6 +415,8 @@ internal class HomeFeedScreen(
             override fun run() {
                 if (!active || closed) return
                 prefetchUpcoming()
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastCheckpoint >= 5000) { remember(); lastCheckpoint = now }
                 main.postDelayed(this, 250)
             }
         }
@@ -328,9 +424,15 @@ internal class HomeFeedScreen(
     fun resume() {
         if (closed || active) return
         active = true
+        probeRelated(state.current)
         main.removeCallbacks(prefetchPoll)
         main.postDelayed(prefetchPoll, 250)
         if (clip != null) {
+            if (autoNext && state.ended && state.episodeIndex + 1 < clip!!.episodeCount) {
+                state.ended = false
+                finishEpisode()
+                return
+            }
             if (!state.userPaused && !state.ended) playback.resume()
             paintActions()
             prefetchUpcoming()
@@ -339,9 +441,12 @@ internal class HomeFeedScreen(
 
     fun pause() {
         if (closed) return
-        remember()
+        remember(force = true)
         active = false
         main.removeCallbacks(prefetchPoll)
+        relatedProbe?.let(main::removeCallbacks)
+        relatedScope?.cancel()
+        relatedJob?.cancel(true)
         playback.pause()
         cancelRequest()
         cancelPrefetch()
@@ -349,8 +454,7 @@ internal class HomeFeedScreen(
     }
 
     fun back(): Boolean {
-        if (actions.visibility != View.VISIBLE) return false
-        actions.visibility = View.GONE
+        if (!actions.hasFocus()) return false
         stage.requestFocus()
         return true
     }
@@ -359,25 +463,39 @@ internal class HomeFeedScreen(
         if (!closed) paintActions()
     }
 
-    // 遥控器确定键或点击视频后显示操作栏，并将焦点移到可用操作。
+    private fun openCurrent() {
+        state.current?.let { remember(force = true); pause(); watch(it) }
+    }
+
+    // 下键将焦点移到主卡底部操作栏。
     private fun showActions() {
         actions.visibility = View.VISIBLE
         paintActions()
-        (if (watchButton.isEnabled) watchButton else pauseButton).requestFocus()
+        (if (watchButton.isEnabled) watchButton else stage).requestFocus()
     }
 
     private fun paintActions() {
-        pauseButton.text =
+        val primaryAction =
             when {
-                trialRecovery != null -> "立即重试试播"
-                loading -> "正在准备试播…"
-                failed || state.current == null -> "重试试播"
-                state.ended -> "重新试播"
-                state.userPaused -> "继续试播"
-                else -> "暂停试播"
+                trialRecovery != null -> "立即重试播放"
+                loading -> "正在准备播放…"
+                failed || state.current == null -> "重试播放"
+                state.ended -> "重新播放"
+                state.userPaused -> "继续播放"
+                else -> "暂停播放"
             }
+        stage.contentDescription = "左右换剧，下键进入操作，确定$primaryAction"
         watchButton.isEnabled = state.current != null
         favoriteButton.isEnabled = state.current != null
+        val relatedCount = state.current?.id?.let { relatedCounts[it] }
+        relatedButton.isEnabled = state.current != null && relatedCount?.first != 0
+        relatedButton.text = when {
+            relatedCount == null -> "相关剧集 / 预约"
+            relatedCount.first == 0 -> "暂无相关剧集"
+            relatedCount.second > 0 -> "相关 ${relatedCount.first} 部 · 可预约 ${relatedCount.second} 部"
+            else -> "相关剧集 ${relatedCount.first} 部"
+        }
+        if (!relatedButton.isEnabled && relatedButton.hasFocus()) watchButton.requestFocus()
         favoriteButton.text = state.current?.let { favoriteLabel(it.id) } ?: "账户收藏"
         recommendButton.isSelected = state.recommendation
         comicButton.isSelected = !state.recommendation && state.category == DramaCategory.COMIC
@@ -385,26 +503,62 @@ internal class HomeFeedScreen(
         paintButton(recommendButton)
         paintButton(comicButton)
         paintButton(realButton)
+        info.visibility = if (playbackReady && active && !state.userPaused && !state.ended && !failed) View.GONE else View.VISIBLE
+        tag.visibility = info.visibility
         stage.keepScreenOn = active && clip != null && !state.userPaused && !state.ended && !failed
     }
 
     private fun describe() {
         val series = state.current
+        if (describedId != series?.id) {
+            describedId = series?.id
+            probeRelated(series)
+            cover.setImageDrawable(null)
+            poster.setImageDrawable(null)
+            poster.visibility = View.VISIBLE
+            series?.cover?.takeIf(String::isNotBlank)?.let { loadCover(cover, it); loadCover(poster, it) }
+            hero.animate().cancel()
+            hero.alpha = .75f
+            hero.translationX = dp(24).toFloat() * slideDirection
+            hero.animate().alpha(1f).translationX(0f).setDuration(240).start()
+        }
+        fun bindSide(image: ImageView, caption: TextView, card: View, item: Series?) {
+            card.visibility = if (item == null) View.INVISIBLE else View.VISIBLE
+            caption.text = item?.title.orEmpty()
+            val url = item?.cover.orEmpty()
+            if (image.tag != url) {
+                image.tag = url
+                image.setImageDrawable(null)
+                if (url.isNotBlank()) loadCover(image, url)
+            }
+        }
+        bindSide(previousCover, previousTitle, previousCard, state.items.getOrNull(state.index - 1))
+        bindSide(nextCover, nextTitle, nextCard, state.next)
+        positionLabel.text = if (series == null) "正在发现好剧" else "第 ${state.index + 1} 部 · 左右换剧 · ${if (autoNext) "自动连播下一集" else "播完本集停止"}"
         title.text = series?.title ?: "发现下一部好剧"
         meta.text =
-            if (series == null) "第一集试播"
+            if (series == null) "首页播放"
             else
-                listOf("第一集试播", series.badge, series.tags)
+                listOf("第 ${state.episodeIndex + 1} 集", series.badge, series.tags)
                     .filter(String::isNotBlank)
                     .joinToString(" · ")
         intro.text =
-            series?.description?.ifBlank { "先试试看，喜欢这部作品就选择观看全集。" } ?: "选择漫剧或真人剧，上下换一部，找到想追的故事。"
-        tag.text = if (state.recommendation) "推荐 · 第一集试播" else "${state.category.label}推荐 · 第一集试播"
+            series?.description?.ifBlank { "当前剧集自动连续播放，左右切换其他作品。" } ?: "选择漫剧或真人剧，左右换一部，找到想追的故事。"
+        tag.text = if (state.recommendation) "推荐 · 首页播放" else "${state.category.label}推荐 · 首页播放"
         paintActions()
     }
 
-    private fun remember() {
-        if (clip != null) state.position = playback.position()
+    private fun remember(completed: Boolean = false, force: Boolean = false) {
+        val current = clip ?: return
+        state.position = playback.position()
+        if (!playbackReady) return
+        if (state.position <= 0 && !completed) return
+        val stamp = Triple(current.episodeId, state.position, completed || state.ended)
+        if (stamp == lastSaved && !force) return
+        saveProgress(WatchProgress(current.detail.series, current.episodeId,
+            current.trialEpisodeIndex - 1, state.position, playback.duration(),
+            stamp.third, System.currentTimeMillis()), current.episodeCount, force || completed)
+        lastSaved = stamp
     }
 
     private var pendingTrial: Runnable? = null
@@ -450,16 +604,17 @@ internal class HomeFeedScreen(
         keepPlayer: Boolean = false,
         keepPrefetch: Boolean = false,
     ) {
-        remember()
+        remember(force = true)
         cancelRequest()
         if (!keepPrefetch) cancelPrefetch()
         if (!keepPlayer) playback.clear()
         clip?.let {
-            if (retain && !failed) {
+            if (retain && !failed && it.trialEpisodeIndex == 1) {
                 cachedTrials.put(it.detail.series.id, CachedTrial(it))?.let(::closeCached)
             } else it.close()
         }
         clip = null
+        playbackReady = false
     }
 
     private fun takeCached(id: String): TrialClip? {
@@ -471,7 +626,7 @@ internal class HomeFeedScreen(
         return cached.clip
     }
 
-    // 试播自愈：解码类失败写入设备能力经验表并自动换低档重载（每剧至多 3 轮，且仅在学到
+    // 播放自愈：解码类失败写入设备能力经验表并自动换低档重载（每剧至多 3 轮，且仅在学到
     // 新失败键时继续，同一键反复重载没有意义）。重载复用 loadCurrent（缓存/预取优先），与
     // 手动重试成本相同。bytevc2 锁定集学完 1080P 键后，重载即落入确定性报错，不无限循环。
     private fun selfHealTrial(): Boolean {
@@ -515,7 +670,7 @@ internal class HomeFeedScreen(
                 val remaining = deadline - android.os.SystemClock.elapsedRealtime()
                 if (remaining <= 0) {
                     trialRecovery = null
-                    loadCurrent("正在恢复试播 · 第 $attempt/${trialRecoveryDelays.size} 次", recovering = true)
+                    loadCurrent("正在恢复播放 · 第 $attempt/${trialRecoveryDelays.size} 次", recovering = true)
                 } else {
                     status.visibility = View.VISIBLE
                     status.text = "播放信息暂时为空 · ${(remaining + 999) / 1000} 秒后自动恢复 $attempt/${trialRecoveryDelays.size}"
@@ -548,7 +703,7 @@ internal class HomeFeedScreen(
                     val result = requestScope.run {
                         if (!recoverTrial) action() else {
                             val remaining = trialPreparationUntil - android.os.SystemClock.elapsedRealtime()
-                            if (remaining <= 0) throw java.net.SocketTimeoutException("试播准备超时")
+                            if (remaining <= 0) throw java.net.SocketTimeoutException("播放准备超时")
                             RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(remaining), action)
                         }
                     }
@@ -572,9 +727,10 @@ internal class HomeFeedScreen(
                             exhaustedCursors += requestedCursor
                             status.text = "推荐接口未返回新作品 · 最近已去重 ${error.rememberedCount} 部\n可稍后换一批，或切换漫剧、真人剧继续发现"
                         } else if (recoverTrial && trialRecoveryAttempts > 0) {
-                            val detail = diagnosticDetail(error)?.take(180)
-                            status.text = "试播恢复未成功 · ${playbackFailureSummary(error)}\n可重试试播或按 ↑ ↓ 换一部" +
-                                (detail?.let { "\n$it" } ?: "")
+                            diagnosticDetail(error)?.take(180)?.let {
+                                android.util.Log.i("HongguoTV", "Home playback recovery exhausted: $it")
+                            }
+                            status.text = "播放恢复未成功 · 可按确定重试，或按 ← → 换一部"
                         } else status.text = "暂时无法加载 · ${message.ifBlank { "请重试或换一部" }}"
                         paintActions()
                     }
@@ -582,7 +738,7 @@ internal class HomeFeedScreen(
             }
     }
 
-    // 按当前推荐模式请求下一页；结果写入状态后，再加载当前作品的试播资源。
+    // 按当前推荐模式请求下一页；结果写入状态后，再加载当前作品的播放资源。
     private fun loadPage(advance: Boolean, resetSource: Boolean = false) {
         if (!active || closed || loading) return
         if (state.page >= 100 || (!state.hasMore && state.current != null)) {
@@ -604,7 +760,7 @@ internal class HomeFeedScreen(
             state.append(result, page)
             if (advance) state.move(1)
             if (state.current == null) {
-                status.text = "暂时没有可试播的作品，可切换类型或重试"
+                status.text = "暂时没有可播放的作品，可切换类型或重试"
                 failed = true
                 paintActions()
             } else loadCurrent()
@@ -614,6 +770,14 @@ internal class HomeFeedScreen(
     // 优先复用缓存或正在进行的预加载，避免为同一部作品重复请求。
     private fun loadCurrent(statusHint: String? = null, recovering: Boolean = false, settle: Boolean = false) {
         val series = state.current ?: return
+        if (restoredSeries != series.id) {
+            restoredSeries = series.id
+            restoreProgress(series.id)?.takeIf { !it.completed }?.let {
+                state.episodeIndex = it.episodeIndex
+                state.position = it.position
+            }
+        }
+        val episodeIndex = state.episodeIndex
         if (!active || closed) return
         if (!recovering) {
             trialRecoveryAttempts = 0
@@ -625,12 +789,12 @@ internal class HomeFeedScreen(
         failed = false
         describe()
         status.visibility = View.VISIBLE
-        status.text = statusHint ?: "正在准备第一集试播…"
+        status.text = statusHint ?: "正在准备首页播放…"
         trimCache()
-        val cached = takeCached(series.id)
+        val cached = if (state.episodeIndex == 0) takeCached(series.id) else null
         if (cached != null) attach(cached)
-        else if (prefetchTarget == series.id && prefetchJob != null) {
-            // 将正在进行的预加载转为当前试播，不取消后再重复请求地址。
+        else if (state.episodeIndex == 0 && prefetchTarget == series.id && prefetchJob != null) {
+            // 将正在进行的预加载转为当前播放，不取消后再重复请求地址。
             loading = true
             android.util.Log.i("HongguoTV", "Home promoted in-flight preload")
         } else if (settle) {
@@ -640,24 +804,21 @@ internal class HomeFeedScreen(
             val pending = Runnable {
                 pendingTrial = null
                 if (!closed && active && token == generation && state.current?.id == series.id)
-                    request({ backend.trial(series) }, { it.close() }, recoverTrial = true, done = ::attach)
+                    request({ if (episodeIndex == 0) backend.trial(series) else backend.episode(series, episodeIndex) }, { it.close() }, recoverTrial = true, done = ::attach)
             }
             pendingTrial = pending
             main.postDelayed(pending, 300)
-        } else request({ backend.trial(series) }, { it.close() }, recoverTrial = true, done = ::attach)
+        } else request({ if (episodeIndex == 0) backend.trial(series) else backend.episode(series, episodeIndex) }, { it.close() }, recoverTrial = true, done = ::attach)
     }
 
     private fun attach(next: TrialClip) {
         if (!autoPreview && manuallyStarted != next.detail.series.id) state.userPaused = true
+        playbackReady = false
         clip = next
+        state.episodeIndex = next.trialEpisodeIndex - 1
         val series = next.detail.series
         val tags = series.tags.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""
-        meta.text =
-            if (next.trialEpisodeIndex > 1) {
-                "第一集暂不支持电视播放 · 试播第 ${next.trialEpisodeIndex} 集 · 共 ${next.episodeCount} 集$tags"
-            } else {
-                "第一集试播 · 共 ${next.episodeCount} 集$tags"
-            }
+        meta.text = "第 ${next.trialEpisodeIndex} 集 · 共 ${next.episodeCount} 集$tags"
         if (series.description.isNotBlank()) intro.text = series.description
         val autoplay = active && !state.userPaused && !state.ended
         playback.setCurrentIndex(state.offset + state.index)
@@ -666,6 +827,30 @@ internal class HomeFeedScreen(
             cachedTrials.values.forEach { queueCached(it.clip) }
         }
         paintActions()
+    }
+
+    private fun finishEpisode() {
+        val finished = clip ?: return
+        if (state.ended) return
+        remember(completed = true)
+        state.ended = true
+        if (!autoNext || finished.trialEpisodeIndex >= finished.episodeCount) {
+            state.userPaused = true
+            status.visibility = View.VISIBLE
+            status.text = if (finished.trialEpisodeIndex >= finished.episodeCount) "本剧已播完 · 左右换剧，或确定重播本集" else "本集已播完 · 已关闭自动下一集，可下键选集"
+            paintActions()
+            return
+        }
+        // Post outside the player callback; duplicate end notifications cannot advance twice.
+        main.post {
+            if (closed || !active || clip !== finished || !state.ended) return@post
+            clearCurrent()
+            state.episodeIndex = finished.trialEpisodeIndex
+            state.position = 0
+            state.ended = false
+            state.userPaused = false
+            loadCurrent()
+        }
     }
 
     private fun noteDisplayed(series: Series) =
@@ -793,6 +978,7 @@ internal class HomeFeedScreen(
                     prefetchScope = null
                     if (result != null && page == state.page + 1) {
                         state.append(result, page)
+                        describe()
                         prefetchUpcoming()
                     }
                 }
@@ -801,6 +987,7 @@ internal class HomeFeedScreen(
 
     private fun move(delta: Int) {
         if (closed || !active) return
+        slideDirection = delta
         if (delta < 0 && state.index == 0) {
             status.visibility = View.VISIBLE
             status.text = "已到本次浏览的最早作品"
@@ -818,7 +1005,7 @@ internal class HomeFeedScreen(
             return
         }
         val target = state.items.getOrNull(state.index + delta) ?: return
-        val ready = takeCached(target.id)
+        val ready = if (restoreProgress(target.id)?.let { !it.completed && (it.episodeIndex > 0 || it.position > 0) } == true) null else takeCached(target.id)
         clearCurrent(
             retain = true,
             keepPlayer = ready != null,
@@ -826,6 +1013,7 @@ internal class HomeFeedScreen(
         )
         if (state.move(delta)) {
             if (ready != null) {
+                restoredSeries = target.id
                 noteDisplayed(target)
                 failed = false
                 describe()
@@ -856,12 +1044,12 @@ internal class HomeFeedScreen(
         } else {
             state.userPaused = !state.userPaused
             if (state.userPaused) {
-                remember()
+                remember(force = true)
                 playback.pause()
             } else if (active) playback.resume()
         }
         status.visibility = if (state.userPaused) View.VISIBLE else View.GONE
-        status.text = if (state.userPaused) "试播已暂停" else "第一集试播 · 喜欢就看全集"
+        status.text = if (state.userPaused) "播放已暂停" else "首页播放 · 喜欢就看全集"
         paintActions()
     }
 
@@ -870,7 +1058,6 @@ internal class HomeFeedScreen(
         clearCurrent()
         state.select(category)
         clearCache()
-        actions.visibility = View.GONE
         stage.requestFocus()
         describe()
         if (state.current != null) loadCurrent() else loadPage(false)
@@ -878,11 +1065,16 @@ internal class HomeFeedScreen(
 
     override fun close() {
         if (closed) return
+        closed = true
         main.removeCallbacks(prefetchPoll)
+        relatedProbe?.let(main::removeCallbacks)
+        relatedScope?.cancel()
+        relatedJob?.cancel(true)
         clearCurrent()
         clearCache()
-        closed = true
         active = false
+        info.visibility = if (playbackReady && active && !state.userPaused && !state.ended && !failed) View.GONE else View.VISIBLE
+        tag.visibility = info.visibility
         stage.keepScreenOn = false
         playback.release()
         backend.close()

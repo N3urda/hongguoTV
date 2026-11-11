@@ -137,6 +137,7 @@ class MainActivity : Activity() {
     private var searchDraft: String? = null
     private var searchSuggestions: SearchSuggestionsView? = null
     private var tvSearchPanel: TvSearchPanel? = null
+    private var submittedSearch: String? = null
     private var tvSearchOpen = false
     private val discoveryBrowser = DiscoveryBrowserState()
     private var discoveryScreen: DiscoveryScreen? = null
@@ -659,8 +660,9 @@ class MainActivity : Activity() {
         while (continuousPositions.size > 20) continuousPositions.remove(
             continuousPositions.keys.first()
         )
-        homeFeed?.close()
+        val closingFeed = homeFeed
         homeFeed = null
+        closingFeed?.close()
         relatedSection = null
         accountFavoriteButton = null
         homeScreen?.let { homePosition = it.capturePosition() }
@@ -917,6 +919,7 @@ class MainActivity : Activity() {
         screen = "catalog"
         releaseCatalogViews()
         val container = base()
+        if (tab == 0) container.setPadding(dp(20), dp(12), dp(20), dp(12))
         if (tab != 0 && foreground && library.isLoaded && !favoriteMonitor.running)
             main.post { if (foreground && screen == "catalog") favoriteMonitor.check() }
         val top = row().apply { setPadding(0, 0, 0, dp(8)) }
@@ -936,8 +939,8 @@ class MainActivity : Activity() {
             item.textSize = if (widthDp() < 1000) 13f else 15f
             item.setPadding(dp(9), dp(10), dp(9), dp(10))
             fun paint(focused: Boolean) {
-                item.background = TvVisual.tab(this, focused, index == tab)
-                item.setTextColor(if (index == tab) TvStyle.accent else if (focused) white else muted)
+                item.background = if (tab == 0) HomeGlass.panel(this, focused, index == tab) else TvVisual.tab(this, focused, index == tab)
+                item.setTextColor(if (tab == 0 && (index == tab || focused)) Color.rgb(103, 211, 255) else if (index == tab) TvStyle.accent else if (focused) white else muted)
                 item.setTypeface(null, if (focused || index == tab) Typeface.BOLD else Typeface.NORMAL)
             }
             paint(false)
@@ -970,15 +973,33 @@ class MainActivity : Activity() {
                     homeFeedState,
                     nav.toList(),
                     { openDetail(it, false) },
-                    ::accountFavoriteAction,
-                    cloudAccount::favoriteActionLabel,
+                    { series, anchor ->
+                        if (cloudAccount.signedIn) accountFavoriteAction(series, anchor)
+                        else {
+                            library.toggle(series)
+                            homeFeed?.refreshAccountLabel()
+                            Toast.makeText(this, if (library.favorite(series.id)) "已加入本机收藏" else "已取消本机收藏", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    { id -> if (cloudAccount.signedIn) cloudAccount.favoriteActionLabel(id)
+                        else if (library.favorite(id)) "已收藏 · 本机" else "加入本机收藏" },
                     PublicFeedBackend(
                         library.maxQuality,
                         account = cloudAccount.recommendationCredentials(),
                         startupCache = cloudAccount.recommendationStartupCache(),
                     ),
-                    Media3TrialPlayback(this),
+                    Media3TrialPlayback(this, library.playbackSpeed, library.frameMode),
                     autoPreview = library.homeAutoplay,
+                    loadCover = ::loadCover,
+                    related = ::showHomeRelated,
+                    autoNext = library.autoNext,
+                    restoreProgress = library::progress,
+                    saveProgress = { progress, count, force ->
+                        library.save(progress)
+                        cloudAccount.upload(CloudProgress(progress.series, progress.episodeId,
+                            progress.episodeIndex, progress.position, progress.duration, progress.updatedAt),
+                            count, force || progress.completed || !foreground)
+                    },
                 )
             homeFeed = feed
             container.addView(feed, lp(-1, 0).apply { weight = 1f })
@@ -1380,9 +1401,14 @@ class MainActivity : Activity() {
                             tvSearchPanel?.findFocus() ?: searchSuggestions?.findFocus()
                         rankSubtitle?.text =
                             ranking?.updatedText?.ifBlank { "来源：红果漫剧热播榜" } ?: "来源：红果漫剧热播榜"
+                        val focusResults = submittedSearch == requestQuery &&
+                            (searchInput as? TextView)?.text?.toString()?.trim() == requestQuery && !keepNav &&
+                            tvSearchPanel?.entry()?.hasFocus() == true
                         body.removeAllViews()
                         catalogGrid(body, keepNav || focusNav, keepType || focusType)
-                        if (keepInput) searchInput?.requestFocus()
+                        if (submittedSearch == requestQuery) submittedSearch = null
+                        if (focusResults && catalog.isNotEmpty()) continuousCatalog?.enter()
+                        else if (keepInput) searchInput?.requestFocus()
                         else if (keepSuggestion != null) keepSuggestion.requestFocus()
                     }
                 },
@@ -1500,7 +1526,11 @@ class MainActivity : Activity() {
                         else if (reservationOnline) "当前没有已上线的预约" else "当前没有待上线的预约"
                     else -> "本页没有更多内容"
                 }
+            preview.visibility = View.GONE
             message(list, if (loading) "正在加载推荐…" else empty)
+            if (!loading && (isLocalHistory() || isLocalFavorites())) {
+                addButton(list, "去首页看看") { switchTab(0) }
+            }
             if ((tab <= 2 || localCatalog()) && page > 1)
                 addButton(list, "上一页") {
                     page--
@@ -1944,6 +1974,38 @@ class MainActivity : Activity() {
         return true
     }
 
+    /** Homepage overlay reuses the account reservation flow without changing detail pages. */
+    private fun showHomeRelated(series: Series, anchor: View) {
+        fun stillCurrent() = screen == "catalog" && tab == 0 && homeFeedState.current?.id == series.id
+        Toast.makeText(this, "正在读取相关作品…", Toast.LENGTH_SHORT).show()
+        work(
+            { RelatedWorks.ordered(series, repository.related(series.id)) },
+            { rows ->
+                if (stillCurrent()) {
+                    if (rows.isEmpty()) tvTools.info("相关剧集", "暂无相关剧集或可预约作品", anchor)
+                    else tvTools.choose(
+                        "${series.title} · 相关剧集",
+                        rows.map { "${it.series.title} · ${if (it.upcoming) cloudAccount.reservationLabel(it) else "查看剧集"}" },
+                        anchor,
+                        { index ->
+                            val chosen = rows[index]
+                            if (!chosen.upcoming) openDetail(chosen.series, false)
+                            else if (!cloudAccount.signedIn) cloudAccount.show()
+                            else {
+                                val accountScope = cloudAccount.historyScope
+                                cloudAccount.reserve(chosen) { message ->
+                                    if (stillCurrent() && accountScope == cloudAccount.historyScope)
+                                        tvTools.info("预约状态", message, anchor)
+                                }
+                            }
+                        },
+                    )
+                }
+            },
+            { if (stillCurrent()) tvTools.choose("相关剧集读取失败", listOf("重试"), anchor, { showHomeRelated(series, anchor) }) },
+        )
+    }
+
     private fun reservationDescription(row: CloudReservation): String {
         if (row.online) return "已上线 · 可观看"
         if (row.publishText.isNotBlank()) return "待上线 · ${row.publishText}"
@@ -2371,7 +2433,7 @@ class MainActivity : Activity() {
                             startup.text = "启动页面  ·  ${labels[choice]}"
                         }, selected = library.startupPage)
                     }
-                    toggle("首页自动试播", library.homeAutoplay) { library.homeAutoplay = it }
+                    toggle("首页自动播放", library.homeAutoplay) { library.homeAutoplay = it }
                     val clocks = listOf("关闭", "操作时显示", "始终显示")
                     lateinit var clock: TextView
                     clock = setting("播放时钟  ·  ${clocks[library.clockMode]}") {
@@ -2459,6 +2521,7 @@ class MainActivity : Activity() {
         tvSearchOpen = true
         searchDraft = clean
         query = clean
+        submittedSearch = clean
         tab = 1
         page = 1
         catalogFocus = ""
@@ -3079,8 +3142,7 @@ class MainActivity : Activity() {
             )
         }
         playbackTitle.text = "${data.series.title}  ·  第 ${episodeIndex+1} 集"
-        playbackText.text = preparingPlaybackText(recoveryDisplayActive, lastPlaybackFailure, false) +
-            (if (recoveryDisplayActive) diagnosticSuffix() else "")
+        playbackText.text = preparingPlaybackText(recoveryDisplayActive, lastPlaybackFailure, false)
         progressBar.progress = 0
         progressBar.visibility = View.VISIBLE
         main.removeCallbacks(hideHud)
@@ -3572,7 +3634,7 @@ class MainActivity : Activity() {
                 total = if (allowSlowRecovery) recovery.total else RecoveryBudget.FAST_ATTEMPTS,
                 remainingMillis = remainingMillis,
                 positionText = formatTime(retryPosition),
-            ) + diagnosticSuffix()
+            )
     }
 
     private fun scheduleRecovery() {
@@ -3582,7 +3644,7 @@ class MainActivity : Activity() {
             autoRecovery = false
             playbackText.text = (if (recovery.remaining)
                 "$lastPlaybackFailure\n快速恢复暂未成功，可立即重试、换集或选择继续等待。"
-                else recoveryExhaustedText(lastPlaybackFailure)) + diagnosticSuffix()
+                else recoveryExhaustedText(lastPlaybackFailure))
             recoveryAction?.apply {
                 text = if (recovery.remaining) "继续等待恢复" else "恢复次数已用尽"
                 isEnabled = recovery.remaining
@@ -3591,8 +3653,7 @@ class MainActivity : Activity() {
         }
         if (!networkAvailable()) {
             playbackText.text =
-                "$lastPlaybackFailure\n网络已断开，联网后自动续播 · 第 ${episodeIndex+1} 集 ${formatTime(retryPosition)}" +
-                    diagnosticSuffix()
+                "$lastPlaybackFailure\n网络已断开，联网后自动续播 · 第 ${episodeIndex+1} 集 ${formatTime(retryPosition)}"
             return
         }
         val plannedDelay = recovery.delayMillis ?: return
@@ -3606,8 +3667,8 @@ class MainActivity : Activity() {
         main.postDelayed(recoveryCountdown, 1000)
     }
 
-    /** 错误页末尾的脱敏诊断行（issue #38）：机型/系统/版本/失败阶段/恢复计数，便于截图定位。 */
-    private fun diagnosticSuffix(): String =
+    /** 按需展示的脱敏诊断详情（issue #38）：机型/系统/版本/失败阶段/恢复计数，便于截图定位。 */
+    private fun playbackDiagnostics(): String =
         try {
             "\n" +
                 diagnosticLine(
@@ -4117,7 +4178,7 @@ class MainActivity : Activity() {
                 decoding && lowerTier != null -> "电视无法解码当前视频，可尝试更低清晰度。"
                 decoding -> "电视无法解码当前视频，本集没有更低清晰度可用。"
                 else -> "$lastPlaybackFailure · 可手动重试"
-            } + diagnosticSuffix()
+            }
         val actions = row()
         controls.addView(actions)
         val retryButton = addButton(actions, "立即重试") { playEpisode(episodeIndex, retryPosition, retryAutoplay) }
@@ -4129,11 +4190,12 @@ class MainActivity : Activity() {
             }
         }
         addButton(actions, "返回选集") { returnToDetail(true) }
+        addButton(actions, "查看错误详情") { tvTools.info("播放诊断", playbackDiagnostics().trim(), currentFocus) }
         if (retryable && !sleepStopped) {
             recoveryAction = addButton(controls, "停止自动重试") {
                 if (autoRecovery) {
                     cancelRecovery()
-                    playbackText.text = "$lastPlaybackFailure\n自动恢复已停止，观看位置已保留。" + diagnosticSuffix()
+                    playbackText.text = "$lastPlaybackFailure\n自动恢复已停止，观看位置已保留。"
                     recoveryAction?.text = "继续等待恢复"
                 } else {
                     allowSlowRecovery = true
@@ -4194,7 +4256,7 @@ class MainActivity : Activity() {
         recoveryDisplayActive = false
         playError = true
         progressBar.visibility = View.GONE
-        playbackText.text = "$lastPlaybackFailure\n恢复已取消，观看位置已保留。" + diagnosticSuffix()
+        playbackText.text = "$lastPlaybackFailure\n恢复已取消，观看位置已保留。"
         controls.removeAllViews()
         addButton(controls, "立即重试") { playEpisode(episodeIndex, retryPosition, retryAutoplay) }
         addButton(controls, "返回选集") { returnToDetail(true) }
@@ -4223,8 +4285,7 @@ class MainActivity : Activity() {
         if (waitingForFirstFrame && !sleepStopped) {
             playbackText.text = if (!requestedAutoplay && playbackReady)
                 (if (recoveryDisplayActive) "$lastPlaybackFailure\n" else "") + "已准备好 · 保持暂停，按播放开始"
-                else preparingPlaybackText(recoveryDisplayActive, lastPlaybackFailure, video != null) +
-                    (if (recoveryDisplayActive) diagnosticSuffix() else "")
+                else preparingPlaybackText(recoveryDisplayActive, lastPlaybackFailure, video != null)
             return
         }
         if (sleepStopped) {
@@ -4626,7 +4687,7 @@ class MainActivity : Activity() {
         return "%02d:%02d".format(seconds / 60, seconds % 60)
     }
 
-    // 保存正式观看进度；首页试播使用独立状态，不从此处写入观看记录。
+    // 正式播放器与首页均写入同一本机片库，并复用账户上传节流。
     private fun saveProgress(completed: Boolean = false) {
         val p = player ?: return
         val data = detail ?: return

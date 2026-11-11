@@ -19,9 +19,159 @@ import org.robolectric.annotation.LooperMode
 import org.robolectric.shadows.ShadowLooper
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26], qualifiers = "w960dp-h540dp-land-mdpi")
+@Config(sdk = [21, 23, 26], qualifiers = "w960dp-h540dp-land-mdpi")
 @LooperMode(LooperMode.Mode.PAUSED)
 class HomeFeedScreenTest {
+    @Test fun finalCheckpointCallbackCannotReenterClose() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val player = Playback(activity)
+        var saves = 0
+        lateinit var screen: HomeFeedScreen
+        screen = HomeFeedScreen(activity, DramaFeedState(), listOf(TextView(activity)), {},
+            { _, _ -> }, { "收藏" }, Backend(), player,
+            saveProgress = { _, _, _ -> saves++; screen.close() })
+        try {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+            player.status?.invoke(TrialStatus.READY)
+            player.saved = 12000
+            screen.close()
+            assertEquals(1, saves)
+            screen.close()
+            assertEquals(1, saves)
+        } finally { screen.close(); controller.pause().stop().destroy() }
+    }
+
+    @Test fun horizontalFeedFocusAndActionsUseTheSelectedSeries() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val state = DramaFeedState()
+        val player = Playback(activity)
+        var opened = ""
+        var relatedId = ""
+        val nav = TextView(activity).apply { id = View.generateViewId(); isFocusable = true }
+        val screen = HomeFeedScreen(activity, state, listOf(nav), { opened = it.id },
+            { _, _ -> }, { "账户收藏" }, Backend(), player,
+            related = { series, _ -> relatedId = series.id })
+        try {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+            val stage = get(screen, "stage") as View
+            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
+            assertEquals("1", state.current?.id)
+            assertEquals(View.INVISIBLE, (get(screen, "previousCard") as View).visibility)
+            assertEquals(View.VISIBLE, (get(screen, "nextCard") as View).visibility)
+            assertTrue(texts(screen).first { it.text == "详情 / 选集" }.hasFocus())
+            assertTrue(screen.back())
+            assertTrue(stage.hasFocus())
+            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT))
+            pump(screen)
+            texts(screen).first { it.text == "相关剧集 / 预约" }.performClick()
+            assertEquals(View.VISIBLE, (get(screen, "previousCard") as View).visibility)
+            assertEquals("2", relatedId)
+            assertFalse(player.playing)
+            stage.performClick()
+            assertEquals("", opened)
+            assertTrue(player.playing)
+            stage.performClick()
+            assertFalse(player.playing)
+            stage.performClick()
+            assertTrue(player.playing)
+            assertEquals(3, (get(screen, "actions") as ViewGroup).childCount)
+            texts(screen).first { it.text == "详情 / 选集" }.performClick()
+            assertEquals("2", opened)
+        } finally {
+            screen.close()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test fun watchingPersistsOnlyReadyPlaybackAndRestoresExactEpisode() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val player = Playback(activity)
+        val saved = mutableListOf<WatchProgress>()
+        val prior = WatchProgress(Series("1", "作品1"), "102", 1, 12000, 60000, false, 1)
+        val screen = HomeFeedScreen(activity, DramaFeedState(), listOf(TextView(activity)), {},
+            { _, _ -> }, { "收藏" }, Backend(), player,
+            restoreProgress = { if (it == "1") prior else null },
+            saveProgress = { progress, _, _ -> saved += progress })
+        try {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+            assertEquals("102", (get(screen, "clip") as TrialClip).episodeId)
+            assertEquals(12000L, player.saved)
+            screen.pause()
+            assertTrue("Preparing a clip must not create history", saved.isEmpty())
+            screen.resume()
+            player.status?.invoke(TrialStatus.READY)
+            player.saved = 18000
+            texts(screen).first { it.text == "详情 / 选集" }.performClick()
+            assertEquals("102", saved.last().episodeId)
+            assertEquals(1, saved.last().episodeIndex)
+            assertEquals(18000L, saved.last().position)
+            assertFalse(saved.last().completed)
+        } finally { screen.close(); controller.pause().stop().destroy() }
+    }
+
+    @Test fun disabledAutoNextStopsAtEpisodeBoundaryAndRecordsCompletion() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val player = Playback(activity)
+        val saved = mutableListOf<WatchProgress>()
+        val state = DramaFeedState()
+        val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {},
+            { _, _ -> }, { "收藏" }, Backend(), player, autoNext = false,
+            saveProgress = { progress, _, _ -> saved += progress })
+        try {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+            player.status?.invoke(TrialStatus.READY)
+            player.saved = 60000
+            player.status?.invoke(TrialStatus.ENDED)
+            pump(screen)
+            assertTrue(state.ended)
+            assertEquals(0, state.episodeIndex)
+            assertTrue(saved.last().completed)
+            screen.pause()
+            screen.resume()
+            pump(screen)
+            assertEquals(0, state.episodeIndex)
+            assertTrue(texts(screen).any { it.text.contains("已关闭自动下一集") })
+        } finally { screen.close(); controller.pause().stop().destroy() }
+    }
+
+    @Test fun knownEmptyRelatedWorksDisableTheActionButNetworkFailureDoesNot() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val backend = object : Backend() {
+            override fun related(series: Series): List<RelatedWork> =
+                if (series.id == "1") emptyList() else throw java.io.IOException("offline")
+        }
+        val screen = HomeFeedScreen(activity, DramaFeedState(), listOf(TextView(activity)), {},
+            { _, _ -> }, { "收藏" }, backend, Playback(activity))
+        try {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+            ShadowLooper.idleMainLooper(1, TimeUnit.SECONDS)
+            (get(screen, "relatedJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            assertFalse((get(screen, "relatedButton") as View).isEnabled)
+            (get(screen, "stage") as View).dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT))
+            pump(screen)
+            ShadowLooper.idleMainLooper(1, TimeUnit.SECONDS)
+            (get(screen, "relatedJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            assertTrue((get(screen, "relatedButton") as View).isEnabled)
+        } finally { screen.close(); controller.pause().stop().destroy() }
+    }
+
     private open class Backend(private val count: Int = 2) : FeedBackend {
         private val prepareCount = java.util.concurrent.atomic.AtomicInteger()
         val prepares
@@ -181,8 +331,8 @@ class HomeFeedScreenTest {
             pump(screen)
         }
         fun hasText(part: String) = texts(screen).any { it.text.contains(part) }
-        fun click(label: String) {
-            texts(screen).first { it.text == label }.performClick()
+        fun clickStage() {
+            (get(screen, "stage") as View).performClick()
             pump(screen)
         }
         override fun close() {
@@ -206,13 +356,13 @@ class HomeFeedScreenTest {
             screen.start(true, false)
             pump(screen)
             val stage = get(screen, "stage") as View
-            repeat(2) { stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN)) }
+            repeat(2) { stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)) }
             assertEquals("3", state.current?.id)
             ShadowLooper.idleMainLooper(299, TimeUnit.MILLISECONDS)
             assertEquals(listOf("1"), backend.preparedIds.toList())
             pump(screen)
             assertEquals(listOf("1", "3"), backend.preparedIds.toList())
-            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
+            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT))
             screen.close()
             ShadowLooper.idleMainLooper(1, TimeUnit.SECONDS)
             assertEquals(listOf("1", "3"), backend.preparedIds.toList())
@@ -246,11 +396,11 @@ class HomeFeedScreenTest {
             f.advance(2)
             f.advance(5)
             assertEquals(3, f.reads())
-            assertTrue(f.hasText("试播恢复未成功"))
-            assertTrue(f.hasText("G:b=200/0B/h2"))
+            assertTrue(f.hasText("播放恢复未成功"))
+            assertFalse(f.hasText("G:b=200/0B/h2"))
             f.advance(60)
             assertEquals(3, f.reads())
-            f.click("重试试播")
+            f.clickStage()
             assertEquals(4, f.reads())
             assertTrue(f.hasText("自动恢复 1/2"))
         }
@@ -259,7 +409,7 @@ class HomeFeedScreenTest {
     @Test
     fun switchingWorksCancelsPendingTrialRecovery() {
         TrialRecoveryFixture { id, _ -> if (id == "1") EmptyPlaybackResponseException() else null }.use { f ->
-            f.screen.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
+            f.screen.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT))
             pump(f.screen)
             assertEquals("2", f.player.loaded)
             f.advance(20)
@@ -290,14 +440,14 @@ class HomeFeedScreenTest {
             f.advance(2)
             assertEquals("1", f.player.loaded)
             assertFalse(f.player.playing)
-            assertTrue(f.hasText("继续试播"))
+            assertTrue((get(f.screen, "stage") as View).contentDescription.contains("继续播放"))
         }
     }
 
     @Test
     fun immediateManualRetryCancelsOldCountdown() {
         TrialRecoveryFixture { _, count -> if (count == 1) EmptyPlaybackResponseException() else null }.use { f ->
-            f.click("立即重试试播")
+            f.clickStage()
             assertEquals("1", f.player.loaded)
             f.advance(20)
             assertEquals(2, f.reads())
@@ -310,7 +460,7 @@ class HomeFeedScreenTest {
             f.advance(20)
             assertEquals(1, f.reads())
             assertFalse(f.hasText("自动恢复"))
-            assertTrue(f.hasText("重试试播"))
+            assertTrue((get(f.screen, "stage") as View).contentDescription.contains("重试播放"))
         }
     }
 
@@ -337,14 +487,14 @@ class HomeFeedScreenTest {
             screen.start(true, false)
             pump(screen)
             assertFalse(playback.playing)
-            texts(screen).first { it.text == "继续试播" }.performClick()
+            (get(screen, "stage") as View).performClick()
             assertTrue(playback.playing)
             screen.pause()
             screen.resume()
             assertTrue(playback.playing)
             // 用闸门固定 CI 中的时序：切换作品时，第二部作品仍在后台预加载。
             assertTrue(prefetchEntered.await(5, TimeUnit.SECONDS))
-            screen.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
+            screen.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT))
             assertEquals("2", state.current?.id)
             finishPreload.countDown()
             // pump 只等待前台 job；晋升的预加载由 prefetchJob 交付，必须单独等待。
@@ -455,14 +605,29 @@ class HomeFeedScreenTest {
             // 可以提前读取推荐元数据，但此时只准备当前作品的视频。
             assertEquals(1, backend.prepares)
             val stage = get(screen, "stage") as View
-            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
+            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT))
             pump(screen)
             assertEquals("2", player.loaded)
             player.status?.invoke(TrialStatus.ENDED)
             assertEquals("2", state.current?.id)
             assertTrue(state.ended)
-            assertTrue(screen.back())
+            player.status?.invoke(TrialStatus.ENDED)
+            pump(screen)
+            assertEquals("2", state.current?.id)
+            assertEquals(1, state.episodeIndex)
+            assertEquals("202", (get(screen, "clip") as TrialClip).episodeId)
+            assertTrue(player.playing)
+            assertFalse(state.ended)
+            player.status?.invoke(TrialStatus.ENDED)
+            pump(screen)
+            assertTrue(state.ended)
+            assertEquals(1, state.episodeIndex)
             assertFalse(screen.back())
+            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT))
+            pump(screen)
+            assertEquals("1", state.current?.id)
+            assertEquals(0, state.episodeIndex)
+            assertEquals("101", (get(screen, "clip") as TrialClip).episodeId)
         } finally {
             screen.close()
             controller.pause().stop().destroy()
@@ -508,7 +673,7 @@ class HomeFeedScreenTest {
             val clears = player.clears
             val loads = player.loads
             val stage = get(screen, "stage") as View
-            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
+            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT))
             pump(screen)
             assertEquals("2", player.loaded)
             assertEquals(4, backend.prepares)
@@ -516,7 +681,7 @@ class HomeFeedScreenTest {
             assertEquals(loads, player.loads)
             assertEquals(1, player.selections)
             assertTrue("预加载直切也必须记录当前展示作品", "2" in backend.displayedIds)
-            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP))
+            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT))
             pump(screen)
             assertEquals("1", player.loaded)
             assertEquals(4, backend.prepares)
@@ -568,7 +733,7 @@ class HomeFeedScreenTest {
             assertTrue(entered.await(5, TimeUnit.SECONDS))
             val pending = get(screen, "prefetchJob") as Future<*>
             (get(screen, "stage") as View).dispatchKeyEvent(
-                KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN)
+                KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)
             )
             assertEquals("2", state.current?.id)
             assertFalse(pending.isCancelled)
@@ -622,7 +787,7 @@ class HomeFeedScreenTest {
             player.status?.invoke(TrialStatus.READY)
             assertTrue(entered.await(5, TimeUnit.SECONDS))
             (get(screen, "stage") as View).dispatchKeyEvent(
-                KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN)
+                KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)
             )
             finish.countDown()
             finishPrefetch(screen)
@@ -704,7 +869,7 @@ class HomeFeedScreenTest {
             screen.start(true, false)
             pump(screen)
             player.saved = 12345
-            texts(screen).first { it.text == "观看全集" }.performClick()
+            texts(screen).first { it.text == "详情 / 选集" }.performClick()
             assertEquals("1", watched)
             assertEquals(12345L, state.position)
             assertFalse(player.playing)

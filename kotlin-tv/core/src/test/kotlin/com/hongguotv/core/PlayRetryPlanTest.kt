@@ -8,11 +8,11 @@ import org.junit.Test
 
 class PlayRetryPlanTest {
     @Test
-    fun `initial candidates contain one GET and three distinct POST routes`() {
+    fun `initial candidates contain one single-video and three distinct batch routes`() {
         val routes = PlaybackRoutes().plan(1000, false)
         assertEquals(4, routes.size)
         assertEquals(4, routes.distinct().size)
-        assertTrue(routes.first().get)
+        assertTrue(routes.first().single)
         assertEquals(listOf("b", "hl", "lf"), routes.drop(1).map { PlayRetryPlan.tag(it.host) })
     }
 
