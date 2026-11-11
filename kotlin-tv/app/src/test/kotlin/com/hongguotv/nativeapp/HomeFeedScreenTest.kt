@@ -22,6 +22,28 @@ import org.robolectric.shadows.ShadowLooper
 @Config(sdk = [21, 23, 26], qualifiers = "w960dp-h540dp-land-mdpi")
 @LooperMode(LooperMode.Mode.PAUSED)
 class HomeFeedScreenTest {
+    @Test fun warmedNextEpisodeIsUsedAtBoundaryAndReleasedOnClose() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val backend = Backend(4)
+        val player = Playback(activity)
+        val screen = HomeFeedScreen(activity, DramaFeedState(), listOf(TextView(activity)), {},
+            { _, _ -> }, { "收藏" }, backend, player)
+        try {
+            activity.setContentView(screen); screen.start(true, false); pump(screen)
+            player.totalDuration = 60000; player.saved = 40000
+            player.status?.invoke(TrialStatus.READY)
+            ShadowLooper.idleMainLooper(2250, TimeUnit.MILLISECONDS); finishPrefetch(screen)
+            val warmed = get(screen, "nextEpisode") as TrialClip
+            assertEquals(2, warmed.trialEpisodeIndex)
+            val prepares = backend.prepares
+            player.status?.invoke(TrialStatus.ENDED); pump(screen)
+            assertSame(warmed, get(screen, "clip"))
+            assertEquals(prepares, backend.prepares)
+            assertNull(get(screen, "nextEpisode"))
+        } finally { screen.close(); controller.pause().stop().destroy() }
+    }
+
     @Test fun finalCheckpointCallbackCannotReenterClose() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()
@@ -250,6 +272,8 @@ class HomeFeedScreenTest {
             return true
         }
 
+        var totalDuration = 0L
+        override fun duration() = totalDuration
         override fun position() = saved
 
         override fun pause() {
@@ -493,6 +517,7 @@ class HomeFeedScreenTest {
             screen.resume()
             assertTrue(playback.playing)
             // 用闸门固定 CI 中的时序：切换作品时，第二部作品仍在后台预加载。
+            ShadowLooper.idleMainLooper(2250, TimeUnit.MILLISECONDS)
             assertTrue(prefetchEntered.await(5, TimeUnit.SECONDS))
             screen.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT))
             assertEquals("2", state.current?.id)
@@ -660,13 +685,16 @@ class HomeFeedScreenTest {
             pump(screen)
             assertEquals(1, backend.prepares)
             player.status?.invoke(TrialStatus.READY)
+            ShadowLooper.idleMainLooper(1999, TimeUnit.MILLISECONDS)
+            assertEquals(1, backend.prepares)
+            ShadowLooper.idleMainLooper(251, TimeUnit.MILLISECONDS)
             finishPrefetch(screen)
             assertEquals(2, backend.prepares)
             assertEquals(setOf("2"), (get(screen, "cachedTrials") as Map<*, *>).keys)
-            ShadowLooper.idleMainLooper(4, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper(6, TimeUnit.SECONDS)
             finishPrefetch(screen)
             assertEquals(setOf("2", "3"), (get(screen, "cachedTrials") as Map<*, *>).keys)
-            ShadowLooper.idleMainLooper(4, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper(8, TimeUnit.SECONDS)
             finishPrefetch(screen)
             assertEquals(4, backend.prepares)
             assertEquals(setOf("2", "3", "4"), (get(screen, "cachedTrials") as Map<*, *>).keys)
@@ -730,6 +758,7 @@ class HomeFeedScreenTest {
             screen.start(true, false)
             pump(screen)
             player.status?.invoke(TrialStatus.READY)
+            ShadowLooper.idleMainLooper(2250, TimeUnit.MILLISECONDS)
             assertTrue(entered.await(5, TimeUnit.SECONDS))
             val pending = get(screen, "prefetchJob") as Future<*>
             (get(screen, "stage") as View).dispatchKeyEvent(
@@ -785,6 +814,7 @@ class HomeFeedScreenTest {
             screen.start(true, false)
             pump(screen)
             player.status?.invoke(TrialStatus.READY)
+            ShadowLooper.idleMainLooper(2250, TimeUnit.MILLISECONDS)
             assertTrue(entered.await(5, TimeUnit.SECONDS))
             (get(screen, "stage") as View).dispatchKeyEvent(
                 KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)

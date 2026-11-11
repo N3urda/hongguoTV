@@ -29,6 +29,7 @@ internal class HomeFeedScreen(
     private val backend: FeedBackend,
     private val playback: TrialPlayback,
     private val autoPreview: Boolean = true,
+    private val backgroundBusy: () -> Boolean = { false },
     private val loadCover: (ImageView, String) -> Unit = { _, _ -> },
     private val related: (Series, View) -> Unit = { _, _ -> },
     private val autoNext: Boolean = true,
@@ -51,6 +52,10 @@ internal class HomeFeedScreen(
 
     private val cachedTrials = linkedMapOf<String, CachedTrial>()
     private val attemptedPrefetch = mutableSetOf<String>()
+    private val prefetchFailures = mutableMapOf<String, Int>()
+    private var nextEpisode: TrialClip? = null
+    private var nextEpisodeAttempts = 0
+    private var nextEpisodeRetryAt = 0L
     private var prefetchGeneration = 0
     private var attemptedBatch = 0
     private var prefetchSeries: String? = null
@@ -584,6 +589,11 @@ internal class HomeFeedScreen(
         prefetchJob = null
         prefetchTarget = null
         attemptedPrefetch.clear()
+        prefetchFailures.clear()
+        nextEpisode?.close()
+        nextEpisode = null
+        nextEpisodeAttempts = 0
+        nextEpisodeRetryAt = 0
         attemptedBatch = 0
         prefetchSeries = null
         prefetchReadyAt = 0
@@ -844,12 +854,16 @@ internal class HomeFeedScreen(
         // Post outside the player callback; duplicate end notifications cannot advance twice.
         main.post {
             if (closed || !active || clip !== finished || !state.ended) return@post
+            val warmed = nextEpisode?.takeIf {
+                it.detail.series.id == finished.detail.series.id && it.trialEpisodeIndex == finished.trialEpisodeIndex + 1
+            }
+            if (warmed != null) nextEpisode = null
             clearCurrent()
             state.episodeIndex = finished.trialEpisodeIndex
             state.position = 0
             state.ended = false
             state.userPaused = false
-            loadCurrent()
+            if (warmed != null) attach(warmed) else loadCurrent()
         }
     }
 
@@ -883,7 +897,10 @@ internal class HomeFeedScreen(
         stale.forEach { cachedTrials.remove(it)?.let(::closeCached) }
     }
 
-    /** 保留前一部与后三部缓存；当前就绪后先准备下一部，稳定三秒、六秒后再扩展。 */
+    fun canWarmCatalog() = active && playbackReady && !loading && !failed &&
+        prefetchJob == null && (state.userPaused || playback.canPrefetch())
+
+    /** 保留前一部与后三部缓存；当前稳定两秒后准备下一部，八秒、十六秒后再扩展。 */
     private fun prefetchUpcoming() {
         if (
             closed ||
@@ -891,7 +908,7 @@ internal class HomeFeedScreen(
                 clip == null ||
                 failed ||
                 loading ||
-                prefetchJob != null
+                prefetchJob != null || backgroundBusy()
         )
             return
         if (!playback.canPrefetch()) {
@@ -904,9 +921,17 @@ internal class HomeFeedScreen(
             prefetchSeries = state.current?.id
             prefetchReadyAt = now
         }
+        if (now - prefetchReadyAt < 2000) return
+        val current = clip ?: return
+        if (autoNext && current.trialEpisodeIndex < current.episodeCount && nextEpisode == null &&
+            playback.duration() > 0 && playback.duration() - playback.position() <= 45_000 &&
+            nextEpisodeAttempts < 2 && now >= nextEpisodeRetryAt) {
+            prefetchNextEpisode(current)
+            return
+        }
         val depth = when {
-            now - prefetchReadyAt >= 6000 -> 3
-            now - prefetchReadyAt >= 3000 -> 2
+            now - prefetchReadyAt >= 16000 -> 3
+            now - prefetchReadyAt >= 8000 -> 2
             else -> 1
         }
         val upcoming = state.items.drop(state.index + 1).take(3)
@@ -947,10 +972,39 @@ internal class HomeFeedScreen(
                             cachedTrials.put(next.id, CachedTrial(prepared))?.let(::closeCached)
                             queueCached(prepared)
                         }
-                        prefetchUpcoming()
+                        if (prepared == null && state.current?.id != next.id) {
+                            val failures = (prefetchFailures[next.id] ?: 0) + 1
+                            prefetchFailures[next.id] = failures
+                            if (failures < 2) main.postDelayed({
+                                if (!closed && active && token == prefetchGeneration) attemptedPrefetch.remove(next.id)
+                            }, 15_000)
+                        }
                     }
                 }
             }
+    }
+
+    private fun prefetchNextEpisode(current: TrialClip) {
+        val token = prefetchGeneration
+        val request = RequestScope()
+        prefetchScope = request
+        nextEpisodeAttempts++
+        nextEpisodeRetryAt = android.os.SystemClock.elapsedRealtime() + 15_000
+        prefetchJob = worker.submit {
+            val prepared = runCatching { request.run {
+                RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)) {
+                    backend.prefetchEpisode(current.detail.series, current.trialEpisodeIndex)
+                }
+            } }.getOrNull()
+            main.post {
+                if (closed || !active || token != prefetchGeneration || clip !== current) prepared?.close()
+                else {
+                    prefetchJob = null
+                    prefetchScope = null
+                    nextEpisode = prepared
+                }
+            }
+        }
     }
 
     private fun prefetchBatch() {

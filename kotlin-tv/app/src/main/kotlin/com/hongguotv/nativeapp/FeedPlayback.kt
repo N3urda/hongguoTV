@@ -66,6 +66,8 @@ internal interface FeedBackend : Closeable {
 
     fun preload(series: Series): TrialClip = prefetch(detail(series))
 
+    fun prefetchEpisode(series: Series, index: Int): TrialClip = episode(series, index)
+
     /** 首页展示过一部作品时通知后端，供下次冷启动跳过重复内容。 */
     fun noteDisplayed(
         series: Series,
@@ -299,6 +301,17 @@ internal class PublicFeedBackend(
             full.episodes.size, opened.track, index + 1)
     }
 
+    override fun prefetchEpisode(series: Series, index: Int): TrialClip {
+        val full = detail(series)
+        val id = full.episodes.getOrNull(index) ?: throw java.io.IOException("该集暂不可用")
+        val opened = open(id, speculative = true)
+        try {
+            opened.video.read(0, minOf(opened.video.total, 512 * 1024L).toInt())
+            return TrialClip(full.copy(episodes = listOf(id)), opened.video,
+                full.episodes.size, opened.track, index + 1)
+        } catch (error: Throwable) { opened.video.close(); throw error }
+    }
+
     // 后台只轻量准备一次，不消耗前台恢复额度；成功后立即交付视频索引。
     override fun preload(series: Series): TrialClip = trial(series, speculative = true)
 
@@ -392,7 +405,7 @@ internal class Media3TrialPlayback(context: Context, private val speed: Float = 
                         DefaultPreloadManager.PreloadStatus.TRACKS_SELECTED
                     else
                         when (index - currentIndex) {
-                            1 -> DefaultPreloadManager.PreloadStatus.specifiedRangeLoaded(1500L)
+                            1 -> DefaultPreloadManager.PreloadStatus.specifiedRangeLoaded(3000L)
                             -1 -> DefaultPreloadManager.PreloadStatus.specifiedRangeLoaded(1000L)
                             2,
                             3 -> DefaultPreloadManager.PreloadStatus.TRACKS_SELECTED
@@ -425,7 +438,7 @@ internal class Media3TrialPlayback(context: Context, private val speed: Float = 
         }
 
     override fun canPrefetch(): Boolean {
-        val allowed = player.isPlaying && player.totalBufferedDuration >= 1500
+        val allowed = player.isPlaying && player.totalBufferedDuration >= 3000
         if (allowed != preloading) {
             preloading = allowed
             preloadManager.invalidate()

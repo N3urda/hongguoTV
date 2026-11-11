@@ -85,6 +85,35 @@ class MainActivity : Activity() {
     private var prefetchedFor = ""
     private var readySince = 0L
     private lateinit var artwork: ArtworkLoader
+    private var gradualPreloader: GradualPreloader? = null
+
+    private fun startGradualPreloading() {
+        if (gradualPreloader != null) return
+        val warmer = GradualPreloader(allowed = {
+            foreground && library.isLoaded && workJob?.isDone != false &&
+                screen == "catalog" && !rankBrowser.isRefreshing(rankBrowser.board) &&
+                (homeFeed?.canWarmCatalog() ?: true)
+        })
+        gradualPreloader = warmer
+        fun extra(rows: List<Series>) {
+            main.post {
+                rows.take(6).forEach { item -> warmer.enqueue("cover:${item.id}") { artwork.warm(item.cover) } }
+                rows.take(2).forEach { item -> warmer.enqueue("detail:${item.id}") { repository.warmDetail(item.id) } }
+            }
+        }
+        warmer.enqueue("rank:ALL:1") { extra(repository.warmRankPage(RankBoard.ALL, 1).items) }
+        warmer.enqueue("discovery") { extra(repository.warmDiscovery().items) }
+        for (page in 2..5) warmer.enqueue("rank:ALL:$page") { repository.warmRankPage(RankBoard.ALL, page) }
+        RankBoard.entries.filter { it != RankBoard.ALL }.forEach { board ->
+            warmer.enqueue("rank:$board:1") { extra(repository.warmRankPage(board, 1).items) }
+        }
+        // One page per slot instead of fetching five pages and all covers in a startup burst.
+        for (page in 2..5) RankBoard.entries.filter { it != RankBoard.ALL }.forEach { board ->
+            warmer.enqueue("rank:$board:$page") { repository.warmRankPage(board, page) }
+        }
+        warmer.resume()
+    }
+
 
     private data class DeferredUi(val apply: () -> Unit, val discard: () -> Unit = {})
 
@@ -994,6 +1023,7 @@ class MainActivity : Activity() {
                     ),
                     Media3TrialPlayback(this, library.playbackSpeed, library.frameMode),
                     autoPreview = library.homeAutoplay,
+                    backgroundBusy = { gradualPreloader?.busy == true },
                     loadCover = ::loadCover,
                     related = ::showHomeRelated,
                     autoNext = library.autoNext,
@@ -4900,7 +4930,13 @@ class MainActivity : Activity() {
     @Deprecated("TV remote back is handled through the activity")
     override fun onBackPressed() = goBack()
 
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        gradualPreloader?.yieldToUser()
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) gradualPreloader?.yieldToUser()
         if (screen == "player") {
             if (panel && !playError && event.action == KeyEvent.ACTION_DOWN) showHud()
             val key = event.keyCode
@@ -4983,6 +5019,8 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         foreground = true
+        startGradualPreloading()
+        gradualPreloader?.resume()
         social.foreground(true)
         main.removeCallbacks(tick)
         main.post(tick)
@@ -5035,6 +5073,7 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        gradualPreloader?.pause()
         stallGuard.suspendObservation()
         cancelNextSeason()
         searchSuggestions?.cancel()
@@ -5077,12 +5116,14 @@ class MainActivity : Activity() {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) gradualPreloader?.pause()
         if (::artwork.isInitialized) artwork.trimMemory(level)
         if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) cancelPrefetch()
     }
 
     // 页面销毁时释放播放器、请求和工作线程，避免资源继续持有旧 Activity。
     override fun onDestroy() {
+        gradualPreloader?.close()
         generation++
         cancelWork()
         if (networkRegistered) connectivity.unregisterNetworkCallback(networkCallback)
