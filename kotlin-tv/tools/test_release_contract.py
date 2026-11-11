@@ -3,6 +3,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -80,6 +81,71 @@ class ReleaseContractTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 r.verify_assets([asset, asset], [path])
 
+    def make_apks(self, root):
+        directory = root / 'kotlin-tv/app/build/outputs/apk/release'
+        directory.mkdir(parents=True)
+        for variant, _, abis in r.APK_VARIANTS:
+            with zipfile.ZipFile(directory / f'app-{variant}-release.apk', 'w') as package:
+                for abi in abis:
+                    package.writestr(f'lib/{abi}/libffmpegJNI.so', b'native')
+        (directory / 'output-metadata.json').write_text(json.dumps(dict(elements=[
+            dict(outputFile=f'app-{variant}-release.apk', versionCode=10, versionName='0.10.0',
+                 filters=[] if len(abis) > 1 else [dict(filterType='ABI', value=next(iter(abis)))])
+            for variant, _, abis in r.APK_VARIANTS])))
+        out = root / 'outputs'
+        out.mkdir()
+        return directory, out
+
+    def test_three_signed_apks_required_and_copied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, out = self.make_apks(root)
+            with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run', side_effect=[self.badging, self.signature] * 3) as run:
+                paths = r.prepare_apks('0.10.0', 10, 21, out)
+            self.assertEqual(['hongguotv-kotlin-0.10.0-' + suffix + '.apk' for suffix in ['android5', 'arm32-v7a', 'arm64-v8a']], [p.name for p in paths])
+            self.assertEqual(6, run.call_count)
+            for path, (_, _, abis) in zip(paths, r.APK_VARIANTS):
+                r.validate_apk_abis(path, abis)
+
+    def test_each_missing_apk_blocks_preparation(self):
+        for variant, _, _ in r.APK_VARIANTS:
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                directory, out = self.make_apks(root)
+                (directory / f'app-{variant}-release.apk').unlink()
+                with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run') as run, self.assertRaisesRegex(ValueError, 'requires universal, ARM32 and ARM64'):
+                    r.prepare_apks('0.10.0', 10, 21, out)
+                run.assert_not_called()
+                self.assertEqual([], list(out.iterdir()))
+
+    def test_stale_split_files_from_previous_build_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory, out = self.make_apks(root)
+            (directory / 'output-metadata.json').write_text(json.dumps(dict(elements=[
+                dict(outputFile='app-release.apk', versionCode=10, versionName='0.10.0', filters=[])])))
+            with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run') as run, self.assertRaisesRegex(ValueError, 'current build output'):
+                r.prepare_apks('0.10.0', 10, 21, out)
+            run.assert_not_called()
+
+    def test_wrong_architecture_or_missing_decoder_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'arm32.apk'
+            for names in [['lib/arm64-v8a/libffmpegJNI.so'], ['lib/armeabi-v7a/other.so'], ['lib/armeabi-v7a/libffmpegJNI.so', 'lib/x86/other.so']]:
+                with zipfile.ZipFile(path, 'w') as package:
+                    for name in names:
+                        package.writestr(name, b'native')
+                with self.assertRaises(ValueError):
+                    r.validate_apk_abis(path, {'armeabi-v7a'})
+
+    def test_invalid_split_signature_blocks_all_asset_copying(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, out = self.make_apks(root)
+            with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run', side_effect=[self.badging, self.signature, self.badging, self.signature.replace(r.CERTIFICATE, '0' * 64)]), self.assertRaises(ValueError):
+                r.prepare_apks('0.10.0', 10, 21, out)
+            self.assertEqual([], list(out.iterdir()))
+
     def test_repository_and_workflow_contract(self):
         self.assertIn(f'REPOSITORY = "{r.REPOSITORY}"', (ROOT / 'kotlin-tv/core/src/main/kotlin/com/hongguotv/core/AppUpdates.kt').read_text())
         workflow = (ROOT / '.github/workflows/kotlin-release.yml').read_text()
@@ -88,6 +154,8 @@ class ReleaseContractTest(unittest.TestCase):
         self.assertNotIn('workflow_dispatch:', workflow)
         self.assertIn("github.repository == 'N3urda/hongguoTV'", workflow)
         self.assertIn(':core:test :app:testDebugUnitTest :app:lintRelease :app:assembleRelease', workflow)
+        self.assertIn('-PreleaseAbis=true', workflow)
+        self.assertIn('-PreleaseAbis=true', (ROOT / 'scripts/build-kotlin.sh').read_text())
         self.assertIn('cancel-in-progress: false', workflow)
         for name in ['KEYSTORE_B64', 'STORE_PASSWORD', 'KEY_ALIAS', 'KEY_PASSWORD']:
             self.assertIn('secrets.HONGGUOTV_' + name, workflow)

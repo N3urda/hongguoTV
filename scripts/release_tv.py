@@ -107,6 +107,53 @@ def release_including_draft(tag):
         page += 1
 
 
+# Explicit filenames prevent an old single-APK build from being published by accident.
+APK_VARIANTS = (
+    ('universal', 'android5', {'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'}),
+    ('armeabi-v7a', 'arm32-v7a', {'armeabi-v7a'}),
+    ('arm64-v8a', 'arm64-v8a', {'arm64-v8a'}),
+)
+
+
+def validate_apk_abis(path, expected):
+    with zipfile.ZipFile(path) as package:
+        names = package.namelist()
+        actual = {name.split('/')[1] for name in names if name.startswith('lib/') and name.endswith('.so')}
+        require(actual == expected, f'{path.name}: APK ABI mismatch: {actual} != {expected}')
+        require({f'lib/{abi}/libffmpegJNI.so' for abi in expected} <= set(names),
+                f'{path.name}: missing Android 5 AAC native decoder')
+
+
+def prepare_apks(version, code, sdk, out):
+    directory = ROOT / 'kotlin-tv/app/build/outputs/apk/release'
+    buildtools = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
+    sources = [(directory / f'app-{variant}-release.apk', suffix, abis)
+               for variant, suffix, abis in APK_VARIANTS]
+    listing = directory / 'output-metadata.json'
+    require(listing.is_file(), 'Missing APK build output metadata')
+    elements = json.loads(listing.read_text()).get('elements', [])
+    for path, _, abis in sources:
+        matches = [item for item in elements if item.get('outputFile') == path.name]
+        filters = [] if len(abis) > 1 else [{'filterType': 'ABI', 'value': next(iter(abis))}]
+        require(len(matches) == 1 and matches[0].get('filters') == filters
+                and matches[0].get('versionCode') == code and matches[0].get('versionName') == version,
+                f'{path.name}: missing or mismatched current build output; use -PreleaseAbis=true')
+    require(all(path.is_file() for path, _, _ in sources),
+            'Release requires universal, ARM32 and ARM64 APKs; build with -PreleaseAbis=true')
+    # Check every package before copying any release assets or creating a draft.
+    for path, _, abis in sources:
+        validate_apk(run(str(buildtools / 'aapt'), 'dump', 'badging', str(path)),
+                     run(str(buildtools / 'apksigner'), 'verify', '--verbose', '--min-sdk-version',
+                         '21', '--print-certs', str(path)), version, code, sdk)
+        validate_apk_abis(path, abis)
+    apks = []
+    for path, suffix, _ in sources:
+        target = out / f'hongguotv-kotlin-{version}-{suffix}.apk'
+        shutil.copy2(path, target)
+        apks.append(target)
+    return apks
+
+
 def prepare(tag):
     version, code, sdk = source_version((ROOT / 'kotlin-tv/app/build.gradle.kts').read_text(), tag)
     commit = run('git', 'rev-parse', 'HEAD')
@@ -115,14 +162,8 @@ def prepare(tag):
     safe_source_paths(paths)
     out = ROOT / 'outputs'
     out.mkdir(exist_ok=True)
-    apk = out / f'hongguotv-kotlin-{version}-android5.apk'
-    shutil.copy2(ROOT / 'kotlin-tv/app/build/outputs/apk/release/app-release.apk', apk)
-    buildtools = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
-    validate_apk(run(str(buildtools / 'aapt'), 'dump', 'badging', str(apk)),
-                 run(str(buildtools / 'apksigner'), 'verify', '--verbose', '--min-sdk-version', '21', '--print-certs', str(apk)), version, code, sdk)
-    with zipfile.ZipFile(apk) as package:
-        required = {f'lib/{abi}/libffmpegJNI.so' for abi in ('armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64')}
-        require(required <= set(package.namelist()), 'APK missing Android 5 AAC native decoder ABI')
+    apks = prepare_apks(version, code, sdk, out)
+    apk = apks[0]  # Existing updater clients continue to receive the universal APK.
     data = metadata(tag, version, code, sdk, commit, apk.name, apk.stat().st_size, sha256(apk))
     manifest = out / 'update.json'
     manifest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
@@ -136,9 +177,9 @@ def prepare(tag):
     with zipfile.ZipFile(source, 'a', compression=zipfile.ZIP_STORED) as bundle:
         bundle.write(archive, f'hongguotv-{tag}/third-party/{archive.name}')
     checks = out / 'SHA256SUMS'
-    checks.write_text(''.join(f'{sha256(p)}  {p.name}\n' for p in (apk, source, manifest)))
-    (out / 'release-notes.md').write_text(f'''红果 TV {version}（versionCode {code}），Android 5.0+。\n\n{NOTES}\n\n原发布证书签名，可同签名覆盖安装并保留本机记录。旧 0.9 更新器不识别 API21 元数据，首次需手动安装，请勿先卸载。\n\n源码提交：{commit}。附 APK、对应完整源码 ZIP（含 GPL-3.0 和第三方许可）、update.json、SHA256SUMS。已通过自动化测试、Release 静态检查和正式签名构建；电视真机兼容性由设备测试继续验证。\n\n构建要求与步骤见源码 kotlin-tv/AUTO_UPDATES.md；版本取自该标签的 Gradle 配置，不使用运行次数改写版本。\n''')
-    return data, [apk, source, manifest, checks]
+    checks.write_text(''.join(f'{sha256(p)}  {p.name}\n' for p in (*apks, source, manifest)))
+    (out / 'release-notes.md').write_text(f'''红果 TV {version}（versionCode {code}），Android 5.0+。\n\n{NOTES}\n\n原发布证书签名，可同签名覆盖安装并保留本机记录。旧 0.9 更新器不识别 API21 元数据，首次需手动安装，请勿先卸载。\n\n源码提交：{commit}。附通用版（android5）、ARM32（arm32-v7a）、ARM64（arm64-v8a）三个 APK；不确定架构请用通用版，自动更新也使用通用版。附对应完整源码 ZIP（含 GPL-3.0 和第三方许可）、update.json、SHA256SUMS。已通过自动化测试、Release 静态检查和正式签名构建；电视真机兼容性由设备测试继续验证。\n\n构建要求与步骤见源码 kotlin-tv/AUTO_UPDATES.md；版本取自该标签的 Gradle 配置，不使用运行次数改写版本。\n''')
+    return data, [*apks, source, manifest, checks]
 
 
 def released_native_version(tag):
