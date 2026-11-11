@@ -49,7 +49,8 @@ internal class ContinuousCatalogView(
     private val fullTitle = TextView(context).apply {
         textSize = 16f
         setTextColor(Color.WHITE)
-        setPadding(dp(6), dp(4), dp(6), dp(8))
+        includeFontPadding = false
+        setPadding(dp(6), dp(2), dp(6), dp(4))
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
     }
     val grid =
@@ -220,9 +221,10 @@ internal class ContinuousCatalogView(
             text = value
             textSize = 14f
             setTextColor(TvStyle.text)
+            includeFontPadding = false
             isFocusable = true
             isClickable = true
-            setPadding(dp(16), dp(10), dp(16), dp(10))
+            setPadding(dp(14), dp(6), dp(14), dp(6))
             background = TvStyle.card(context, false)
             setOnFocusChangeListener { _, focus -> background = TvStyle.card(context, focus) }
             setOnClickListener { click() }
@@ -391,7 +393,7 @@ internal class CatalogPosterCard(context: Context) : LinearLayout(context) {
             setBackgroundColor(Color.argb(200, 15, 18, 24))
             visibility = GONE
         }
-    private val title =
+    val title =
         TextView(context).apply {
             textSize = 14f
             setTextColor(TvStyle.text)
@@ -400,9 +402,9 @@ internal class CatalogPosterCard(context: Context) : LinearLayout(context) {
             maxLines = 2
             ellipsize = android.text.TextUtils.TruncateAt.END
             val density = resources.displayMetrics.density
-            setPadding((2 * density).toInt(), (5 * density).toInt(), (2 * density).toInt(), 0)
+            setPadding((2 * density).toInt(), (4 * density).toInt(), (2 * density).toInt(), 0)
         }
-    private val badge =
+    val badge =
         TextView(context).apply {
             textSize = 12f
             setTextColor(TvStyle.muted)
@@ -420,7 +422,7 @@ internal class CatalogPosterCard(context: Context) : LinearLayout(context) {
             (4 * density).toInt(),
             (4 * density).toInt(),
             (4 * density).toInt(),
-            (9 * density).toInt(),
+            (6 * density).toInt(),
         )
         val defaultWidth =
             ((resources.displayMetrics.widthPixels * .9f - 14 * density * 5) / 6 - 8 * density)

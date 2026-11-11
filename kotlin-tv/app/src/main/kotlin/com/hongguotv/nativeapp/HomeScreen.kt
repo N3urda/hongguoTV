@@ -21,7 +21,7 @@ class SeriesPreview(context: Context) : LinearLayout(context) {
         }
 
     private val title =
-        label(22f, TvStyle.text).apply {
+        label(20f, TvStyle.text).apply {
             setSingleLine(true)
             ellipsize = TextUtils.TruncateAt.MARQUEE
             marqueeRepeatLimit = -1
@@ -38,9 +38,9 @@ class SeriesPreview(context: Context) : LinearLayout(context) {
     init {
         orientation = VERTICAL
         val dp = resources.displayMetrics.density
-        setPadding(0, (7 * dp).toInt(), 0, (12 * dp).toInt())
+        setPadding(0, (4 * dp).toInt(), 0, (6 * dp).toInt())
         addView(title)
-        addView(meta, LayoutParams(-1, -2).apply { topMargin = (5 * dp).toInt() })
+        addView(meta, LayoutParams(-1, -2).apply { topMargin = (3 * dp).toInt() })
         show(null, "")
     }
 

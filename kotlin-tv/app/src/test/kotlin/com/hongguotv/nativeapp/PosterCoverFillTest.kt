@@ -63,6 +63,22 @@ class PosterCoverFillTest {
         )
     }
 
+    private fun unclippedHeight(view: View, root: View): Int {
+        val rect = android.graphics.Rect(0, 0, view.width, view.height)
+        var current: View = view
+        while (current !== root) {
+            val parent = current.parent as? ViewGroup ?: break
+            rect.offset(current.left - parent.scrollX, current.top - parent.scrollY)
+            val left = if (parent.clipToPadding) parent.paddingLeft else 0
+            val top = if (parent.clipToPadding) parent.paddingTop else 0
+            val right = parent.width - if (parent.clipToPadding) parent.paddingRight else 0
+            val bottom = parent.height - if (parent.clipToPadding) parent.paddingBottom else 0
+            if (!rect.intersect(left, top, right, bottom)) return 0
+            current = parent
+        }
+        return if (rect.intersect(0, 0, root.width, root.height)) rect.height() else 0
+    }
+
     @Test
     fun discoveryPostersKeepFullCoverAspectBeforeAndDuringScroll() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
@@ -149,12 +165,21 @@ class PosterCoverFillTest {
                     {},
                     { _, _ -> },
                 ) { _, _ -> }
-            activity.setContentView(ranking)
-            layout(ranking, 864, 420)
+            activity.setContentView(
+                FrameLayout(activity).apply {
+                    addView(ranking, FrameLayout.LayoutParams(864, 427))
+                }
+            )
+            layout(activity.window.decorView, 960, 540)
             val rankBrowser = descendants(ranking).filterIsInstance<ContinuousCatalogView>().single()
+            rankBrowser.enter()
+            layout(activity.window.decorView, 960, 540)
+            layout(activity.window.decorView, 960, 540)
             val rankCard = rankBrowser.grid.getChildAt(0) as CatalogPosterCard
             assertEquals(ImageView.ScaleType.CENTER_CROP, rankCard.image.scaleType)
             assertPosterAspect(rankCard.poster.width, rankCard.poster.height, "RankingScreen card")
+            assertEquals(rankCard.title.height, unclippedHeight(rankCard.title, ranking))
+            assertEquals(rankCard.badge.height, unclippedHeight(rankCard.badge, ranking))
 
             for (columns in listOf(2, 3, 4)) {
                 val upper = TextView(activity).apply { id = View.generateViewId() }
@@ -191,8 +216,9 @@ class PosterCoverFillTest {
     }
 
     @Test
-    fun favoritesHistoryAndReservationsDoNotShrinkPostersToRemainingScrollViewport() {
-        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+    @Config(sdk = [26], qualifiers = "w960dp-h540dp-land-xhdpi")
+    fun favoritesHistoryAndReservationsDoNotShrinkPostersAndKeepTitleAndBadgeVisible() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create().visible()
         val activity = controller.get()
         try {
             val library = get(activity, "library") as Library
@@ -201,7 +227,7 @@ class PosterCoverFillTest {
             (get(account, "worker") as ExecutorService).submit {}.get(5, TimeUnit.SECONDS)
             ShadowLooper.idleMainLooper()
 
-            val series = Series("fav-1", "收藏封面测试剧", badge = "全60集")
+            val series = Series("fav-1", "万妖图录传第十四季收藏测试", badge = "全60集")
             val local = BackupProgress(series, "ep-1", 0, 5_000, 60_000, false, 1_000)
             Library::class
                 .java
@@ -241,17 +267,32 @@ class PosterCoverFillTest {
                     .java
                     .getDeclaredMethod("switchTab", Int::class.javaPrimitiveType)
                     .apply { isAccessible = true }
+            val decor = activity.window.decorView
             for (tabIndex in listOf(3, 4, 5)) {
                 switchTab.invoke(activity, tabIndex)
-                layout(activity.window.decorView, 960, 540)
-                layout(activity.window.decorView, 960, 540)
+                layout(decor, 1920, 1080)
+                layout(decor, 1920, 1080)
                 @Suppress("UNCHECKED_CAST")
                 val cards = get(activity, "catalogCards") as Map<String, View>
                 val card = cards.getValue("fav-1") as LinearLayout
+                card.requestFocus()
+                layout(decor, 1920, 1080)
                 val artwork = card.getChildAt(0) as FrameLayout
+                val title = card.getChildAt(1) as TextView
+                val badge = card.getChildAt(2) as TextView
                 val image = artwork.getChildAt(0) as ImageView
                 assertEquals(ImageView.ScaleType.CENTER_CROP, image.scaleType)
                 assertPosterAspect(artwork.width, artwork.height, "MainActivity tab $tabIndex card")
+                assertEquals(
+                    "Tab $tabIndex card title must be unclipped in 1920x1080@320dpi",
+                    title.height,
+                    unclippedHeight(title, decor),
+                )
+                assertEquals(
+                    "Tab $tabIndex card badge must be unclipped in 1920x1080@320dpi",
+                    badge.height,
+                    unclippedHeight(badge, decor),
+                )
             }
         } finally {
             controller.destroy()
