@@ -19,7 +19,7 @@ import org.robolectric.annotation.LooperMode
 import org.robolectric.shadows.ShadowLooper
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [23, 26], qualifiers = "w960dp-h540dp-land-mdpi")
+@Config(sdk = [21, 23, 26], qualifiers = "w960dp-h540dp-land-mdpi")
 @LooperMode(LooperMode.Mode.PAUSED)
 class HomeFeedScreenTest {
     @Test fun finalCheckpointCallbackCannotReenterClose() {
