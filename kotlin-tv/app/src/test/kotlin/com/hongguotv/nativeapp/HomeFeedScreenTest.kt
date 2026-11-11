@@ -22,6 +22,88 @@ import org.robolectric.shadows.ShadowLooper
 @Config(sdk = [21, 23, 26], qualifiers = "w960dp-h540dp-land-mdpi")
 @LooperMode(LooperMode.Mode.PAUSED)
 class HomeFeedScreenTest {
+    @Test fun pendingNextCardKeepsCurrentVideoAndCoalescesRapidRightPresses() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup()
+        val state = DramaFeedState().apply { append(CatalogPage(listOf(Series("1", "第一部")), false), 1) }
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val backend = object : Backend() {
+            override fun recommendations(page: Int, cursor: RecommendationCursor): CatalogPage {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                return CatalogPage((2..9).map { Series("$it", "作品$it") }, true)
+            }
+        }
+        val player = Playback(activity.get(), prefetchEnabled = false)
+        val screen = HomeFeedScreen(activity.get(), state, listOf(TextView(activity.get())), {}, { _, _ -> },
+            { "收藏" }, backend, player)
+        try {
+            activity.get().setContentView(screen); screen.start(true, false); pump(screen)
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val stage = get(screen, "stage") as View
+            repeat(3) { stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)) }
+            assertEquals("1", state.current?.id)
+            assertEquals(View.VISIBLE, (get(screen, "nextCard") as View).visibility)
+            assertEquals("1", player.loaded)
+            release.countDown()
+            (get(screen, "catalogJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper(); pump(screen)
+            assertEquals("2", state.current?.id)
+            assertEquals("3", state.next?.id)
+        } finally { release.countDown(); screen.close(); activity.pause().stop().destroy() }
+    }
+
+    @Test fun movingLeftCancelsThePendingRightAdvance() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup()
+        val state = DramaFeedState().apply {
+            append(CatalogPage(listOf(Series("1", "一"), Series("2", "二")), false), 1)
+            move(1)
+        }
+        val release = java.util.concurrent.CountDownLatch(1)
+        val backend = object : Backend() {
+            override fun recommendations(page: Int, cursor: RecommendationCursor): CatalogPage {
+                check(release.await(5, TimeUnit.SECONDS))
+                return CatalogPage((3..10).map { Series("$it", "作品$it") }, true)
+            }
+        }
+        val screen = HomeFeedScreen(activity.get(), state, listOf(TextView(activity.get())), {}, { _, _ -> },
+            { "收藏" }, backend, Playback(activity.get(), prefetchEnabled = false))
+        try {
+            activity.get().setContentView(screen); screen.start(true, false); pump(screen)
+            val stage = get(screen, "stage") as View
+            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT))
+            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT))
+            pump(screen)
+            assertEquals("1", state.current?.id)
+            release.countDown()
+            (get(screen, "catalogJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper(); pump(screen)
+            assertEquals("1", state.current?.id)
+            assertEquals(10, state.items.size)
+        } finally { release.countDown(); screen.close(); activity.pause().stop().destroy() }
+    }
+
+    @Test fun metadataContinuesWhenVideoPreparationFailsAndTailBatchEnds() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup()
+        val state = DramaFeedState().apply { append(CatalogPage(listOf(Series("1", "第一部")), false), 1) }
+        val backend = object : Backend() {
+            override fun recommendations(page: Int, cursor: RecommendationCursor) =
+                CatalogPage((2..9).map { Series("$it", "作品$it") }, false)
+            override fun prepare(detail: Detail): TrialClip = throw java.io.IOException("视频暂不可用")
+        }
+        val screen = HomeFeedScreen(activity.get(), state, listOf(TextView(activity.get())), {}, { _, _ -> },
+            { "收藏" }, backend, Playback(activity.get(), prefetchEnabled = false))
+        try {
+            activity.get().setContentView(screen); screen.start(true, false); pump(screen)
+            (get(screen, "catalogJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            assertEquals("1", state.current?.id)
+            assertEquals("2", state.next?.id)
+            assertEquals(9, state.items.size)
+            assertEquals(View.VISIBLE, (get(screen, "nextCard") as View).visibility)
+        } finally { screen.close(); activity.pause().stop().destroy() }
+    }
+
     @Test fun warmedNextEpisodeIsUsedAtBoundaryAndReleasedOnClose() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()
@@ -86,7 +168,7 @@ class HomeFeedScreenTest {
             assertEquals("1", state.current?.id)
             assertEquals(View.INVISIBLE, (get(screen, "previousCard") as View).visibility)
             assertEquals(View.VISIBLE, (get(screen, "nextCard") as View).visibility)
-            assertTrue(texts(screen).first { it.text == "详情 / 选集" }.hasFocus())
+            assertTrue(texts(screen).first { it.text == "播放全集" }.hasFocus())
             assertTrue(screen.back())
             assertTrue(stage.hasFocus())
             stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT))
@@ -103,7 +185,7 @@ class HomeFeedScreenTest {
             stage.performClick()
             assertTrue(player.playing)
             assertEquals(3, (get(screen, "actions") as ViewGroup).childCount)
-            texts(screen).first { it.text == "详情 / 选集" }.performClick()
+            texts(screen).first { it.text == "播放全集" }.performClick()
             assertEquals("2", opened)
         } finally {
             screen.close()
@@ -132,7 +214,7 @@ class HomeFeedScreenTest {
             screen.resume()
             player.status?.invoke(TrialStatus.READY)
             player.saved = 18000
-            texts(screen).first { it.text == "详情 / 选集" }.performClick()
+            texts(screen).first { it.text == "播放全集" }.performClick()
             assertEquals("102", saved.last().episodeId)
             assertEquals(1, saved.last().episodeIndex)
             assertEquals(18000L, saved.last().position)
@@ -837,7 +919,7 @@ class HomeFeedScreenTest {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()
         val state = DramaFeedState()
-        val backend = Backend()
+        val backend = Backend(10)
         val player = Playback(activity)
         val screen =
             HomeFeedScreen(
@@ -899,7 +981,7 @@ class HomeFeedScreenTest {
             screen.start(true, false)
             pump(screen)
             player.saved = 12345
-            texts(screen).first { it.text == "详情 / 选集" }.performClick()
+            texts(screen).first { it.text == "播放全集" }.performClick()
             assertEquals("1", watched)
             assertEquals(12345L, state.position)
             assertFalse(player.playing)

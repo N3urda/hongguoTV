@@ -119,6 +119,14 @@ class DramaFeedState {
         }
     }
 
+    /** Start another recommendation batch without clearing the visible carousel or playback. */
+    fun continueBatch() {
+        recommendationCursor = recommendationCursor.nextBatch(restartSession = true)
+        sourceCursors[sourceKey()] = recommendationCursor
+        page = 0
+        hasMore = true
+    }
+
     fun move(delta: Int): Boolean {
         val next = index + delta
         if (next !in items.indices) return false

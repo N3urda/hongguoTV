@@ -4,6 +4,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DramaFeedTest {
+    @Test fun continuingBatchKeepsCurrentHistoryAndEpisodePosition() {
+        val state = DramaFeedState()
+        state.append(CatalogPage(listOf(Series("1", "一"), Series("2", "二")), false), 1)
+        state.move(1)
+        state.episodeIndex = 3
+        state.position = 12345L
+        state.userPaused = true
+        val before = state.recommendationCursor
+        state.continueBatch()
+        assertEquals("2", state.current?.id)
+        assertEquals(3, state.episodeIndex)
+        assertEquals(12345L, state.position)
+        assertTrue(state.userPaused)
+        assertNotSame(before, state.recommendationCursor)
+        state.append(CatalogPage(listOf(Series("2", "二"), Series("3", "三")), true), 1)
+        assertEquals(listOf("1", "2", "3"), state.items.map { it.id })
+        assertEquals("3", state.next?.id)
+    }
+
     @Test
     fun restartingOnlyCurrentSourcePreservesOtherSourceAndNormalRefreshProgress() {
         val state = DramaFeedState()
