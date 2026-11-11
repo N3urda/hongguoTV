@@ -276,4 +276,101 @@ class DiscoveryScreenTest {
         }
     }
 
+    @Test
+    fun backToTopAndMovingFocusToTopNavFullyResetsExpandedHeaderOffset() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val nav =
+            TextView(activity).apply {
+                id = View.generateViewId()
+                isFocusable = true
+            }
+        val fullGroups =
+            listOf(
+                groups[0],
+                DiscoveryGroup(
+                    "category_dim_role",
+                    "设定",
+                    (0..9).map { DiscoveryFilter("cate_$it", "测试设定$it") },
+                ),
+                groups[2],
+                DiscoveryGroup("category_dim_theme", "主题", listOf(DiscoveryFilter("cate_7", "玄幻"))),
+                DiscoveryGroup("sort", "推荐", listOf(DiscoveryFilter("hot_score", "最高热度"))),
+                DiscoveryGroup("gender", "受众", listOf(DiscoveryFilter("0", "女频"))),
+                DiscoveryGroup("online_time", "时间", listOf(DiscoveryFilter("days_7", "7天内上新"))),
+            )
+        val state =
+            DiscoveryBrowserState().apply {
+                loaded = true
+                expanded = true
+                groups = fullGroups
+                items = (1..30).map { Series("$it", "作品$it") }
+            }
+        val screen =
+            DiscoveryScreen(
+                activity,
+                state,
+                nav,
+                { _, _ -> },
+                {},
+                { _, _ -> },
+                { _, _, _ -> },
+            )
+        val root =
+            LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(nav, LinearLayout.LayoutParams(960, 48))
+                addView(screen, LinearLayout.LayoutParams(960, 420))
+            }
+        fun layoutRoot() {
+            root.measure(
+                View.MeasureSpec.makeMeasureSpec(960, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(468, View.MeasureSpec.EXACTLY),
+            )
+            root.layout(0, 0, 960, 468)
+            ShadowLooper.idleMainLooper()
+        }
+        try {
+            activity.setContentView(root)
+            screen.start(false)
+            layoutRoot()
+            layoutRoot()
+            assertEquals(0, screen.scrollY)
+
+            val browser = views(screen).filterIsInstance<ContinuousCatalogView>().single()
+            browser.enter()
+            browser.grid.setSelection(6)
+            layoutRoot()
+            layoutRoot()
+            assertTrue(browser.grid.hasFocus())
+            assertTrue(screen.scrollY > 0)
+
+            // Simulate MainActivity Back key: backToTop() followed by moving focus to top nav.
+            screen.backToTop()
+            assertTrue(nav.requestFocus())
+            layoutRoot()
+            layoutRoot()
+            assertTrue(nav.hasFocus())
+            assertFalse(browser.grid.hasFocus())
+            assertEquals(0, screen.scrollY)
+            assertEquals(0, state.headerOffset)
+
+            // Re-entering row 0 in grid still reveals full first-row card, and Back resets again.
+            browser.enter()
+            layoutRoot()
+            layoutRoot()
+            assertTrue(browser.grid.hasFocus())
+            assertTrue(screen.scrollY > 0)
+
+            screen.backToTop()
+            assertTrue(nav.requestFocus())
+            layoutRoot()
+            layoutRoot()
+            assertEquals(0, screen.scrollY)
+            assertEquals(0, state.headerOffset)
+        } finally {
+            screen.close()
+            controller.pause().stop().destroy()
+        }
+    }
 }
