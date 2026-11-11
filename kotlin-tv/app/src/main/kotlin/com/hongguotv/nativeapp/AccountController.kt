@@ -28,7 +28,6 @@ import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
 
 /** Credentials stay in an Android Keystore encrypted partition, outside library exports. */
 private class AccountStore(private val context: Context) {
@@ -83,24 +82,17 @@ private class AccountStore(private val context: Context) {
             .generateKey()
     }
 
+    private fun usesLegacyKey() = android.os.Build.VERSION.SDK_INT < 23 || prefs.contains("wrapped_key")
+
     fun read(): AccountCredentials? {
         val raw = prefs.getString("session", null) ?: return null
-        val bytes = Base64.decode(raw, Base64.NO_WRAP)
-        require(bytes.size > 12)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
-        return AccountCredentials.fromJson(
-            String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
-        )
+        val plain = AccountCipher.decrypt(Base64.decode(raw, Base64.NO_WRAP), key(), usesLegacyKey())
+        return AccountCredentials.fromJson(String(plain, Charsets.UTF_8))
     }
 
     fun save(credentials: AccountCredentials) {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key())
-        val raw = cipher.iv + cipher.doFinal(credentials.toJson().toByteArray())
-        check(
-            prefs.edit().putString("session", Base64.encodeToString(raw, Base64.NO_WRAP)).commit()
-        ) {
+        val raw = AccountCipher.encrypt(credentials.toJson().toByteArray(Charsets.UTF_8), key(), usesLegacyKey())
+        check(prefs.edit().putString("session", Base64.encodeToString(raw, Base64.NO_WRAP)).commit()) {
             "保存登录态失败"
         }
     }

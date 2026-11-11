@@ -846,6 +846,24 @@ constructor(
         else info
     }
 
+    /** Preserve main's registered player path when the newer model service is unavailable. */
+    fun streamLadderWithCompatibility(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
+        try {
+            return streamLadder(id, metadataAhead, speculative)
+        } catch (error: IOException) {
+            RequestScope.ensureActive()
+            if (speculative || !(error is EmptyPlaybackResponseException ||
+                    error is ContentHttpException && error.statusCode in listOf(401, 403))) throw error
+            return RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(8)) {
+                try { playerLadder(id) } catch (fallback: IOException) {
+                    RequestScope.ensureActive()
+                    fallback.addSuppressed(error)
+                    throw fallback
+                }
+            }
+        }
+    }
+
     /** 读取一集的可播档位；前台按会话路径健康度选择，后台只轻量准备一次。 */
     @JvmOverloads
     fun streamLadder(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
@@ -1218,8 +1236,15 @@ constructor(
         }
     }
     private fun playerStream(id: String, maxQuality: Int): StreamInfo {
+        val selected = playerLadder(id).select(maxQuality)
+            ?: throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+        val stream = selected.toStreamInfo()
+        return if (selected.quality > maxQuality) stream.copy(quality = stream.quality + "（兼容资源）") else stream
+    }
+
+    private fun playerLadder(id: String): StreamLadder {
         val device = devices.obtain()
-        val rows = mutableListOf<PlayerVariant>()
+        val rows = mutableListOf<Rendition>()
         var rejected = false
         var sawResponse = false
         var transportFailure: Exception? = null
@@ -1238,27 +1263,25 @@ constructor(
                 val payload=data.optJSONObject("data") ?: JSONObject()
                 val model=PlaybackModels.model(payload,id) ?: continue
                 for (model in listOf(model)) {
-                    rows += StreamModels.listRows(model.optJSONObject("video_list"), StreamModels.keySeed(model))
-                    rows += StreamModels.arrayRows(model.optJSONArray("video_list"))
+                    rows += PlaybackModels.renditions(model)
                     val fallbackUrl = StreamModels.fallbackApiUrl(model)
                     if (fallbackUrl.startsWith("https://")) runCatching {
                         val fallback = JSONObject(fetch(fallbackUrl, mapOf("User-Agent" to PlayerDeviceSource.FALLBACK_USER_AGENT, "Accept-Language" to "zh-CN,zh;q=0.9"), null))
                         val info = fallback.optJSONObject("video_info")?.optJSONObject("data")
-                        rows += StreamModels.listRows(info?.optJSONObject("video_list"), info?.str("key_seed")?.takeIf { it.isNotEmpty() }?.let(StreamModels::lenientB64))
+                        if (info != null) rows += PlaybackModels.renditions(info)
                     }
                 }
             } catch (e: DeviceRejectedException) { rejected = true }
             catch (e: Exception) { if(Thread.currentThread().isInterrupted) throw e; transportFailure = e }
         }
-        val chosen = StreamModels.pick(rows, maxQuality)
-            ?: run {
-                if (rejected) throw DeviceRejectedException("播放设备已被上游拒绝")
-                if (!sawResponse) throw transportFailure ?: IOException("播放接口暂不可用")
-                throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
-            }
-        val quality = if (chosen.quality > 0) "${chosen.quality}P" + (if (chosen.quality > maxQuality) "（兼容资源）" else "") else "自动"
-        return StreamInfo(chosen.url, chosen.key, quality)
+        if (rows.isEmpty()) {
+            if (rejected) throw DeviceRejectedException("播放设备已被上游拒绝")
+            if (!sawResponse) throw transportFailure ?: IOException("播放接口暂不可用")
+            throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+        }
+        return StreamLadder(rows.distinctBy { it.url })
     }
+
     private fun fetch(url: String, headers: Map<String, String>, body: ByteArray?): String {
         val request = Request.Builder().url(url).header("Accept-Language", "zh-CN,zh;q=0.9")
         headers.forEach { (k, v) -> request.header(k, v) }
