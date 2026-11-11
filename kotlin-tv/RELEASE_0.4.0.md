@@ -1,6 +1,6 @@
 # Kotlin TV 0.4.0
 
-基于远程 `7d76463`，包名 `com.hongguotv.nativeapp`，versionCode 4，最低 Android 8.0 / API 26。仍为独立 APK，无需 Docker 或另外部署服务。
+基于远程 `7d76463`，包名 `com.hongguotv.nativeapp`，versionCode 4，最低 Android 8.0 / API 26。仍为独立 APK，安装后联网即用。
 
 ## 功能
 

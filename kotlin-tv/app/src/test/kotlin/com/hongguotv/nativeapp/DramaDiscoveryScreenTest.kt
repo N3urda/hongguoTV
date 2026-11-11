@@ -69,7 +69,7 @@ class DramaDiscoveryScreenTest {
         if (request.url.encodedPath == "/incent_resource/suggestion")
             return """{"suggest_list":[{"name":"大佬，你该出手了"}]}"""
         if (request.url.encodedPath == "/api/search/result")
-            return """{"hasMore":false,"searchList":[{"series_id":"900","series_name":"搜索结果剧"}]}"""
+            return """{"hasMore":false,"searchList":[{"series_id":"900","series_name":"大佬搜索结果剧"}]}"""
         val input = body(request)
         val offset = input.getInt("offset")
         val real =
@@ -191,7 +191,7 @@ class DramaDiscoveryScreenTest {
             input.setText("大佬")
             texts(root).single { it.text.toString() == "搜索" }.performClick()
             pump(activity)
-            assertTrue(texts(root).any { it.text.toString() == "搜索结果剧" })
+            assertTrue(texts(root).any { it.text.toString() == "大佬搜索结果剧" })
             val count = requests.size
             texts(root).single { it.text.toString() == "返回分类" }.performClick()
             layout(activity)

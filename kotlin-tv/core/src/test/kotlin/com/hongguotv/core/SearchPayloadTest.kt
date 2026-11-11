@@ -72,10 +72,10 @@ class SearchPayloadTest {
         assertThrows(SearchUnavailableException::class.java) { SearchPayload.parse(response.toString(), ContentType.COMIC, "测试") }
     }
 
-    @Test fun exactTitleWinsAfterPunctuationNormalizationAndOtherResultsStayStable() {
+    @Test fun exactTitleWinsAndOtherSeasonsRemainWithoutUnrelatedRecommendations() {
         val items = listOf(Series("1", "其他推荐一"), Series("2", "大佬，你该出手了第四季"),
             Series("3", "大佬,你该出手了第五季"), Series("4", "其他推荐二"))
-        assertEquals(listOf("3", "1", "2", "4"), SearchPayload.prioritize(items, "大佬，你该出手了第五季").map { it.id })
+        assertEquals(listOf("3", "2"), SearchPayload.prioritize(items, "大佬，你该出手了第五季").map { it.id })
     }
 
 
@@ -87,8 +87,10 @@ class SearchPayloadTest {
                 .code(200).message("OK").body(okhttp3.ResponseBody.create(null,
                     """{"pageNum":1,"hasMore":true,"searchList":[{"video_data":{"series_id":"123","series_title":"漫剧","genre":"205"}},{"video_data":{"series_id":"456","series_title":"短剧","genre":"203"}}]}""")).build()
         }.build())
-        assertEquals("123",repo.searchAll("测试",type=ContentType.COMIC).items.single().id)
-        assertEquals("456",repo.searchAll("测试",type=ContentType.SHORT).items.single().id)
-        assertTrue(repo.searchAll("测试").hasMore)
+        assertEquals("123",repo.searchAll("剧",type=ContentType.COMIC).items.single().id)
+        assertEquals("456",repo.searchAll("剧",type=ContentType.SHORT).items.single().id)
+        val unrelated = repo.searchAll("测试")
+        assertTrue(unrelated.items.isEmpty())
+        assertTrue(unrelated.hasMore)
     }
 }

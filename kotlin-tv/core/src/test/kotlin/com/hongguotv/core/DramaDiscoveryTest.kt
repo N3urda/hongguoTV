@@ -125,7 +125,7 @@ class DramaDiscoveryTest {
     }
 
     @Test
-    fun searchUsesSourceHasMoreWithoutLocallyFilteringResults() {
+    fun searchFiltersUnrelatedTitlesAndUsesSourceHasMore() {
         val http =
             OkHttpClient.Builder()
                 .addInterceptor { chain ->
@@ -151,7 +151,7 @@ class DramaDiscoveryTest {
                 }
                 .build()
         val result = ContentRepository(http).searchAll("测试")
-        assertEquals(1, result.items.size)
+        assertTrue(result.items.isEmpty())
         assertFalse(result.hasMore)
     }
 
@@ -166,7 +166,7 @@ class DramaDiscoveryTest {
                     val body =
                         if (calls == 1) "Bad Gateway"
                         else
-                            """{"pageNum":2,"hasMore":false,"searchList":[{"series_id":"2","series_name":"第二页"}]}"""
+                            """{"pageNum":2,"hasMore":false,"searchList":[{"series_id":"2","series_name":"测试第二页"}]}"""
                     Response.Builder()
                         .request(chain.request())
                         .protocol(Protocol.HTTP_1_1)

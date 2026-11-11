@@ -553,7 +553,7 @@ class ContentRepositoryTest {
             assertEquals("2", request.url.queryParameter("page"))
             assertNull(request.url.queryParameter("tab_type"))
             assertNull(request.header("x-gorgon"))
-            """{"pageNum":2,"hasMore":true,"searchList":[{"video_data":{"series_id":"123","series_title":"真人短剧","episode_cnt":80}},{"video_data":{"series_id":"456","series_title":"动画漫剧","episode_cnt":100}}]}"""
+            """{"pageNum":2,"hasMore":true,"searchList":[{"video_data":{"series_id":"123","series_title":"大佬真人短剧","episode_cnt":80}},{"video_data":{"series_id":"456","series_title":"大佬动画漫剧","episode_cnt":100}}]}"""
         }
         val page = repo.searchAll("大佬", 2)
         assertEquals(listOf("123", "456"), page.items.map { it.id })

@@ -1,6 +1,6 @@
 # Kotlin 0.6.0：更直观的首页与更快的换集
 
-最低 Android 8.0 / API 26，包名 `com.hongguotv.nativeapp`，versionCode 6。单 APK，联网即用，无需 Docker 或额外服务；沿用发布签名，覆盖安装 0.5.0 可保留本机记录。
+最低 Android 8.0 / API 26，包名 `com.hongguotv.nativeapp`，versionCode 6。单 APK，安装后联网即用；沿用发布签名，覆盖安装 0.5.0 可保留本机记录。
 
 ## 本版变化
 

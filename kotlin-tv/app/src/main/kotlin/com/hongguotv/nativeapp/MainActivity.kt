@@ -327,6 +327,7 @@ class MainActivity : Activity() {
     private var currentRendition: Rendition? = null
     private var currentTiers: List<Rendition> = emptyList()
     private var autoDowngrades = 0
+    private val stallGuard = PlaybackStallGuard()
     private var lastPlaybackDiagnosticAt = 0L
     private val tick =
         object : Runnable {
@@ -346,11 +347,28 @@ class MainActivity : Activity() {
                         }
                         lastPlaybackDiagnosticAt = now
                     }
+                    player?.let { p ->
+                        val frames = p.videoDecoderCounters?.renderedOutputBufferCount
+                        if (stallGuard.offer(
+                            episodeId = detail?.episodes?.getOrNull(episodeIndex).orEmpty(),
+                            now = now,
+                            frames = frames,
+                            eligible = playbackReady && !waitingForFirstFrame && !playError &&
+                                pendingSeek == null && p.isPlaying && root.hasWindowFocus() &&
+                                p.playbackState == Player.STATE_READY && p.totalBufferedDuration >= 5000,
+                        )) {
+                            playerFailure(PlaybackException(
+                                "视频解码停滞，正在尝试兼容恢复", null,
+                                PlaybackException.ERROR_CODE_DECODING_FAILED,
+                            ))
+                        }
+                    }
                     if (player?.isPlaying == true && now - lastSaved > 5000) {
                         saveProgress()
                         lastSaved = now
                     }
                 }
+                if (screen != "player") stallGuard.suspendObservation()
                 main.postDelayed(this, 1000)
             }
         }
@@ -4940,6 +4958,7 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        stallGuard.suspendObservation()
         cancelNextSeason()
         searchSuggestions?.cancel()
         social.foreground(false)

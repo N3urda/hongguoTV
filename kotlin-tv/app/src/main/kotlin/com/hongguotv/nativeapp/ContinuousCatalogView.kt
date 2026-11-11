@@ -46,6 +46,12 @@ internal class ContinuousCatalogView(
 
     var onBrowsePosition: ((Int) -> Unit)? = null
     var onGridFocus: ((Boolean) -> Unit)? = null
+    private val fullTitle = TextView(context).apply {
+        textSize = 16f
+        setTextColor(Color.WHITE)
+        setPadding(dp(6), dp(4), dp(6), dp(8))
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+    }
     val grid =
         object : GridView(context) {
                 override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -135,7 +141,10 @@ internal class ContinuousCatalogView(
                     id: Long,
                 ) {
                     if (closed) return
-                    entries.getOrNull(position)?.let(selected)
+                    entries.getOrNull(position)?.let {
+                        fullTitle.text = it.title
+                        selected(it)
+                    }
                     paintFocus()
                     if (grid.hasFocus()) onBrowsePosition?.invoke(position)
                     if (
@@ -199,6 +208,7 @@ internal class ContinuousCatalogView(
                 }
             }
         )
+        addView(fullTitle, LayoutParams(-1, -2))
         addView(grid, LayoutParams(-1, 0, 1f))
         val footer = LinearLayout(context).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
         footer.addView(status, LayoutParams(0, -2, 1f))
@@ -251,11 +261,11 @@ internal class ContinuousCatalogView(
                 failed -> "重试加载"
                 else -> "加载更多"
             }
-        next.visibility = if (available && (!remoteNavigation || failed)) VISIBLE else GONE
+        next.visibility = if (available && (!remoteNavigation || failed || entries.isEmpty())) VISIBLE else GONE
         top.visibility = if (remoteNavigation) GONE else VISIBLE
         grid.nextFocusDownId =
             if (remoteNavigation) {
-                if (failed) next.id else grid.id
+                if (failed || entries.isEmpty()) next.id else grid.id
             } else if (available) next.id else top.id
     }
 
@@ -289,6 +299,7 @@ internal class ContinuousCatalogView(
         paintStatus()
         val index = entries.indexOfFirst { it.id == position?.id }.coerceAtLeast(0)
         grid.setSelection(if (entries.isEmpty()) AdapterView.INVALID_POSITION else index)
+        fullTitle.text = entries.getOrNull(index)?.title.orEmpty()
         entries.getOrNull(index)?.let(selected)
         post {
             if (closed) return@post
@@ -357,7 +368,7 @@ internal class ContinuousCatalogView(
     }
 
     fun enter() {
-        grid.requestFocus()
+        if (entries.isEmpty() && available) next.requestFocus() else grid.requestFocus()
     }
 
     fun close() {
