@@ -185,6 +185,7 @@ class MainActivity : Activity() {
 
     private val detailTrail = java.util.ArrayDeque<DetailVisit>()
     private var relatedSection: RelatedWorksView? = null
+    private var producerDialog: ProducerWorksDialog? = null
     private var accountFavoriteButton: TextView? = null
     private var reservationOnline = true
     private val reservationFilters = mutableListOf<View>()
@@ -675,6 +676,8 @@ class MainActivity : Activity() {
     }
 
     private fun releaseCatalogViews() {
+        producerDialog?.close()
+        producerDialog = null
         settingsAccountStatus = null
         settingsSidebar = emptyList()
         settingsRows = emptyList()
@@ -2035,6 +2038,8 @@ class MainActivity : Activity() {
                                 }
                             }
                         },
+                        covers = rows.map { it.series.cover },
+                        loadCover = ::loadCover,
                     )
                 }
             },
@@ -2722,6 +2727,25 @@ class MainActivity : Activity() {
                 ellipsize = TextUtils.TruncateAt.END
             }
         info.addView(synopsis)
+        var production: Producer? = null
+        var retryProducer: () -> Unit = {}
+        lateinit var producerButton: TextView
+        producerButton = addButton(info, "制作方 · 正在读取…") {
+            val producer = production
+            if (producer == null) retryProducer()
+            else {
+                producerDialog?.close()
+                producerDialog = ProducerWorksDialog(this, repository, producer, data.series, producerButton, ::loadCover) { target ->
+                    if (target.id != data.series.id) {
+                        if (detailTrail.size >= 10) detailTrail.removeFirst()
+                        detailTrail.addLast(DetailVisit(data, episodeIndex, group, detailCloudProgress, detailCloudScope))
+                        openDetail(target, fromRelated = true)
+                    }
+                }
+            }
+        }
+        producerButton.textSize = 13f
+        producerButton.isEnabled = false
         val actions = row()
         actions.setPadding(0, dp(12), 0, 0)
         info.addView(actions)
@@ -2895,7 +2919,9 @@ class MainActivity : Activity() {
             it.textSize = 13f
             it.setTextColor(muted)
         }
+        producerButton.nextFocusDownId = play.id
         primary.forEachIndexed { i, v ->
+            v.nextFocusUpId = producerButton.id
             v.nextFocusLeftId = primary.getOrNull(i - 1)?.id ?: v.id
             v.nextFocusRightId = primary.getOrNull(i + 1)?.id ?: v.id
             v.nextFocusDownId = secondaryActions[minOf(i, secondaryActions.lastIndex)].id
@@ -2911,9 +2937,23 @@ class MainActivity : Activity() {
         fun loadRelated(force: Boolean = false) {
             section.loading()
             work(
-                { repository.related(data.series.id, force) },
-                { rows -> section.show(RelatedWorks.ordered(data.series, rows)) },
-                { section.failed() },
+                {
+                    val related = runCatching { repository.related(data.series.id, force) }
+                    if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException()
+                    related to runCatching { repository.producer(data.series.id) }
+                },
+                { (related, credit) ->
+                    related.fold({ section.show(RelatedWorks.ordered(data.series, it)) }, { section.failed() })
+                    credit.fold({ producer ->
+                        production = producer
+                        producerButton.text = producer?.let { "制作方：${it.name} · 查看作品 ›" } ?: "制作方：暂无资料"
+                        producerButton.isEnabled = producer != null
+                    }, {
+                        producerButton.text = "制作方资料读取失败 · 重试"
+                        producerButton.isEnabled = true
+                    })
+                },
+                { section.failed(); producerButton.text = "制作方资料读取失败 · 重试"; producerButton.isEnabled = true },
             )
         }
         section =
@@ -2958,6 +2998,7 @@ class MainActivity : Activity() {
                 },
                 { loadRelated(true) },
             )
+        retryProducer = { loadRelated(true) }
         relatedSection = section
         content.addView(section)
         if (cloudAccount.signedIn && cloudAccount.reservationState(false).message == "尚未读取预约记录")

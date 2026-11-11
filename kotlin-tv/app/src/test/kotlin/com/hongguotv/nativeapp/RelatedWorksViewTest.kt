@@ -37,8 +37,9 @@ class RelatedWorksViewTest {
             val all = descendants(strip).filterIsInstance<TextView>().single { it.text.toString().startsWith("全部季 /") }
             all.performClick()
             val dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
-            descendants(dialog.window!!.decorView).filterIsInstance<TextView>()
-                .single { it.text.toString().startsWith("长剧第40季\n") }.performClick()
+            assertEquals(40, descendants(dialog.window!!.decorView).filter { it.tag?.toString()?.startsWith("all-") == true }
+                .sumOf { descendants(it).filterIsInstance<ImageView>().size })
+            descendants(dialog.window!!.decorView).single { it.tag == "all-40" }.performClick()
             assertEquals("40", selected?.series?.id)
             assertFalse(dialog.isShowing)
             all.performClick()
