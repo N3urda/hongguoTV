@@ -40,7 +40,12 @@ class ArtworkLoader(context: Context) {
         private const val MAX_BYTES = 4 * 1024 * 1024
     }
 
-    private data class Key(val url: String, val width: Int, val height: Int)
+    private data class Key(
+        val url: String,
+        val width: Int,
+        val height: Int,
+        val crop: Boolean = false,
+    )
 
     private class Binding(
         view: ImageView,
@@ -165,8 +170,14 @@ class ArtworkLoader(context: Context) {
         // A malformed layout cannot ask an old TV to allocate a full-screen, multi-megapixel
         // thumbnail.
         val scale = min(1.0, 1024.0 / max(width, height))
+        val crop = view.scaleType == ImageView.ScaleType.CENTER_CROP
         val key =
-            Key(binding.url, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
+            Key(
+                binding.url,
+                max(1, (width * scale).toInt()),
+                max(1, (height * scale).toInt()),
+                crop,
+            )
         if (binding.key != key) {
             detachJob(binding)
             binding.key = key
@@ -381,15 +392,24 @@ class ArtworkLoader(context: Context) {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth !in 1..32768 || bounds.outHeight !in 1..32768) return null
-        // Fit the entire source into the measured target. Cropping at decode time cannot be
-        // undone by ImageView.FIT_CENTER and used to remove most of a portrait poster.
-        val fit =
-            min(
-                1.0,
+        // Fit or cover the measured target without decode-time cropping; ImageView applies
+        // CENTER_CROP / FIT_CENTER framing cleanly at render time.
+        val targetScale =
+            if (job.key.crop)
+                max(
+                    job.key.width.toDouble() / bounds.outWidth,
+                    job.key.height.toDouble() / bounds.outHeight,
+                )
+            else
                 min(
                     job.key.width.toDouble() / bounds.outWidth,
                     job.key.height.toDouble() / bounds.outHeight,
-                ),
+                )
+        val maxEdge = max(1024, max(job.key.width, job.key.height) * 2)
+        val fit =
+            min(
+                1.0,
+                min(targetScale, maxEdge.toDouble() / max(bounds.outWidth, bounds.outHeight)),
             )
         val width = max(1, (bounds.outWidth * fit).toInt())
         val height = max(1, (bounds.outHeight * fit).toInt())

@@ -11,6 +11,7 @@ import android.view.ViewGroup
 import android.widget.*
 import com.hongguotv.core.RankPosition
 import com.hongguotv.core.Series
+import kotlin.math.roundToInt
 
 /** Framework GridView recycles offscreen cards; pagination never replaces the grid or its focus. */
 internal class ContinuousCatalogView(
@@ -36,7 +37,6 @@ internal class ContinuousCatalogView(
     private var navigating = false
     private var enterAdded = false
     private var restorePosition: Position? = null
-    private var itemHeightLimit = 0
     private var remoteNavigation = false
     private var sideEntry: View? = null
 
@@ -53,28 +53,19 @@ internal class ContinuousCatalogView(
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
     }
     val grid =
-        object : GridView(context) {
-                override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-                    itemHeightLimit = View.MeasureSpec.getSize(heightMeasureSpec) - dp(6)
-                    for (i in 0 until childCount) (getChildAt(i) as? CatalogPosterCard)?.fitHeight(
-                        itemHeightLimit
-                    )
-                    super.onMeasure(widthMeasureSpec, heightMeasureSpec)
-                }
-            }
-            .apply {
-                id = View.generateViewId()
-                numColumns = columns
-                stretchMode = GridView.STRETCH_COLUMN_WIDTH
-                horizontalSpacing = dp(14)
-                verticalSpacing = dp(10)
-                isVerticalScrollBarEnabled = false
-                clipToPadding = false
-                setPadding(dp(3), dp(3), dp(3), dp(3))
-                selector = android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)
-                descendantFocusability = FOCUS_BLOCK_DESCENDANTS
-                nextFocusUpId = upper.id
-            }
+        GridView(context).apply {
+            id = View.generateViewId()
+            numColumns = columns
+            stretchMode = GridView.STRETCH_COLUMN_WIDTH
+            horizontalSpacing = dp(14)
+            verticalSpacing = dp(10)
+            isVerticalScrollBarEnabled = false
+            clipToPadding = false
+            setPadding(dp(3), dp(3), dp(3), dp(3))
+            selector = android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)
+            descendantFocusability = FOCUS_BLOCK_DESCENDANTS
+            nextFocusUpId = upper.id
+        }
     private val status =
         TextView(context).apply {
             textSize = 13f
@@ -105,7 +96,6 @@ internal class ContinuousCatalogView(
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val item = entries[position]
                 return bind(item, convertView).apply {
-                    (this as? CatalogPosterCard)?.fitHeight(itemHeightLimit)
                     tag = item.id
                     isFocusable = false
                     isClickable = false
@@ -382,10 +372,10 @@ internal class ContinuousCatalogView(
 internal class CatalogPosterCard(context: Context) : LinearLayout(context) {
     val image =
         ImageView(context).apply {
-            scaleType = ImageView.ScaleType.FIT_CENTER
+            scaleType = ImageView.ScaleType.CENTER_CROP
             importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-    private val poster = FrameLayout(context)
+    val poster = FrameLayout(context)
     private val rank =
         TextView(context).apply {
             textSize = 13f
@@ -409,6 +399,8 @@ internal class CatalogPosterCard(context: Context) : LinearLayout(context) {
             minLines = 2
             maxLines = 2
             ellipsize = android.text.TextUtils.TruncateAt.END
+            val density = resources.displayMetrics.density
+            setPadding((2 * density).toInt(), (5 * density).toInt(), (2 * density).toInt(), 0)
         }
     private val badge =
         TextView(context).apply {
@@ -417,8 +409,9 @@ internal class CatalogPosterCard(context: Context) : LinearLayout(context) {
             includeFontPadding = false
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
+            val density = resources.displayMetrics.density
+            setPadding((2 * density).toInt(), (2 * density).toInt(), 0, 0)
         }
-    private var preferredHeight = 0
 
     init {
         orientation = VERTICAL
@@ -429,16 +422,30 @@ internal class CatalogPosterCard(context: Context) : LinearLayout(context) {
             (4 * density).toInt(),
             (9 * density).toInt(),
         )
-        val width = (resources.displayMetrics.widthPixels * .9f - 14 * density * 5) / 6
-        preferredHeight = (width / TvStyle.POSTER_ASPECT).toInt()
+        val defaultWidth =
+            ((resources.displayMetrics.widthPixels * .9f - 14 * density * 5) / 6 - 8 * density)
+                .coerceAtLeast(1f)
+        val defaultHeight = (defaultWidth / TvStyle.POSTER_ASPECT).roundToInt()
         poster.addView(image, FrameLayout.LayoutParams(-1, -1))
         poster.addView(
             rank,
             FrameLayout.LayoutParams(-2, -2, android.view.Gravity.TOP or android.view.Gravity.START),
         )
-        addView(poster, LayoutParams(-1, preferredHeight))
+        addView(poster, LayoutParams(-1, defaultHeight))
         addView(title)
         addView(badge)
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val cardWidth = MeasureSpec.getSize(widthMeasureSpec)
+        if (cardWidth > 0 && MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.UNSPECIFIED) {
+            val innerWidth = (cardWidth - paddingLeft - paddingRight).coerceAtLeast(1)
+            val targetHeight = (innerWidth / TvStyle.POSTER_ASPECT).roundToInt()
+            if (poster.layoutParams.height != targetHeight) {
+                poster.layoutParams.height = targetHeight
+            }
+        }
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
     }
 
     fun show(item: Series, position: RankPosition? = null) {
@@ -460,32 +467,5 @@ internal class CatalogPosterCard(context: Context) : LinearLayout(context) {
                 )
                 .filter { it.isNotBlank() }
                 .joinToString("，")
-    }
-
-    fun fitHeight(available: Int) {
-        if (available <= 0) return
-        val density = resources.displayMetrics.density
-        val minimumPoster = (32 * density).toInt()
-        val padding = paddingTop + paddingBottom + (8 * density).toInt()
-        val lines =
-            if (available >= padding + title.lineHeight * 2 + badge.lineHeight + minimumPoster) 2
-            else 1
-        if (title.minLines != lines) title.minLines = lines
-        if (title.maxLines != lines) title.maxLines = lines
-        badge.visibility =
-            if (available >= padding + title.lineHeight * lines + badge.lineHeight + minimumPoster)
-                VISIBLE
-            else GONE
-        val reserve =
-            padding +
-                title.lineHeight * lines +
-                if (badge.visibility == VISIBLE) badge.lineHeight else 0
-        val height =
-            minOf(
-                preferredHeight,
-                (available - reserve).coerceAtLeast((32 * resources.displayMetrics.density).toInt()),
-            )
-        if (poster.layoutParams.height != height)
-            poster.layoutParams = poster.layoutParams.apply { this.height = height }
     }
 }

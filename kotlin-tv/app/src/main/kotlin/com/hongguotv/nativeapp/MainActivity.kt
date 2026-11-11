@@ -29,6 +29,7 @@ import androidx.media3.ui.PlayerView
 import com.hongguotv.core.*
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : Activity() {
@@ -1541,10 +1542,13 @@ class MainActivity : Activity() {
                 catalogCards[item.id] = card
                 val position = if (tab == 2) ranking?.positions?.get(item.id) else null
                 val artwork = FrameLayout(this)
-                card.addView(artwork, lp(-1, ((width - dp(8)) / TvStyle.POSTER_ASPECT).toInt()))
+                card.addView(
+                    artwork,
+                    lp(-1, ((width - dp(8)) / TvStyle.POSTER_ASPECT).roundToInt()),
+                )
                 val image =
                     ImageView(this).apply {
-                        scaleType = ImageView.ScaleType.FIT_CENTER
+                        scaleType = ImageView.ScaleType.CENTER_CROP
                         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                     }
                 artwork.addView(image, FrameLayout.LayoutParams(-1, -1))
@@ -1653,7 +1657,8 @@ class MainActivity : Activity() {
                                     when {
                                         line.top < scroll.scrollY -> line.top
                                         line.bottom > scroll.scrollY + scroll.height ->
-                                            (line.bottom - scroll.height).coerceAtLeast(0)
+                                            if (line.height >= scroll.height) line.top
+                                            else (line.bottom - scroll.height).coerceAtLeast(0)
                                         else -> scroll.scrollY
                                     },
                                 )
@@ -1811,37 +1816,19 @@ class MainActivity : Activity() {
         val savedScroll = scrollPositions[catalogPageKey]
         scroll.post {
             if (catalogScroll !== scroll) return@post
-            cards.forEach { view ->
-                val card = view as LinearLayout
-                val image = card.getChildAt(0)
-                val textHeight =
-                    card.paddingTop +
-                        card.paddingBottom +
-                        (1 until card.childCount).sumOf { card.getChildAt(it).measuredHeight }
-                val target =
-                    minOf(
-                        ((width - dp(8)) / TvStyle.POSTER_ASPECT).toInt(),
-                        (scroll.height - textHeight - dp(4)).coerceAtLeast(dp(48)),
-                    )
-                if (image.layoutParams.height != target)
-                    image.layoutParams = image.layoutParams.apply { height = target }
+            savedScroll?.let { scroll.scrollTo(0, it) }
+            (cards.firstOrNull { it.hasFocus() }?.parent as? View)?.let { line ->
+                val y =
+                    when {
+                        line.top < scroll.scrollY -> line.top
+                        line.bottom > scroll.scrollY + scroll.height ->
+                            if (line.height >= scroll.height) line.top
+                            else line.bottom - scroll.height
+                        else -> scroll.scrollY
+                    }
+                scroll.scrollTo(0, y.coerceAtLeast(0))
             }
-            scroll.post settle@{
-                if (catalogScroll !== scroll) return@settle
-                savedScroll?.let { scroll.scrollTo(0, it) }
-                (cards.firstOrNull { it.hasFocus() }?.parent as? View)?.let { line ->
-                    val y =
-                        when {
-                            line.top < scroll.scrollY -> line.top
-                            line.bottom > scroll.scrollY + scroll.height ->
-                                if (line.height >= scroll.height) line.top
-                                else line.bottom - scroll.height
-                            else -> scroll.scrollY
-                        }
-                    scroll.scrollTo(0, y.coerceAtLeast(0))
-                }
-                restoringScroll = false
-            }
+            restoringScroll = false
         }
     }
 
@@ -2592,8 +2579,13 @@ class MainActivity : Activity() {
         val hero = row()
         hero.gravity = Gravity.TOP
         hero.setPadding(0, dp(12), 0, dp(12))
-        val image = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
-        hero.addView(image, lp(dp(123), dp(174)).apply { rightMargin = dp(24) })
+        val image = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+        hero.addView(
+            image,
+            lp(dp(123), (dp(123) / TvStyle.POSTER_ASPECT).roundToInt()).apply {
+                rightMargin = dp(24)
+            },
+        )
         loadCover(image, data.series.cover)
         val info = column()
         hero.addView(info, lp(0, -2).apply { weight = 1f })

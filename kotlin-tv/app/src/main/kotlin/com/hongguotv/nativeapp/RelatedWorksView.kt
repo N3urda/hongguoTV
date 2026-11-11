@@ -8,6 +8,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.*
 import com.hongguotv.core.RelatedWork
+import kotlin.math.roundToInt
 
 /** A remote-friendly, independently loaded strip below the episode grid. */
 internal class RelatedWorksView(
@@ -114,8 +115,13 @@ internal class RelatedWorksView(
                         setPadding(dp(5), dp(5), dp(5), dp(9))
                         background = TvStyle.card(context, false)
                     }
-                val image = ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
-                card.addView(image, LayoutParams(-1, dp(176)))
+                val image =
+                    ImageView(context).apply {
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+                    }
+                val posterHeight = ((dp(142) - dp(10)) / TvStyle.POSTER_ASPECT).roundToInt()
+                card.addView(image, LayoutParams(-1, posterHeight))
                 loadCover(image, work.series.cover)
                 card.addView(
                     label(work.series.title, 14f).apply {

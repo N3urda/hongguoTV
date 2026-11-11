@@ -83,18 +83,8 @@ internal class DiscoveryScreen(
                 more,
                 { if (!loading) request(state.next) },
             )
-        browser.onBrowsePosition = { position ->
-            if (!restoring) {
-                val header = getChildAt(0).height + scroll.height + summary.height
-                if (browseStep == 0)
-                    browseStep = (browser.grid.getChildAt(0)?.height ?: dp(180)) + dp(10)
-                val offset = if (state.expanded) minOf(header, (position / 6) * browseStep) else 0
-                if (headerOffset != offset) {
-                    headerOffset = offset
-                    requestLayout()
-                }
-            }
-        }
+        browser.onBrowsePosition = { position -> updateHeaderOffset(position) }
+        browser.onGridFocus = { focused -> if (focused) updateHeaderOffset() }
         browser.useRemoteNavigation()
         addView(browser, LayoutParams(-1, 0, 1f))
         renderFilters()
@@ -133,6 +123,30 @@ internal class DiscoveryScreen(
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         super.onLayout(changed, l, t, r, b + headerOffset)
         scrollTo(0, headerOffset)
+    }
+
+    private fun updateHeaderOffset(
+        position: Int = browser.grid.selectedItemPosition.coerceAtLeast(0)
+    ) {
+        if (restoring) return
+        val header = getChildAt(0).height + scroll.height + summary.height
+        if (header <= 0) return
+        val cardHeight = browser.grid.getChildAt(0)?.height ?: 0
+        if (browseStep == 0 && cardHeight > 0) browseStep = cardHeight + dp(10)
+        val step = if (browseStep > 0) browseStep else dp(180) + dp(10)
+        val row = position / 6
+        val offset =
+            if (!state.expanded) 0
+            else if (row > 0) minOf(header, row * step)
+            else if (browser.grid.hasFocus() && cardHeight > 0 && height > 0) {
+                val nonGrid = (browser.height - browser.grid.height).coerceAtLeast(0)
+                val baseGrid = height - header - nonGrid
+                (cardHeight + dp(6) - baseGrid).coerceIn(0, header)
+            } else 0
+        if (headerOffset != offset) {
+            headerOffset = offset
+            requestLayout()
+        }
     }
 
     override fun requestChildFocus(child: View, focused: View) {
