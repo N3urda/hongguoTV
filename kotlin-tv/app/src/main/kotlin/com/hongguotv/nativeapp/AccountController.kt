@@ -1101,7 +1101,10 @@ class AccountController(private val activity: Activity, private val play: (Cloud
             (listOf(progress.copy(episodeCount = episodes)) +
                     history.filterNot { it.series.id == progress.series.id })
                 .take(50)
-        changed()
+        // Saving the final homepage checkpoint can run while its view is being removed.
+        // Notify after that transition; a synchronous catalogue rebuild re-enters close().
+        val token = generation
+        main.post { if (!closed && token == generation) changed() }
         pending = progress to episodes
         lastProgress = pending
         if (draining) return

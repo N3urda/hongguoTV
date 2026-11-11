@@ -200,7 +200,7 @@ class FeedStartupCacheTest {
                 .addInterceptor { chain ->
                     val req = chain.request()
                     // 播放模型先读 video_tab 新接口；本用例只统计旧接口与视频分段请求。
-                    if (req.url.encodedPath.startsWith("/reading/bookapi/video_tab/"))
+                    if (req.url.encodedPath.startsWith("/novel/player/video_model/"))
                         return@addInterceptor Response.Builder()
                             .request(req)
                             .protocol(Protocol.HTTP_1_1)

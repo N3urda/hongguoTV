@@ -22,7 +22,7 @@ class ContentRepositoryTest {
         val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
         val http = OkHttpClient.Builder().addInterceptor { chain ->
             reads++
-            fixtureResponse(chain.request(), videoTabModel)
+            fixtureResponse(chain.request(), singleModel)
         }.build()
         val preview = ContentRepository(http, playbackSession = session)
         val fullscreen = ContentRepository(http, playbackSession = session)
@@ -43,7 +43,7 @@ class ContentRepositoryTest {
         val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
         val http = OkHttpClient.Builder().addInterceptor { chain ->
             reads++
-            fixtureResponse(chain.request(), videoTabModel)
+            fixtureResponse(chain.request(), singleModel)
         }.build()
         val preview = ContentRepository(http, clock = { now }, playbackSession = session)
         preview.streamLadder("123")
@@ -55,17 +55,17 @@ class ContentRepositoryTest {
     }
 
     @Test
-    fun sharedSessionPrefersWorkingPostBeforeRepeatingAnEmptyGet() {
+    fun sharedSessionPrefersWorkingBatchBeforeRepeatingAnEmptySingle() {
         val requests = mutableListOf<Request>()
         val http = OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
             requests += request
-            fixtureResponse(request, if (request.method == "GET") "" else batchPlaybackFixture(playbackRequestIds(request)))
+            fixtureResponse(request, if (request.url.encodedPath == "/novel/player/video_model/v1/") "" else batchPlaybackFixture(playbackRequestIds(request)))
         }.build()
         val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
         ContentRepository(http, playbackSession = session).streamLadder("123")
         ContentRepository(http, playbackSession = session).streamLadder("456")
-        assertEquals(listOf("GET", "POST", "POST"), requests.map { it.method })
+        assertEquals(listOf("POST", "POST", "POST"), requests.map { it.method })
         assertEquals("456", playbackRequestIds(requests.last()).single())
     }
 
@@ -85,7 +85,7 @@ class ContentRepositoryTest {
             val hit = (hits[key] ?: 0) + 1
             hits[key] = hit
             val body = if (hit > 1 || r.url.host == PlayRetryPlan.host(2)) ""
-                else if (r.method == "GET") videoTabModel else playbackModel
+                else if (r.url.encodedPath == "/novel/player/video_model/v1/") singleModel else playbackModel
             fixtureResponse(r, body)
         }.build()
         val repo = ContentRepository(http, playbackSession = session)
@@ -104,7 +104,7 @@ class ContentRepositoryTest {
         }
         val http = OkHttpClient.Builder().addInterceptor { chain ->
             calls++
-            fixtureResponse(chain.request(), if (registrations > 1) videoTabModel else "")
+            fixtureResponse(chain.request(), if (registrations > 1) singleModel else "")
         }.build()
         val repo = ContentRepository(http, playbackSession = session)
         repeat(5) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123", speculative = true) } }
@@ -151,7 +151,7 @@ class ContentRepositoryTest {
                     registrations++
                     fixtureResponse(request, """{"device_id":"333","install_id":"444"}""")
                 }
-                "/reading/bookapi/video_tab/multi_video_model/v1/" -> fixtureResponse(request, "")
+                "/novel/player/video_model/v1/" -> fixtureResponse(request, "")
                 else -> {
                     if (request.url.host == PlayRetryPlan.host(0)) throw java.net.SocketTimeoutException("test-only")
                     fixtureResponse(request, "")
@@ -161,7 +161,7 @@ class ContentRepositoryTest {
         val repo = ContentRepository(http, clock = { now })
         repeat(4) {
             val error = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-            assertTrue(error.detail.orEmpty().contains("G:b=200/0B/h1"))
+            assertTrue(error.detail.orEmpty().contains("S:b=200/0B/h1"))
             assertTrue(error.detail.orEmpty().contains("P:b=timeout"))
             assertFalse(error.detail.orEmpty().contains("rotated"))
             now += 31_000
@@ -194,7 +194,7 @@ class ContentRepositoryTest {
             if (registrations == 2) null else DeviceRegister.Registered("$registrations", "444")
         }
         val http = OkHttpClient.Builder().addInterceptor { chain ->
-            fixtureResponse(chain.request(), if (registrations >= 3) videoTabModel else "")
+            fixtureResponse(chain.request(), if (registrations >= 3) singleModel else "")
         }.build()
         val repo = ContentRepository(http, clock = { now }, playbackSession = session)
         repeat(4) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
@@ -217,7 +217,7 @@ class ContentRepositoryTest {
             else DeviceRegister.Registered("$registrations", "444")
         }
         val http = OkHttpClient.Builder().addInterceptor { chain ->
-            fixtureResponse(chain.request(), if (registrations >= 3) videoTabModel else "")
+            fixtureResponse(chain.request(), if (registrations >= 3) singleModel else "")
         }.build()
         val repo = ContentRepository(http, playbackSession = session)
         assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
@@ -258,8 +258,8 @@ class ContentRepositoryTest {
                     registrations++
                     fixtureResponse(request, """{"device_id":"${333 + registrations}","install_id":"${444 + registrations}"}""", setCookie = true)
                 }
-                "/reading/bookapi/video_tab/multi_video_model/v1/" ->
-                    fixtureResponse(request, if (registrations == 2 && allowPreferred) videoTabModel else "")
+                "/novel/player/video_model/v1/" ->
+                    fixtureResponse(request, if (registrations == 2 && allowPreferred) singleModel else "")
                 else -> { legacyCalls++; fixtureResponse(request, "") }
             }
         }.build()
@@ -314,7 +314,7 @@ class ContentRepositoryTest {
             DeviceRegister.Registered("333", "444")
         }
         val http = OkHttpClient.Builder().addInterceptor { chain ->
-            fixtureResponse(chain.request(), if (available) videoTabModel else "")
+            fixtureResponse(chain.request(), if (available) singleModel else "")
         }.build()
         val repo = ContentRepository(http, clock = { now }, playbackSession = session)
         repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
@@ -328,8 +328,8 @@ class ContentRepositoryTest {
         assertEquals(4, registrations.get())
     }
 
-    private val videoTabModel =
-        """{"code":0,"message":"SUCCESS","data":{"video_model_data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}}"""
+    private val singleModel =
+        """{"code":0,"message":"SUCCESS","data":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}"""
 
     @Test
     fun preferredVideoModelSignsAllParametersBeforeSending() {
@@ -337,23 +337,26 @@ class ContentRepositoryTest {
         val http = OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
             requests += request
-            fixtureResponse(request, videoTabModel)
+            fixtureResponse(request, singleModel)
         }.build()
         val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
         ContentRepository(http, playbackSession = session).streamLadder("123")
         val request = requests.single()
-        assertEquals("GET", request.method)
-        assertEquals("123", request.url.queryParameter("video_id"))
+        assertEquals("POST", request.method)
+        assertEquals("123", JSONObject(okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8()).getString("video_id"))
         assertEquals("333", request.url.queryParameter("device_id"))
         assertEquals("444", request.url.queryParameter("iid"))
         assertEquals(request.url.queryParameter("_rticket"), request.header("x-ss-req-ticket"))
         assertNull(request.url.queryParameter("ts"))
             assertTrue(kotlin.math.abs(request.header("x-khronos")!!.toLong() -
                 request.url.queryParameter("_rticket")!!.toLong() / 1000) <= 1)
-        for (header in listOf("x-gorgon", "x-medusa", "x-argus", "x-ladon", "x-khronos", "x-helios"))
+        for (header in listOf("x-gorgon", "x-argus", "x-ladon", "x-khronos", "x-ss-stub"))
             assertFalse(request.header(header).isNullOrBlank())
-        val ts = request.header("x-khronos")!!.toInt()
-        assertEquals(0, Signer().branch(request.url.encodedQuery!!, null, ts))
+        assertNull(request.header("Cookie"))
+        assertNull(request.header("x-medusa"))
+        assertNull(request.header("x-helios"))
+        assertTrue(java.util.Base64.getDecoder().decode(request.header("x-argus")).size > 100)
+        assertTrue(java.util.Base64.getDecoder().decode(request.header("x-ladon")).size > 20)
     }
 
     private fun fixtureResponse(request: Request, body: String, setCookie: Boolean = false) =
@@ -366,9 +369,9 @@ class ContentRepositoryTest {
             .body(body.toResponseBody())
             .build()
 
-    /** 2026-11-02 起官方 App 走 video_tab GET 接口；命中后不应再打旧 /novel/player 接口。 */
+    /** 单集接口命中后不应再请求旧批量接口。 */
     @Test
-    fun videoTabModelIsPreferredAndSkipsLegacyEndpoint() {
+    fun singleModelIsPreferredAndSkipsLegacyEndpoint() {
         val tabCalls = AtomicInteger()
         val legacyCalls = AtomicInteger()
         val http =
@@ -382,15 +385,14 @@ class ContentRepositoryTest {
                                 """{"device_id":"333","install_id":"444"}""",
                                 setCookie = true,
                             )
-                        "/reading/bookapi/video_tab/multi_video_model/v1/" -> {
+                        "/novel/player/video_model/v1/" -> {
                             tabCalls.incrementAndGet()
-                            // 官方 GetVideoModelRequest 的 snake_case 参数缺一即 100103。
-                            assertEquals("123", request.url.queryParameter("video_id"))
-                            assertEquals("0", request.url.queryParameter("video_id_type"))
-                            assertEquals("1", request.url.queryParameter("device_level"))
-                            assertEquals("1", request.url.queryParameter("need_all_video_definition"))
-                            assertEquals("1024", request.url.queryParameter("video_platform"))
-                            fixtureResponse(request, videoTabModel)
+                            val payload = JSONObject(okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8())
+                            assertEquals("123", payload.getString("video_id"))
+                            assertEquals(1, payload.getInt("content_type"))
+                            assertEquals(3, payload.getJSONObject("biz_param").getInt("video_platform"))
+                            assertTrue(payload.getJSONObject("biz_param").getBoolean("need_all_video_definition"))
+                            fixtureResponse(request, singleModel)
                         }
                         "/novel/player/multi_video_model/v1/" -> {
                             legacyCalls.incrementAndGet()
@@ -409,7 +411,7 @@ class ContentRepositoryTest {
 
     /** 新接口参数不合法或降级时回退旧接口，不改变既有空响应恢复路径。 */
     @Test
-    fun videoTabParamInvalidFallsBackToLegacyEndpoint() {
+    fun singleParamInvalidFallsBackToLegacyEndpoint() {
         val legacyCalls = AtomicInteger()
         val http =
             OkHttpClient.Builder()
@@ -422,7 +424,7 @@ class ContentRepositoryTest {
                                 """{"device_id":"333","install_id":"444"}""",
                                 setCookie = true,
                             )
-                        "/reading/bookapi/video_tab/multi_video_model/v1/" ->
+                        "/novel/player/video_model/v1/" ->
                             fixtureResponse(
                                 request,
                                 """{"code":100103,"message":"PARAM_INVALID","data":null}""",
@@ -605,7 +607,7 @@ class ContentRepositoryTest {
         }
         for (request in requests) {
             assertEquals("POST", request.method)
-            for (header in listOf("x-gorgon", "x-medusa", "x-argus", "x-ladon", "x-khronos", "x-helios")) assertNotNull(
+            for (header in listOf("x-gorgon", "x-argus", "x-ladon", "x-khronos", "x-ss-stub")) assertNotNull(
                 request.header(header)
             )
             assertTrue(request.header("User-Agent").orEmpty().startsWith("com.phoenix.read/"))
@@ -988,10 +990,10 @@ class ContentRepositoryTest {
             OkHttpClient.Builder()
                 .addInterceptor { chain ->
                     val request = chain.request()
-                    // 本轮起播放先读 video_tab 新接口；只用例覆盖旧接口行为，统一让它回 100103
+                    // 此辅助方法专门覆盖旧批量回退，单集接口统一返回 100103
                     // 让调用方回退，且不进入用例自己的请求计数。
                     val body =
-                        if (request.url.encodedPath.startsWith("/reading/bookapi/video_tab/"))
+                        if (request.url.encodedPath.startsWith("/novel/player/video_model/"))
                             """{"code":100103,"message":"PARAM_INVALID","data":null}"""
                         else respond(request)
                     Response.Builder()

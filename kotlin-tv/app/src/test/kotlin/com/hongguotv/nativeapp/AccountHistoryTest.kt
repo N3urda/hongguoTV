@@ -17,6 +17,31 @@ import org.robolectric.annotation.LooperMode
 @LooperMode(LooperMode.Mode.PAUSED)
 @GraphicsMode(GraphicsMode.Mode.LEGACY)
 class AccountHistoryTest {
+    @Test fun uploadNotifiesAfterCheckpointIsQueuedWithoutReenteringViewTransition() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup()
+        val account = AccountController(activity.get()) {}
+        try {
+            field(account, "generation", 1) // Ignore the asynchronous initial store read.
+            field(account, "credentials", AccountCredentials("test-only"))
+            field(account, "profile", CloudProfile("a", "测试账户"))
+            field(account, "draining", true) // No network in this notification regression.
+            val progress = CloudProgress(Series("123", "测试作品"), "456", 0, 12000, 60000, 1)
+            var notifications = 0
+            account.onHistoryChanged = {
+                notifications++
+                assertEquals(progress.copy(episodeCount = 10), account.progress("123"))
+            }
+            account.upload(progress, 10, true)
+            assertEquals(0, notifications)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertEquals(1, notifications)
+        } finally {
+            field(account, "lastProgress", null)
+            account.destroy()
+            activity.pause().stop().destroy()
+        }
+    }
+
     private fun field(account: AccountController, name: String, value: Any?) {
         AccountController::class
             .java
