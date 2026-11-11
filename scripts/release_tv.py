@@ -15,7 +15,7 @@ REPOSITORY = 'N3urda/hongguoTV'
 PACKAGE = 'com.hongguotv.nativeapp'
 CERTIFICATE = '3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98'
 ROOT = Path(__file__).resolve().parents[1]
-NOTES = '首页横向卡片直接播放与同剧连续播放；修复播放接口空响应和登录后切页崩溃；启动后延迟、串行预加载榜单、找剧、封面及详情，操作与缓冲时让路；首页预热下一集，保留 Android 5 支持。扫码、短信登录及预约/云端进度已验证。'
+NOTES = '首页进入即播放，返回可选集；右滑提前补充卡片，统一首页与目录视觉并保留顶部导航；补齐相关剧集及预约封面，新增制作方入口和经核验的作品列表。官方作品搜索暂不可用时提供提示与重试，暂不保证完整作品目录。继续支持 Android 5.0+ 和原证书覆盖升级。'
 
 
 def require(condition, message):
@@ -137,7 +137,7 @@ def prepare(tag):
         bundle.write(archive, f'hongguotv-{tag}/third-party/{archive.name}')
     checks = out / 'SHA256SUMS'
     checks.write_text(''.join(f'{sha256(p)}  {p.name}\n' for p in (apk, source, manifest)))
-    (out / 'release-notes.md').write_text(f'''红果 TV {version}（versionCode {code}），Android 5.0+。\n\n{NOTES}\n\n原发布证书签名，可同签名覆盖安装并保留本机记录。旧 0.9 更新器不识别 API21 元数据，首次需手动安装，请勿先卸载。\n\n源码提交：{commit}。附 APK、对应完整源码 ZIP（含 GPL-3.0 和第三方许可）、update.json、SHA256SUMS。验收基于 Android 模拟器，不代表覆盖所有厂商真机。\n\n构建要求与步骤见源码 kotlin-tv/AUTO_UPDATES.md；版本取自该标签的 Gradle 配置，不使用运行次数改写版本。\n''')
+    (out / 'release-notes.md').write_text(f'''红果 TV {version}（versionCode {code}），Android 5.0+。\n\n{NOTES}\n\n原发布证书签名，可同签名覆盖安装并保留本机记录。旧 0.9 更新器不识别 API21 元数据，首次需手动安装，请勿先卸载。\n\n源码提交：{commit}。附 APK、对应完整源码 ZIP（含 GPL-3.0 和第三方许可）、update.json、SHA256SUMS。已通过自动化测试、Release 静态检查和正式签名构建；电视真机兼容性由设备测试继续验证。\n\n构建要求与步骤见源码 kotlin-tv/AUTO_UPDATES.md；版本取自该标签的 Gradle 配置，不使用运行次数改写版本。\n''')
     return data, [apk, source, manifest, checks]
 
 

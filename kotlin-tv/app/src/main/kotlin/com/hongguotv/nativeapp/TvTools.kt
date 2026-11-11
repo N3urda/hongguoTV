@@ -109,6 +109,8 @@ class TvTools(private val activity: Activity) {
         extra: String? = null,
         compact: Boolean = false,
         selected: Int = -1,
+        covers: List<String> = emptyList(),
+        loadCover: (ImageView, String) -> Unit = { _, _ -> },
         onExtra: () -> Unit = {},
     ) {
         require(labels.isNotEmpty())
@@ -148,6 +150,14 @@ class TvTools(private val activity: Activity) {
                 gravity = Gravity.CENTER
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 setPadding(0, 0, 0, 0)
+            }
+            covers.getOrNull(choices.size)?.takeIf { it.isNotBlank() }?.let { url ->
+                val poster = ImageView(activity).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                }
+                row.addView(poster, LinearLayout.LayoutParams(dp(54), dp(72)).apply { rightMargin = dp(12) })
+                loadCover(poster, url)
             }
             row.addView(name, LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(marker, LinearLayout.LayoutParams(dp(26), -2))

@@ -707,6 +707,52 @@ constructor(
         return CatalogPage(valid(list), tab.optBoolean("has_more", false) && page < 100)
     }
 
+    private val producerCredits = linkedMapOf<String, ProducerCredit>()
+
+    private fun producerMetadata(ids: List<String>): Map<String, ProducerCredit> {
+        require(ids.all { it.matches(Regex("[0-9]{1,30}")) })
+        val result = synchronized(producerCredits) { producerCredits.filterKeys { it in ids } }.toMutableMap()
+        for (batch in ids.distinct().filterNot { it in result }.chunked(20)) {
+            val signed = signer.sign(
+                "https://api5-normal-sinfonlinec.fqnovel.com/reading/bookapi/multi-detail/v1/",
+                VendorConstants.device + mapOf("book_id" to batch.joinToString(","), "book_type" to "2"),
+            )
+            val rows = Producers.parse(JSONObject(text(signed.url, signed))).filterKeys { it in batch }
+            result.putAll(rows)
+            synchronized(producerCredits) {
+                producerCredits.putAll(rows)
+                while (producerCredits.size > 200) producerCredits.remove(producerCredits.keys.first())
+            }
+        }
+        return result
+    }
+
+    fun producer(id: String): Producer? = producerMetadata(listOf(id))[id]?.producer
+
+    /** Known related works are useful even when the upstream search service is unavailable. */
+    fun relatedProducerWorks(producer: Producer, current: Series): List<Series> {
+        val candidates = listOf(current) + related(current.id).filterNot { it.upcoming }.map { it.series }
+        return Producers.verified(producer, candidates, producerMetadata(candidates.map { it.id }))
+    }
+
+    /** Search is a candidate source, never proof of attribution or a complete filmography. */
+    fun producerWorks(producer: Producer, page: Int = 1): ProducerPage {
+        require(producer.name.isNotBlank() && producer.name.length <= 200 && page in 1..100)
+        val raw = JSONObject(text("$site/api/search/result?query=${Signer.encode(producer.name)}&page=$page"))
+        val rows = raw.optJSONArray("searchList") ?: throw IOException("制作方作品检索暂不可用，请稍后重试")
+        if (raw.has("pageNum") && raw.optInt("pageNum") != page) throw IOException("作品页码不匹配，请重新打开")
+        val candidates = valid(rows.objects().filter {
+            it.optJSONObject("video_data")?.str("genre") in listOf("203", "205")
+        }.map(::card))
+        val verified = Producers.verified(producer, candidates, producerMetadata(candidates.map { it.id }))
+        val more = when {
+            raw.has("hasMore") -> raw.optBoolean("hasMore")
+            raw.optInt("totalPages") > 0 -> page < raw.optInt("totalPages")
+            else -> rows.length() > 0
+        }
+        return ProducerPage(verified, more && page < 100)
+    }
+
     private val relatedCache = linkedMapOf<String, List<RelatedWork>>()
 
     fun related(id: String, force: Boolean = false): List<RelatedWork> {

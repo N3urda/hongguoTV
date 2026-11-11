@@ -82,7 +82,7 @@ class CloudResumePlaybackTest {
         }
     }
 
-    private fun open(activity: MainActivity, resume: Boolean, remote: CloudProgress? = null) {
+    private fun open(activity: MainActivity, resume: Boolean, remote: CloudProgress? = null, fromHome: Boolean = false) {
         MainActivity::class
             .java
             .getDeclaredMethod(
@@ -92,9 +92,10 @@ class CloudResumePlaybackTest {
                 Boolean::class.javaPrimitiveType,
                 CloudProgress::class.java,
                 Boolean::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType,
             )
             .apply { isAccessible = true }
-            .invoke(activity, series, resume, true, remote, false)
+            .invoke(activity, series, resume, true, remote, false, fromHome)
         (get(activity, "workJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
         ShadowLooper.idleMainLooper()
     }
@@ -104,6 +105,19 @@ class CloudResumePlaybackTest {
         assertEquals(index, get(activity, "episodeIndex"))
         assertEquals(position, get(activity, "startPosition"))
     }
+
+    @Test
+    fun homeStartsPlaybackAndBackOpensEpisodesEvenWithControlsVisible() =
+        fixture { activity, _, _ ->
+            open(activity, true, fromHome = true)
+            assertPlayback(activity, 2, 45000)
+            assertEquals(false, get(activity, "directPlayback"))
+            set(activity, "waitingForFirstFrame", false)
+            (get(activity, "hud") as View).visibility = View.VISIBLE
+            MainActivity::class.java.getDeclaredMethod("goBack").apply { isAccessible = true }.invoke(activity)
+            assertEquals("detail", get(activity, "screen"))
+            assertEquals(false, get(activity, "homePlayback"))
+        }
 
     @Test
     fun cloudHistoryUsesItsEpisodeNumberAndPositionEvenWhenIdsDiffer() =

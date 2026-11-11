@@ -173,19 +173,33 @@ internal class RelatedWorksView(
         panel.addView(label("全部季 / 相关作品 · ${rows.size} 项", 20f))
         val grid = GridLayout(context).apply { columnCount = 4 }
         val cells = rows.map { work ->
-            label(work.series.title + "\n" + work.label, 13f).apply {
+            LinearLayout(context).apply {
+                orientation = VERTICAL
                 id = View.generateViewId()
                 isFocusable = true
-                maxLines = 3
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), dp(6), dp(10), dp(6))
+                setPadding(dp(6), dp(6), dp(6), dp(6))
                 background = TvStyle.card(context, false)
                 contentDescription = work.series.title + "，" + work.label
-                setOnFocusChangeListener { v, focused -> v.background = TvStyle.card(context, focused) }
+                tag = "all-${work.series.id}"
+                val poster = ImageView(context).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+                }
+                addView(poster, LayoutParams(-1, dp(164)))
+                loadCover(poster, work.series.cover)
+                addView(label(work.series.title, 13f).apply {
+                    maxLines = 2
+                    minLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                addView(label(if (work.upcoming) reserveLabel(work) else work.label, 12f))
+                setOnFocusChangeListener { v, focused ->
+                    v.background = TvStyle.card(context, focused)
+                    if (focused) loadCover(poster, work.series.cover)
+                }
                 setOnClickListener { allDialog?.dismiss(); open(work, anchor) }
             }.also { cell -> grid.addView(cell, GridLayout.LayoutParams().apply {
-                width = dp(148); height = dp(76)
+                width = dp(148); height = -2
                 setMargins(dp(4), dp(4), dp(4), dp(4))
             }) }
         }

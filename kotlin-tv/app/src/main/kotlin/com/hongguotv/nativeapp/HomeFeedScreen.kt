@@ -57,7 +57,13 @@ internal class HomeFeedScreen(
     private var nextEpisodeAttempts = 0
     private var nextEpisodeRetryAt = 0L
     private var prefetchGeneration = 0
-    private var attemptedBatch = 0
+    private val catalogWorker = Executors.newSingleThreadExecutor()
+    private var catalogScope: RequestScope? = null
+    private var catalogJob: java.util.concurrent.Future<*>? = null
+    private var catalogGeneration = 0
+    private var catalogRetryAt = 0L
+    private var catalogFailed = false
+    private var advanceWhenReady = false
     private var prefetchSeries: String? = null
     private var prefetchReadyAt = 0L
     private var clip: TrialClip? = null
@@ -89,7 +95,7 @@ internal class HomeFeedScreen(
     private lateinit var previousCard: View
     private lateinit var nextCard: View
     private var slideDirection = 1
-    private val positionLabel = label("正在发现好剧", 12f, Color.rgb(103, 211, 255))
+    private val positionLabel = label("正在发现好剧", 12f, TvVisual.accent)
     private lateinit var relatedButton: TextView
     private var describedId: String? = null
     private val relatedCounts = linkedMapOf<String, Pair<Int, Int>>()
@@ -119,10 +125,10 @@ internal class HomeFeedScreen(
         }.also { main.postDelayed(it, 1000) }
     }
     private val title = label("发现下一部好剧", 25f)
-    private val meta = label("首页播放", 13f, Color.rgb(103, 211, 255))
+    private val meta = label("首页播放", 13f, TvVisual.accent)
     private val intro = label("左右换剧，当前作品自动连播。", 15f, TvStyle.muted)
     private val status = label("正在准备热门作品…", 15f)
-    private val tag = label("热门发现", 12f, Color.rgb(103, 211, 255))
+    private val tag = label("热门发现", 12f, TvVisual.accent)
     private val info = LinearLayout(activity).apply { orientation = VERTICAL; gravity = Gravity.CENTER_VERTICAL }
     private val actions = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
     private val buttons = mutableListOf<TextView>()
@@ -158,14 +164,14 @@ internal class HomeFeedScreen(
             }
             minHeight = dp(44)
             setPadding(dp(10), dp(10), dp(10), dp(10))
-            background = HomeGlass.panel(activity)
+            background = TvVisual.panel(activity)
             setOnFocusChangeListener { _, _ -> paintButton(this) }
             setOnClickListener { action() }
         }
 
     private fun paintButton(button: TextView) {
-        button.background = HomeGlass.panel(activity, button.hasFocus(), button.isSelected)
-        button.setTextColor(if (button.isSelected) Color.rgb(103, 211, 255) else TvStyle.text)
+        button.background = TvVisual.row(activity, button.hasFocus(), button.isSelected)
+        button.setTextColor(if (button.isSelected) TvVisual.accent else TvStyle.text)
         button.setTypeface(null, if (button.isSelected) Typeface.BOLD else Typeface.NORMAL)
     }
 
@@ -179,6 +185,7 @@ internal class HomeFeedScreen(
                 if (!state.recommendation) {
                     clearCurrent()
                     clearCache()
+                    cancelCatalog()
                     state.recommend()
                     describe()
                     if (state.current != null) loadCurrent() else loadPage(false)
@@ -191,6 +198,7 @@ internal class HomeFeedScreen(
                 clearCurrent()
                 clearCache()
                 val restart = exhaustedCursors.remove(state.recommendationCursor)
+                cancelCatalog()
                 state.refresh(restartCurrentSource = restart)
                 describe()
                 loadPage(false, resetSource = restart)
@@ -212,12 +220,10 @@ internal class HomeFeedScreen(
         addView(types, lp(-1, dp(48)))
         val carousel = FrameLayout(activity).apply { clipChildren = false; clipToPadding = false }
         fun side(image: ImageView, caption: TextView, delta: Int): View = FrameLayout(activity).apply {
-            background = HomeGlass.panel(activity)
+            background = TvVisual.panel(activity)
             clipToOutline = true
-            alpha = .6f
-            scaleY = .84f
-            rotationY = if (delta < 0) 10f else -10f
-            cameraDistance = dp(6000).toFloat()
+            alpha = .85f
+            scaleY = .94f
             addView(image, FrameLayout.LayoutParams(-1, -1))
             addView(View(activity).apply {
                 background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
@@ -238,7 +244,7 @@ internal class HomeFeedScreen(
         nextCard = side(nextCover, nextTitle, 1)
         carousel.addView(previousCard, FrameLayout.LayoutParams(dp(112), -1, Gravity.START))
         carousel.addView(nextCard, FrameLayout.LayoutParams(dp(112), -1, Gravity.END))
-        hero.background = HomeGlass.panel(activity)
+        hero.background = TvVisual.panel(activity)
         hero.clipToOutline = true
         hero.elevation = dp(8).toFloat()
         hero.setPadding(dp(2), dp(2), dp(2), dp(2))
@@ -250,14 +256,14 @@ internal class HomeFeedScreen(
         val body = LinearLayout(activity).apply { orientation = VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(4)) }
         hero.addView(body, FrameLayout.LayoutParams(-1, -1))
         tag.setPadding(dp(10), dp(5), dp(10), dp(5))
-        tag.background = HomeGlass.panel(activity, selected = true)
+        tag.background = TvVisual.row(activity, false, selected = true)
 
         val content = LinearLayout(activity).apply { setPadding(0, 0, 0, 0) }
         stage.isFocusable = true
         stage.isFocusableInTouchMode = true
         stage.isClickable = true
         stage.contentDescription = "左右换剧，确定暂停或继续，下键进入操作"
-        stage.background = HomeGlass.panel(activity)
+        stage.background = TvVisual.panel(activity)
         stage.clipToOutline = true
         stage.addView(playback.view, FrameLayout.LayoutParams(-1, -1))
         stage.addView(poster, FrameLayout.LayoutParams(-1, -1))
@@ -293,7 +299,7 @@ internal class HomeFeedScreen(
         })
         addView(carousel, lp(-1, 0).apply { weight = 1f })
         watchButton =
-            button("详情 / 选集") { openCurrent() }
+            button("播放全集") { openCurrent() }
         favoriteButton =
             button("账户收藏") {
                 state.current?.let {
@@ -346,7 +352,7 @@ internal class HomeFeedScreen(
                     .id
         }
         stage.setOnFocusChangeListener { _, focused ->
-            hero.background = HomeGlass.panel(activity, focused)
+            hero.background = TvStyle.card(activity, focused)
             hero.animate().translationZ(if (focused) dp(4).toFloat() else 0f).setDuration(180).start()
         }
         stage.setOnClickListener { toggle() }
@@ -419,6 +425,7 @@ internal class HomeFeedScreen(
         object : Runnable {
             override fun run() {
                 if (!active || closed) return
+                ensureNextWorks()
                 prefetchUpcoming()
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (now - lastCheckpoint >= 5000) { remember(); lastCheckpoint = now }
@@ -448,6 +455,7 @@ internal class HomeFeedScreen(
         if (closed) return
         remember(force = true)
         active = false
+        cancelCatalog()
         main.removeCallbacks(prefetchPoll)
         relatedProbe?.let(main::removeCallbacks)
         relatedScope?.cancel()
@@ -528,8 +536,8 @@ internal class HomeFeedScreen(
             hero.animate().alpha(1f).translationX(0f).setDuration(240).start()
         }
         fun bindSide(image: ImageView, caption: TextView, card: View, item: Series?) {
-            card.visibility = if (item == null) View.INVISIBLE else View.VISIBLE
-            caption.text = item?.title.orEmpty()
+            card.visibility = if (item == null && card === previousCard) View.INVISIBLE else View.VISIBLE
+            caption.text = item?.title ?: if (catalogFailed) "继续发现\n按右键重试" else "下一部\n正在加载…"
             val url = item?.cover.orEmpty()
             if (image.tag != url) {
                 image.tag = url
@@ -539,6 +547,7 @@ internal class HomeFeedScreen(
         }
         bindSide(previousCover, previousTitle, previousCard, state.items.getOrNull(state.index - 1))
         bindSide(nextCover, nextTitle, nextCard, state.next)
+        ensureNextWorks()
         positionLabel.text = if (series == null) "正在发现好剧" else "第 ${state.index + 1} 部 · 左右换剧 · ${if (autoNext) "自动连播下一集" else "播完本集停止"}"
         title.text = series?.title ?: "发现下一部好剧"
         meta.text =
@@ -594,7 +603,6 @@ internal class HomeFeedScreen(
         nextEpisode = null
         nextEpisodeAttempts = 0
         nextEpisodeRetryAt = 0
-        attemptedBatch = 0
         prefetchSeries = null
         prefetchReadyAt = 0
     }
@@ -936,16 +944,7 @@ internal class HomeFeedScreen(
         }
         val upcoming = state.items.drop(state.index + 1).take(3)
         val next = upcoming.take(depth).firstOrNull { it.id !in cachedTrials && it.id !in attemptedPrefetch }
-        if (next == null) {
-            if (
-                upcoming.size < depth &&
-                    state.hasMore &&
-                    state.page < 100 &&
-                    attemptedBatch != state.page + 1
-            )
-                prefetchBatch()
-            return
-        }
+        if (next == null) return
         attemptedPrefetch += next.id
         prefetchTarget = next.id
         val token = prefetchGeneration
@@ -1007,40 +1006,63 @@ internal class HomeFeedScreen(
         }
     }
 
-    private fun prefetchBatch() {
+    private fun cancelCatalog() {
+        catalogGeneration++
+        catalogScope?.cancel()
+        catalogScope = null
+        catalogJob?.cancel(true)
+        catalogJob = null
+        advanceWhenReady = false
+        catalogRetryAt = 0L
+        catalogFailed = false
+    }
+
+    /** Metadata has its own lane: a paused or failed video must not empty the carousel. */
+    private fun ensureNextWorks(advance: Boolean = false) {
+        if (!active || closed || state.current == null) return
+        if (advance) { advanceWhenReady = true; catalogRetryAt = 0L }
+        if (catalogJob != null || state.items.size - state.index - 1 > 5 ||
+            android.os.SystemClock.elapsedRealtime() < catalogRetryAt) return
+        val restart = !state.hasMore || state.page >= 100
+        if (restart) state.continueBatch()
         val page = state.page + 1
-        attemptedBatch = page
+        val cursor = state.recommendationCursor
         val category = state.category
         val recommendation = state.recommendation
-        val cursor = state.recommendationCursor
-        val token = prefetchGeneration
-        val requestScope = RequestScope()
-        prefetchScope = requestScope
-        prefetchJob =
-            worker.submit {
-                val result =
-                    runCatching {
-                            requestScope.run {
-                                if (recommendation) backend.recommendations(page, cursor)
-                                else backend.categoryRecommendations(category, page, cursor)
-                            }
-                        }
-                        .getOrNull()
-                main.post {
-                    if (closed || !active || token != prefetchGeneration) return@post
-                    prefetchJob = null
-                    prefetchScope = null
-                    if (result != null && page == state.page + 1) {
-                        state.append(result, page)
-                        describe()
-                        prefetchUpcoming()
-                    }
+        val token = catalogGeneration
+        val request = RequestScope()
+        catalogScope = request
+        catalogFailed = false
+        catalogJob = catalogWorker.submit {
+            val result = runCatching { request.run {
+                if (restart) backend.resetRecommendations(if (recommendation) null else category)
+                if (recommendation) backend.recommendations(page, cursor)
+                else backend.categoryRecommendations(category, page, cursor)
+            } }
+            main.post {
+                if (closed || !active || token != catalogGeneration || cursor !== state.recommendationCursor) return@post
+                catalogJob = null
+                catalogScope = null
+                val before = state.items.map { it.id }.toSet()
+                val batch = result.getOrNull()
+                if (batch != null && page == state.page + 1) state.append(batch, page)
+                val added = batch?.items?.any { it.id !in before } == true
+                if (!added) {
+                    catalogFailed = true
+                    catalogRetryAt = android.os.SystemClock.elapsedRealtime() + 15_000
+                    if (result.exceptionOrNull() is NoNewRecommendationsException) state.continueBatch()
                 }
+                val advanceNow = advanceWhenReady && state.next != null
+                advanceWhenReady = false
+                describe()
+                if (advanceNow) move(1)
             }
+        }
     }
 
     private fun move(delta: Int) {
         if (closed || !active) return
+        if (delta < 0 || state.next != null) advanceWhenReady = false
         slideDirection = delta
         if (delta < 0 && state.index == 0) {
             status.visibility = View.VISIBLE
@@ -1048,14 +1070,9 @@ internal class HomeFeedScreen(
             return
         }
         if (delta > 0 && state.next == null) {
-            if (loading) return
-            if (!state.hasMore) {
-                status.visibility = View.VISIBLE
-                status.text = "本批作品已看完，可切换类型继续发现"
-                return
-            }
-            clearCurrent()
-            loadPage(true)
+            ensureNextWorks(advance = true)
+            nextTitle.text = "下一部\n正在加载…"
+            nextCard.visibility = View.VISIBLE
             return
         }
         val target = state.items.getOrNull(state.index + delta) ?: return
@@ -1110,9 +1127,9 @@ internal class HomeFeedScreen(
     private fun changeType(category: DramaCategory) {
         if (!state.recommendation && state.category == category) return
         clearCurrent()
+        cancelCatalog()
         state.select(category)
         clearCache()
-        stage.requestFocus()
         describe()
         if (state.current != null) loadCurrent() else loadPage(false)
     }
@@ -1120,6 +1137,7 @@ internal class HomeFeedScreen(
     override fun close() {
         if (closed) return
         closed = true
+        cancelCatalog()
         main.removeCallbacks(prefetchPoll)
         relatedProbe?.let(main::removeCallbacks)
         relatedScope?.cancel()
@@ -1133,5 +1151,6 @@ internal class HomeFeedScreen(
         playback.release()
         backend.close()
         worker.shutdownNow()
+        catalogWorker.shutdownNow()
     }
 }
