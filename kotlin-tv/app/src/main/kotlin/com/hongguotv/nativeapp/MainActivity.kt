@@ -29,6 +29,7 @@ import androidx.media3.ui.PlayerView
 import com.hongguotv.core.*
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : Activity() {
@@ -141,6 +142,7 @@ class MainActivity : Activity() {
     private var tvSearchOpen = false
     private val discoveryBrowser = DiscoveryBrowserState()
     private var discoveryScreen: DiscoveryScreen? = null
+    private var rankingScreen: RankingScreen? = null
     private lateinit var tvTools: TvTools
     private lateinit var updater: AppUpdater
 
@@ -652,6 +654,8 @@ class MainActivity : Activity() {
         tvSearchPanel = null
         discoveryScreen?.close()
         discoveryScreen = null
+        rankingScreen?.close()
+        rankingScreen = null
         continuousCatalog?.let { view ->
             view.capture()?.let { continuousPositions[continuousKey] = it }
             view.close()
@@ -1031,6 +1035,7 @@ class MainActivity : Activity() {
                         }
                     },
                 )
+            rankingScreen = ranks
             container.addView(ranks, lp(-1, 0).apply { weight = 1f })
             ranks.start(load, focusNav)
             return
@@ -1206,7 +1211,7 @@ class MainActivity : Activity() {
                 )
             }
         } else if (tab > 2) {
-            val heading = row().apply { setPadding(0, dp(12), 0, dp(6)) }
+            val heading = row().apply { setPadding(0, dp(4), 0, dp(4)) }
             heading.addView(
                 text(
                         when (tab) {
@@ -1214,7 +1219,7 @@ class MainActivity : Activity() {
                             4 -> "观看历史"
                             else -> "账户预约"
                         },
-                        25f,
+                        22f,
                     )
                     .apply { setTypeface(null, Typeface.BOLD) },
                 lp(0, -2).apply { weight = 1f },
@@ -1268,7 +1273,7 @@ class MainActivity : Activity() {
             }
             container.addView(heading)
             if (tab == 3 || tab == 4) {
-                val sources = row().apply { setPadding(0, dp(4), 0, dp(8)) }
+                val sources = row().apply { setPadding(0, dp(2), 0, dp(4)) }
                 val account =
                     if (tab == 3) librarySources.accountFavorites else librarySources.accountHistory
                 listOf(false, true).forEach { remote ->
@@ -1291,10 +1296,6 @@ class MainActivity : Activity() {
                 sourceButtons[0].nextFocusRightId = sourceButtons[1].id
                 sourceButtons[1].nextFocusLeftId = sourceButtons[0].id
                 sourceButtons[1].nextFocusRightId = sourceButtons[1].id
-                container.addView(sources)
-                nav.forEach { it.nextFocusDownId = sourceButtons[if (account) 1 else 0].id }
-                favoriteCheck?.nextFocusDownId = sourceButtons[if (account) 1 else 0].id
-                historyManage?.nextFocusDownId = sourceButtons[if (account) 1 else 0].id
                 val note =
                     when {
                         isAccountFavorites() ->
@@ -1304,19 +1305,30 @@ class MainActivity : Activity() {
                         isLocalHistory() -> "只保存在这台电视，管理和清空不影响账户历史"
                         else -> "只保存在这台电视，不自动上传或合并到账户收藏"
                     }
-                container.addView(text(note, 13f, muted).apply { setPadding(0, 0, 0, dp(6)) })
+                val notes = column().apply { setPadding(dp(10), 0, 0, 0) }
+                notes.addView(
+                    text(note, 12f, muted).apply {
+                        maxLines = 2
+                        ellipsize = TextUtils.TruncateAt.END
+                    }
+                )
+                if (isLocalFavorites()) {
+                    favoriteStatus =
+                        text(favoriteMonitor.status, 12f, muted).apply {
+                            maxLines = 1
+                            ellipsize = TextUtils.TruncateAt.END
+                        }
+                    notes.addView(favoriteStatus)
+                }
+                sources.addView(notes, lp(0, -2).apply { weight = 1f })
+                container.addView(sources)
+                nav.forEach { it.nextFocusDownId = sourceButtons[if (account) 1 else 0].id }
+                favoriteCheck?.nextFocusDownId = sourceButtons[if (account) 1 else 0].id
+                historyManage?.nextFocusDownId = sourceButtons[if (account) 1 else 0].id
             }
             if (tab == 5) {
                 val state = cloudAccount.reservationState(reservationOnline)
-                container.addView(
-                    text(
-                            "${cloudAccount.accountLabel} · ${state.message}\n每类读取最近 20 部预约，以下数量为当前已加载数",
-                            13f,
-                            muted,
-                        )
-                        .apply { setPadding(0, 0, 0, dp(6)) }
-                )
-                val filters = row()
+                val filters = row().apply { setPadding(0, dp(2), 0, dp(4)) }
                 for (online in listOf(true, false)) {
                     val category = cloudAccount.reservationState(online)
                     val count = if (category.loaded) category.rows.size.toString() else "—"
@@ -1333,15 +1345,23 @@ class MainActivity : Activity() {
                             }
                             .apply { nextFocusUpId = historyManage!!.id }
                 }
+                filters.addView(
+                    text(
+                            "${cloudAccount.accountLabel} · ${state.message}\n每类读取最近 20 部预约，以下数量为当前已加载数",
+                            12f,
+                            muted,
+                        )
+                        .apply {
+                            maxLines = 2
+                            ellipsize = TextUtils.TruncateAt.END
+                            setPadding(dp(10), 0, 0, 0)
+                        },
+                    lp(0, -2).apply { weight = 1f },
+                )
                 container.addView(filters)
                 historyManage?.nextFocusDownId =
                     reservationFilters[if (reservationOnline) 0 else 1].id
                 nav.forEach { it.nextFocusDownId = historyManage!!.id }
-            }
-            if (isLocalFavorites()) {
-                favoriteStatus =
-                    text(favoriteMonitor.status, 13f, muted).apply { setPadding(0, 0, 0, dp(6)) }
-                container.addView(favoriteStatus)
             }
         }
         val body = column()
@@ -1564,17 +1584,20 @@ class MainActivity : Activity() {
             line.gravity = Gravity.TOP
             items.forEachIndexed { columnIndex, item ->
                 val card = column()
-                card.setPadding(dp(4), dp(4), dp(4), dp(9))
+                card.setPadding(dp(4), dp(4), dp(4), dp(6))
                 focusStyle(card)
                 card.contentDescription = item.title
                 card.tag = item.id
                 catalogCards[item.id] = card
                 val position = if (tab == 2) ranking?.positions?.get(item.id) else null
                 val artwork = FrameLayout(this)
-                card.addView(artwork, lp(-1, ((width - dp(8)) / TvStyle.POSTER_ASPECT).toInt()))
+                card.addView(
+                    artwork,
+                    lp(-1, ((width - dp(8)) / TvStyle.POSTER_ASPECT).roundToInt()),
+                )
                 val image =
                     ImageView(this).apply {
-                        scaleType = ImageView.ScaleType.FIT_CENTER
+                        scaleType = ImageView.ScaleType.CENTER_CROP
                         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                     }
                 artwork.addView(image, FrameLayout.LayoutParams(-1, -1))
@@ -1602,7 +1625,7 @@ class MainActivity : Activity() {
                         maxLines = 2
                         minLines = 2
                         ellipsize = TextUtils.TruncateAt.END
-                        setPadding(dp(3), dp(7), dp(3), 0)
+                        setPadding(dp(3), dp(5), dp(3), 0)
                     },
                     lp(-1, -2).apply { weight = 1f },
                 )
@@ -1637,7 +1660,7 @@ class MainActivity : Activity() {
                             maxLines = if (tab == 5) 3 else if (tab == 3 || tab == 4) 2 else 1
                             minLines = maxLines
                             minHeight =
-                                dp(if (tab == 5) 50 else if (tab == 3 || tab == 4) 34 else 19)
+                                dp(if (tab == 5) 45 else if (tab == 3 || tab == 4) 31 else 18)
                             ellipsize = TextUtils.TruncateAt.END
                             setPadding(dp(3), 0, 0, 0)
                         }
@@ -1683,7 +1706,8 @@ class MainActivity : Activity() {
                                     when {
                                         line.top < scroll.scrollY -> line.top
                                         line.bottom > scroll.scrollY + scroll.height ->
-                                            (line.bottom - scroll.height).coerceAtLeast(0)
+                                            if (line.height >= scroll.height) line.top
+                                            else (line.bottom - scroll.height).coerceAtLeast(0)
                                         else -> scroll.scrollY
                                     },
                                 )
@@ -1841,37 +1865,19 @@ class MainActivity : Activity() {
         val savedScroll = scrollPositions[catalogPageKey]
         scroll.post {
             if (catalogScroll !== scroll) return@post
-            cards.forEach { view ->
-                val card = view as LinearLayout
-                val image = card.getChildAt(0)
-                val textHeight =
-                    card.paddingTop +
-                        card.paddingBottom +
-                        (1 until card.childCount).sumOf { card.getChildAt(it).measuredHeight }
-                val target =
-                    minOf(
-                        ((width - dp(8)) / TvStyle.POSTER_ASPECT).toInt(),
-                        (scroll.height - textHeight - dp(4)).coerceAtLeast(dp(48)),
-                    )
-                if (image.layoutParams.height != target)
-                    image.layoutParams = image.layoutParams.apply { height = target }
+            savedScroll?.let { scroll.scrollTo(0, it) }
+            (cards.firstOrNull { it.hasFocus() }?.parent as? View)?.let { line ->
+                val y =
+                    when {
+                        line.top < scroll.scrollY -> line.top
+                        line.bottom > scroll.scrollY + scroll.height ->
+                            if (line.height >= scroll.height) line.top
+                            else line.bottom - scroll.height
+                        else -> scroll.scrollY
+                    }
+                scroll.scrollTo(0, y.coerceAtLeast(0))
             }
-            scroll.post settle@{
-                if (catalogScroll !== scroll) return@settle
-                savedScroll?.let { scroll.scrollTo(0, it) }
-                (cards.firstOrNull { it.hasFocus() }?.parent as? View)?.let { line ->
-                    val y =
-                        when {
-                            line.top < scroll.scrollY -> line.top
-                            line.bottom > scroll.scrollY + scroll.height ->
-                                if (line.height >= scroll.height) line.top
-                                else line.bottom - scroll.height
-                            else -> scroll.scrollY
-                        }
-                    scroll.scrollTo(0, y.coerceAtLeast(0))
-                }
-                restoringScroll = false
-            }
+            restoringScroll = false
         }
     }
 
@@ -2655,8 +2661,13 @@ class MainActivity : Activity() {
         val hero = row()
         hero.gravity = Gravity.TOP
         hero.setPadding(0, dp(12), 0, dp(12))
-        val image = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
-        hero.addView(image, lp(dp(123), dp(174)).apply { rightMargin = dp(24) })
+        val image = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+        hero.addView(
+            image,
+            lp(dp(123), (dp(123) / TvStyle.POSTER_ASPECT).roundToInt()).apply {
+                rightMargin = dp(24)
+            },
+        )
         loadCover(image, data.series.cover)
         val info = column()
         hero.addView(info, lp(0, -2).apply { weight = 1f })
@@ -4848,6 +4859,11 @@ class MainActivity : Activity() {
         if (screen == "catalog" && tab == 1 && query.isBlank() && !nav[1].hasFocus()) {
             discoveryScreen?.backToTop()
             nav[1].requestFocus()
+            return
+        }
+        if (screen == "catalog" && tab == 2 && !nav[2].hasFocus()) {
+            rankingScreen?.backToTop()
+            nav[2].requestFocus()
             return
         }
         when (screen) {

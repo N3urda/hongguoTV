@@ -9,6 +9,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.widget.*
 import com.hongguotv.core.Series
+import kotlin.math.roundToInt
 
 /** Fixed text slots keep D-pad movement from resizing the content below the preview. */
 class SeriesPreview(context: Context) : LinearLayout(context) {
@@ -20,7 +21,7 @@ class SeriesPreview(context: Context) : LinearLayout(context) {
         }
 
     private val title =
-        label(22f, TvStyle.text).apply {
+        label(20f, TvStyle.text).apply {
             setSingleLine(true)
             ellipsize = TextUtils.TruncateAt.MARQUEE
             marqueeRepeatLimit = -1
@@ -37,9 +38,9 @@ class SeriesPreview(context: Context) : LinearLayout(context) {
     init {
         orientation = VERTICAL
         val dp = resources.displayMetrics.density
-        setPadding(0, (7 * dp).toInt(), 0, (12 * dp).toInt())
+        setPadding(0, (4 * dp).toInt(), 0, (6 * dp).toInt())
         addView(title)
-        addView(meta, LayoutParams(-1, -2).apply { topMargin = (5 * dp).toInt() })
+        addView(meta, LayoutParams(-1, -2).apply { topMargin = (3 * dp).toInt() })
         show(null, "")
     }
 
@@ -297,13 +298,13 @@ class HomeScreen(
                     val image =
                         if (entry != null)
                             ImageView(context).apply {
-                                scaleType = ImageView.ScaleType.FIT_CENTER
+                                scaleType = ImageView.ScaleType.CENTER_CROP
                                 importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
                             }
                         else null
                     view.addView(
                         image ?: label("›", 36f).apply { gravity = Gravity.CENTER },
-                        LayoutParams(-1, ((width - dp(8)) / TvStyle.POSTER_ASPECT).toInt()),
+                        LayoutParams(-1, ((width - dp(8)) / TvStyle.POSTER_ASPECT).roundToInt()),
                     )
                     val title =
                         label(entry?.series?.title ?: "查看全部", 14f).apply {
@@ -589,25 +590,11 @@ class HomeScreen(
     }
 
     private fun fitArtwork() {
-        if (height <= 0) return
         rows.forEach { row ->
-            val textHeight =
-                row.cards.maxOf { item ->
-                    item.view.paddingTop +
-                        item.view.paddingBottom +
-                        (1 until item.view.childCount).sumOf { child ->
-                            val view = item.view.getChildAt(child)
-                            val params = view.layoutParams as LayoutParams
-                            view.measuredHeight + params.topMargin + params.bottomMargin
-                        }
-                }
-            val desired = ((row.cards.first().view.width - dp(8)) / TvStyle.POSTER_ASPECT).toInt()
+            val cardWidth = row.cards.firstOrNull()?.view?.width ?: return@forEach
+            if (cardWidth <= 0) return@forEach
             val imageHeight =
-                minOf(
-                    desired,
-                    (height - row.block.getChildAt(0).measuredHeight - textHeight - dp(8))
-                        .coerceAtLeast(dp(48)),
-                )
+                ((cardWidth - dp(8)).coerceAtLeast(1) / TvStyle.POSTER_ASPECT).roundToInt()
             row.cards.forEach { card ->
                 card.view.getChildAt(0).let { artwork ->
                     if (artwork.layoutParams.height != imageHeight)
