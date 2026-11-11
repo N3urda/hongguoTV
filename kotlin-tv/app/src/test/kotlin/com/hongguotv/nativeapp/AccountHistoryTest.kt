@@ -1,0 +1,206 @@
+package com.hongguotv.nativeapp
+
+import android.app.Activity
+import com.hongguotv.core.*
+import okhttp3.ResponseBody.Companion.toResponseBody
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+import org.robolectric.annotation.LooperMode
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [26], qualifiers = "land")
+@LooperMode(LooperMode.Mode.PAUSED)
+@GraphicsMode(GraphicsMode.Mode.LEGACY)
+class AccountHistoryTest {
+    private fun field(account: AccountController, name: String, value: Any?) {
+        AccountController::class
+            .java
+            .getDeclaredField(name)
+            .apply { isAccessible = true }
+            .set(account, value)
+    }
+
+    @Test
+    fun accountTabShowsCloudRowsWhileRecentTabKeepsDeviceRows() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        val activity = controller.get()
+        fun get(name: String) =
+            MainActivity::class
+                .java
+                .getDeclaredField(name)
+                .apply { isAccessible = true }
+                .get(activity)
+        fun texts(view: android.view.View): List<String> =
+            when (view) {
+                is android.view.ViewGroup ->
+                    (0 until view.childCount).flatMap { texts(view.getChildAt(it)) }
+                is android.widget.TextView -> listOf(view.text.toString())
+                else -> emptyList()
+            }
+        try {
+            val library = get("library") as Library
+            val local = Series("111", "本机独有记录")
+            val data =
+                BackupData(
+                    emptyList(),
+                    listOf(BackupProgress(local, "112", 0, 1000, 90000, false, 1000)),
+                    emptySet(),
+                    emptyList(),
+                    BackupSettings(),
+                )
+            Library::class
+                .java
+                .getDeclaredField("index")
+                .apply { isAccessible = true }
+                .set(library, LibraryIndex(data))
+            val account = get("cloudAccount") as AccountController
+            val switch =
+                MainActivity::class
+                    .java
+                    .getDeclaredMethod("switchTab", Int::class.javaPrimitiveType)
+                    .apply { isAccessible = true }
+            (get("librarySources") as LibrarySources).accountHistory = true
+            switch.invoke(activity, 4)
+            val root = activity.findViewById<android.view.View>(android.R.id.content)
+            assertTrue(texts(root).any { it.contains("登录红果后") })
+            field(account, "credentials", AccountCredentials("test-only"))
+            field(account, "profile", CloudProfile("a", "账号 A"))
+            field(
+                account,
+                "history",
+                listOf(CloudProgress(Series("221", "云端独有记录"), "222", 3, 45000, 90000, 2000)),
+            )
+            field(account, "busy", true)
+            switch.invoke(activity, 4)
+            assertTrue(texts(root).contains("云端独有记录"))
+            assertFalse(texts(root).contains("本机独有记录"))
+            assertTrue(texts(root).any { it.contains("第 4 集") })
+            MainActivity::class
+                .java
+                .getDeclaredMethod("switchLibrarySource", Boolean::class.javaPrimitiveType)
+                .apply { isAccessible = true }
+                .invoke(activity, false)
+            assertTrue(texts(root).contains("本机独有记录"))
+            assertFalse(texts(root).contains("云端独有记录"))
+        } finally {
+            controller.destroy()
+        }
+    }
+
+    @Test
+    fun failedHistoryRefreshKeepsPreviouslyLoadedRowsAndReportsItsStage() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val account = AccountController(controller.get()) {}
+        fun drain() {
+            val worker = AccountController::class.java.getDeclaredField("worker").apply { isAccessible = true }
+                .get(account) as java.util.concurrent.ExecutorService
+            worker.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        }
+        try {
+            drain()
+            val http = okhttp3.OkHttpClient.Builder().addInterceptor { chain ->
+                okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200).message("OK").body("".toResponseBody()).build()
+            }.build()
+            field(account, "client", CloudAccountClient(http))
+            field(account, "credentials", AccountCredentials("test-only"))
+            field(account, "profile", CloudProfile("a", "账号 A"))
+            val rows = listOf(CloudProgress(Series("123", "已读取的记录"), "456", 2, 12000, 90000, 1000))
+            field(account, "history", rows)
+            field(account, "historyLoaded", true)
+            account.refreshHistory()
+            drain()
+            assertEquals(rows, account.historyRows())
+            assertTrue(account.historyReady)
+            assertTrue(account.historyStatus.contains("账号资料接口返回空响应"))
+        } finally {
+            account.destroy()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun switchingAccountsAndLoggingOutImmediatelyDiscardPreviousHistory() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup()
+        val account = AccountController(activity.get()) {}
+        val row = CloudProgress(Series("123", "账号 A 的记录"), "456", 2, 45000, 90000, 1000)
+        try {
+            field(account, "credentials", AccountCredentials("test-only"))
+            field(account, "profile", CloudProfile("a", "账号 A"))
+            field(account, "history", listOf(row))
+            field(
+                account,
+                "reservations",
+                mapOf(
+                    true to
+                        ReservationState(
+                            listOf(CloudReservation(row.series, true, 0)),
+                            loaded = true,
+                        )
+                ),
+            )
+            field(
+                account,
+                "favorites",
+                FavoriteState(listOf(CloudFavorite(row.series, 1000)), loaded = true),
+            )
+            assertEquals(1, account.favoriteState().rows.size)
+            assertEquals(1, account.reservationState(true).rows.size)
+            assertEquals(row, account.progress("123"))
+            var notifications = 0
+            account.onHistoryChanged = { notifications++ }
+            // Keep network disabled while exercising the real login state transition.
+            field(account, "busy", true)
+            AccountController::class
+                .java
+                .getDeclaredMethod(
+                    "acceptAccount",
+                    AccountCredentials::class.java,
+                    CloudProfile::class.java,
+                )
+                .apply { isAccessible = true }
+                .invoke(account, AccountCredentials("test-only-b"), CloudProfile("b", "账号 B"))
+            assertTrue(account.signedIn)
+            assertEquals("账号 B", account.accountLabel)
+            assertTrue(account.reservationState(true).rows.isEmpty())
+            assertTrue(account.historyRows().isEmpty())
+            assertTrue(account.favoriteState().rows.isEmpty())
+            assertNull(account.progress("123"))
+            assertEquals(1, notifications)
+            field(account, "history", listOf(row))
+            field(
+                account,
+                "reservations",
+                mapOf(
+                    false to
+                        ReservationState(
+                            listOf(CloudReservation(row.series, false, 0)),
+                            loaded = true,
+                        )
+                ),
+            )
+            val scope = account.historyScope
+            AccountController::class
+                .java
+                .getDeclaredMethod("logout")
+                .apply { isAccessible = true }
+                .invoke(account)
+            assertFalse(account.signedIn)
+            assertTrue(account.reservationState(false).rows.isEmpty())
+            assertTrue(account.historyScope > scope)
+            assertTrue(account.historyRows().isEmpty())
+            assertTrue(account.favoriteState().rows.isEmpty())
+            assertNull(account.progress("123"))
+            assertEquals(2, notifications)
+        } finally {
+            account.destroy()
+            activity.pause().stop().destroy()
+        }
+    }
+}

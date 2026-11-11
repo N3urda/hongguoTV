@@ -4,28 +4,53 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LibraryIndexTest {
-    private fun series(id: Int) = Series("$id", "剧 $id", "https://example.com/$id.jpg", "完整本机简介", "全 80 集", "剧情")
+    private fun series(id: Int) =
+        Series("$id", "剧 $id", "https://example.com/$id.jpg", "完整本机简介", "全 80 集", "剧情")
+
     private fun progress(id: Int, position: Long = 100, updated: Long = id.toLong()) =
         BackupProgress(series(id), "${id + 1000}", 2, position, 60_000, false, updated)
-    private fun data() = BackupData((1..500).map(::series), (1..200).map { progress(it) }, setOf("2"),
-        listOf(RecentSearch("测试", ContentType.SHORT)), BackupSettings(720, 1.5f, false, ContentType.SHORT, VideoFrameMode.FIT),
-        listOf(series(3)), setOf("4"))
 
-    @Test fun `legacy keys round trip without dropping metadata or settings`() {
+    private fun data() =
+        BackupData(
+            (1..500).map(::series),
+            (1..200).map { progress(it) },
+            setOf("2"),
+            listOf(RecentSearch("测试", ContentType.SHORT)),
+            BackupSettings(720, 1.5f, false, ContentType.SHORT, VideoFrameMode.FIT),
+            listOf(series(3)),
+            setOf("4"),
+        )
+
+    @Test
+    fun `legacy keys round trip without dropping metadata or settings`() {
         val original = data()
-        val values = mapOf("favorites" to LibraryDisk.series(original.favorites), "progress" to LibraryDisk.history(original.history),
-            "later" to LibraryDisk.series(original.later), "hidden" to original.hidden, "watched" to original.watched,
-            "searches" to SearchHistory.encode(original.searches), "quality" to 720, "playbackSpeed" to 1.5f,
-            "autoNext" to false, "contentType" to "short", "frameMode" to "FIT",
-            "favoriteUpdates" to LibraryDisk.updates(mapOf("1" to FavoriteUpdate(83, 80, 10))))
+        val values =
+            mapOf(
+                "favorites" to LibraryDisk.series(original.favorites),
+                "progress" to LibraryDisk.history(original.history),
+                "later" to LibraryDisk.series(original.later),
+                "hidden" to original.hidden,
+                "watched" to original.watched,
+                "searches" to SearchHistory.encode(original.searches),
+                "quality" to 720,
+                "playbackSpeed" to 1.5f,
+                "autoNext" to false,
+                "contentType" to "short",
+                "frameMode" to "FIT",
+                "favoriteUpdates" to LibraryDisk.updates(mapOf("1" to FavoriteUpdate(83, 80, 10))),
+            )
         val state = LibraryDisk.decode(values)
-        assertEquals(original.copy(history = original.history.sortedByDescending { it.updatedAt }), state.snapshot())
+        assertEquals(
+            original.copy(history = original.history.sortedByDescending { it.updatedAt }),
+            state.snapshot(),
+        )
         assertEquals("完整本机简介", state.progress("1")!!.series.description)
         assertEquals(3, state.favoriteUpdate("1")!!.added)
         assertEquals(1, state.updatedFavorites())
     }
 
-    @Test fun `repeated reads reuse snapshots and paused checkpoints do not write`() {
+    @Test
+    fun `repeated reads reuse snapshots and paused checkpoints do not write`() {
         val state = LibraryIndex(data())
         val history = state.history()
         val favoriteRows = state.favorites()
@@ -43,7 +68,8 @@ class LibraryIndexTest {
         assertEquals(9000L, state.history().first().position)
     }
 
-    @Test fun `history and favorite eviction remove corresponding indexes`() {
+    @Test
+    fun `history and favorite eviction remove corresponding indexes`() {
         val state = LibraryIndex(data(), (1..500).associate { "$it" to FavoriteUpdate(81, 80, 1) })
         assertEquals(500, state.updatedFavorites())
         state.save(progress(201, updated = 1000))
@@ -61,7 +87,8 @@ class LibraryIndexTest {
         assertEquals(498, state.updatedFavorites())
     }
 
-    @Test fun `captured snapshots survive later mutations and keep backup merge semantics`() {
+    @Test
+    fun `captured snapshots survive later mutations and keep backup merge semantics`() {
         val state = LibraryIndex(data(), mapOf("1" to FavoriteUpdate(81, 80, 10)))
         val saved = state.snapshot()
         val updates = state.updates()
@@ -81,9 +108,13 @@ class LibraryIndexTest {
         assertEquals(state.settings, merged.settings)
     }
 
-    @Test fun `malformed rows do not discard valid records`() {
+    @Test
+    fun `malformed rows do not discard valid records`() {
         val favoriteJson = "[null,{},${series(1).toJson()},false]"
-        val state = LibraryDisk.decode(mapOf("favorites" to favoriteJson, "progress" to "bad", "favoriteUpdates" to "bad"))
+        val state =
+            LibraryDisk.decode(
+                mapOf("favorites" to favoriteJson, "progress" to "bad", "favoriteUpdates" to "bad")
+            )
         assertTrue(state.favorite("1"))
         assertTrue(state.history().isEmpty())
         assertEquals(0, state.updatedFavorites())

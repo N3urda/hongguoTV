@@ -87,7 +87,7 @@ class ReleaseContractTest(unittest.TestCase):
         self.assertNotIn('branches:', workflow)
         self.assertNotIn('workflow_dispatch:', workflow)
         self.assertIn("github.repository == 'N3urda/hongguoTV'", workflow)
-        self.assertIn(':core:test :app:lintRelease :app:assembleRelease', workflow)
+        self.assertIn(':core:test :app:testDebugUnitTest :app:lintRelease :app:assembleRelease', workflow)
         self.assertIn('cancel-in-progress: false', workflow)
         for name in ['KEYSTORE_B64', 'STORE_PASSWORD', 'KEY_ALIAS', 'KEY_PASSWORD']:
             self.assertIn('secrets.HONGGUOTV_' + name, workflow)

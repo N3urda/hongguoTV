@@ -63,7 +63,7 @@ class PlaybackModelsTest {
     @Test fun nonzeroBusinessCodeIsStructuredAndMakesOnlyOneRequest() {
         var calls=0
         val repo=repository { calls++; """{"code":110001,"data":{}}""" }
-        val error=assertThrows(PlaybackSourceException::class.java) { repo.stream("123") }
+        val error=assertThrows(PlaybackSourceException::class.java) { repo.currentStream("123") }
         assertEquals(110001,error.upstreamCode)
         assertEquals(PlaybackSourceException.Reason.REJECTED,error.reason)
         assertEquals(1,calls)
@@ -72,32 +72,32 @@ class PlaybackModelsTest {
         var calls=0
         val data=JSONObject().put("data",JSONObject().put("123",JSONObject().put("video_model",model(row()))))
         val repo=repository { calls++; data.toString() }
-        assertEquals("720P",repo.stream("123").quality)
+        assertEquals("720P",repo.currentStream("123").quality)
         assertEquals(1,calls)
     }
     @Test fun cancelledScopeNeverStartsRequest() {
         var calls=0
         val repo=repository { calls++; throw AssertionError("must not run") }
         val scope=RequestScope(); scope.cancel()
-        assertThrows(IOException::class.java) { scope.run { repo.stream("123") } }
+        assertThrows(IOException::class.java) { scope.run { repo.currentStream("123") } }
         assertEquals(0,calls)
     }
     @Test fun transportCancellationIsNotConvertedToSourceFailure() {
         val original=IOException("Canceled")
         val repo=repository { throw original }
-        assertSame(original,assertThrows(IOException::class.java) { repo.stream("123") })
+        assertSame(original,assertThrows(IOException::class.java) { repo.currentStream("123") })
     }
     @Test fun httpRejectionIsPermanentButThrottlingAndServerFailuresCanRetry() {
         for(code in listOf(401,403,404,408,429,503)) {
             val repo=ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
                 Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(code).message("response").body("{}".toResponseBody()).build()
             }.build())
-            val error=assertThrows(IOException::class.java) { repo.stream("123") }
+            val error=assertThrows(IOException::class.java) { repo.currentStream("123") }
             assertEquals("HTTP $code",code in listOf(401,403,404),error is PlaybackSourceException)
         }
     }
     @Test fun malformedPayloadDoesNotBecomeTransportRetry() {
-        val error=assertThrows(PlaybackSourceException::class.java) { repository { "not json" }.stream("123") }
+        val error=assertThrows(PlaybackSourceException::class.java) { repository { "not json" }.currentStream("123") }
         assertEquals(PlaybackSourceException.Reason.INVALID_RESPONSE,error.reason)
     }
 
@@ -120,7 +120,7 @@ class PlaybackModelsTest {
                 JSONObject().put("123",JSONObject().put("video_model",model(row())))))
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK").body(body.toString().toResponseBody()).build()
         }.build())
-        assertEquals("720P",repo.stream("123").quality)
+        assertEquals("720P",repo.currentStream("123").quality)
     }
 
 }

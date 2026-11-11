@@ -23,12 +23,13 @@ jobs:
           packages: platform-tools
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
       - name: Unit tests, Android lint, and installable development APK
-        run: ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:lintDebug :app:assembleDebug --console=plain
+        run: ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --console=plain
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: kotlin-native-verification
           path: |
             kotlin-tv/core/build/reports/tests/test/
+            kotlin-tv/app/build/reports/tests/testDebugUnitTest/
             kotlin-tv/app/build/reports/lint-results-debug.*
             kotlin-tv/app/build/outputs/apk/debug/*.apk

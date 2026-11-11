@@ -87,8 +87,8 @@ class SearchPayloadTest {
                 .code(200).message("OK").body(okhttp3.ResponseBody.create(null,
                     """{"pageNum":1,"hasMore":true,"searchList":[{"video_data":{"series_id":"123","series_title":"漫剧","genre":"205"}},{"video_data":{"series_id":"456","series_title":"短剧","genre":"203"}}]}""")).build()
         }.build())
-        assertEquals("123",repo.search("测试",type=ContentType.COMIC).items.single().id)
-        assertEquals("456",repo.search("测试",type=ContentType.SHORT).items.single().id)
-        assertTrue(repo.search("测试").hasMore)
+        assertEquals("123",repo.searchAll("测试",type=ContentType.COMIC).items.single().id)
+        assertEquals("456",repo.searchAll("测试",type=ContentType.SHORT).items.single().id)
+        assertTrue(repo.searchAll("测试").hasMore)
     }
 }
