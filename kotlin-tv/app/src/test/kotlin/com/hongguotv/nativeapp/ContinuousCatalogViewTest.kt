@@ -81,6 +81,39 @@ class ContinuousCatalogViewTest {
         }
     }
 
+    @Test
+    fun fullSelectedTitleWrapsAndEmptyFilteredPageCanLoadMore() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        var calls = 0
+        val upper = TextView(activity).apply { id = View.generateViewId() }
+        val browser = ContinuousCatalogView(activity, 3, upper,
+            { item, _ -> TextView(activity).apply { text = item.title } },
+            {}, {}, { _, _ -> }, { calls++ })
+        try {
+            activity.setContentView(browser)
+            browser.useRemoteNavigation()
+            val title = "谁说没有灵根就不能修仙之无灵证道第十三季"
+            browser.show(listOf(Series("1", title)), false)
+            layout(browser)
+            val fullTitle = browser.getChildAt(0) as TextView
+            assertEquals(title, fullTitle.text.toString())
+            assertNull(fullTitle.ellipsize)
+            assertTrue(fullTitle.maxLines > 2)
+            browser.show(emptyList(), true)
+            layout(browser)
+            assertEquals("", fullTitle.text.toString())
+            assertEquals(View.VISIBLE, browser.next.visibility)
+            browser.enter()
+            assertTrue(browser.next.hasFocus())
+            browser.next.performClick()
+            assertEquals(1, calls)
+        } finally {
+            browser.close()
+            controller.pause().stop().destroy()
+        }
+    }
+
     private fun rows(from: Int, to: Int) = (from..to).map { Series("$it", "作品$it") }
 
     private fun layout(view: View) {
@@ -157,7 +190,7 @@ class ContinuousCatalogViewTest {
             view.fail(com.hongguotv.core.ContentHttpException(502))
             view.requestMore(false)
             assertEquals(1, calls)
-            val footer = view.getChildAt(1) as LinearLayout
+            val footer = view.getChildAt(view.childCount - 1) as LinearLayout
             assertTrue((footer.getChildAt(0) as TextView).text.contains("HTTP 502"))
             assertEquals(90, view.grid.adapter.count)
             view.next.performClick()

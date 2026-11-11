@@ -545,7 +545,8 @@ constructor(
                 section.optInt("totalPages") > 0 -> page < section.optInt("totalPages")
                 else -> page < 100
             }
-        return CatalogPage(items, items.isNotEmpty() && page < 100 && more)
+        // Filtering a recommendation-only page must not hide later matching pages.
+        return CatalogPage(items, rows.length() > 0 && page < 100 && more)
     }
 
     private fun appSearch(keyword: String, page: Int, type: ContentType): CatalogPage {

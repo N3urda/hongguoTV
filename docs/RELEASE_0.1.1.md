@@ -1,18 +1,16 @@
 # v0.1.1：TV 操作与展示适配
 
-> 历史记录：本文描述旧 React Native 版本及当时的验证结果，不代表当前交付方式。当前仅交付独立 APK，见 [项目首页](../README.md)；容器构建、发布配置与部署指南已移除。
+> 历史记录：本文描述旧 React Native 版本及当时的验证结果，不代表当前交付方式。当前仅交付独立 APK，见 [项目首页](../README.md)。
 
 本版继续使用 React Native TV，最低 Android 8.0 / API 26，应用 ID 保持 `com.hongguotv`。Android versionCode 为 2，使用与 v0.1.0 相同的本地签名，支持覆盖升级，保留设置、收藏与观看记录。
 
-## 下载与部署
-
-[GitHub v0.1.1 Release](https://github.com/N3urda/hongguoTV/releases/tag/v0.1.1) 提供 APK、源码、Docker 部署包、验证证据与 SHA256SUMS。内容服务镜像为 `ghcr.io/n3urda/hongguotv-bridge:0.1.1`，提供 AMD64 / ARM64；本版服务协议兼容 0.1.0。
+## 历史 APK 安装
 
 ```sh
 adb install -r hongguotv-0.1.1-android8.apk
 ```
 
-以上为旧版附件记录，不再提供容器部署步骤。签名密钥不包含在源码或附件中，同签名升级不要先卸载旧版。
+以上为旧版 APK 附件记录。签名密钥不包含在源码或附件中，同签名升级不要先卸载旧版。
 
 ## 改动
 

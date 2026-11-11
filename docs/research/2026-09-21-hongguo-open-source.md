@@ -60,7 +60,6 @@
 | 项目 | 核对结果 |
 | --- | --- |
 | [dawei233/hongguo-monorepo](https://github.com/dawei233/hongguo-monorepo) | PC、Android、NAS 多端方案；`nas-backend/hongguo_core.py` 包含搜索、详情、视频信息请求，签名依赖随仓库提供的 liushen 模块；README 表明 Android 端依赖局域网 NAS 后端。GitHub 未识别到许可证。 |
-| [gybeyond1/hongguo-dl](https://github.com/gybeyond1/hongguo-dl) | `docker/hongguo_core.py` 存在分集和视频信息请求，使用与 zhenyong97 项目相近的预加载接口及固定设备参数。GitHub 未识别到许可证。 |
 | [huangxd-/danmu_api](https://github.com/huangxd-/danmu_api/blob/main/danmu_api/sources/hongguo.js) | 搜索、分集与弹幕请求可参考；其产品目标是弹幕服务，不是完整视频播放客户端。GitHub 识别许可证为 AGPL-3.0。 |
 | [ucmao/media-parser](https://github.com/ucmao/media-parser/blob/main/src/parsers/fanqie_parser.py) | 红果模块解析分享/推广页的 HTML，提取视频、封面等字段；不等于提供完整搜索和选集能力。GitHub 识别许可证为 MIT。 |
 | [zhangbaio/hongguo-downloader](https://github.com/zhangbaio/hongguo-downloader/blob/main/core/api_client.py) | 客户端调用 `orz.icic.icu` 第三方服务，部分请求传入 key 和 machine_id；没有因此获得红果平台接口的独立实现。 |
