@@ -13,7 +13,8 @@ enum class RankBoard(val label: String, val route: String, val key: String) {
 }
 
 data class RankSnapshot(val board: RankBoard, val items: List<Series>, val ranking: ComicRanking) {
-    // Use complete tag tokens, never match title or description to invent categories.
+    // Website tags mix genres with content types and cast/character names.
+    // Only known genre tokens can become filters; never infer genres from prose.
     val topics: List<String>
         get() =
             items
@@ -30,9 +31,24 @@ data class RankSnapshot(val board: RankBoard, val items: List<Series>, val ranki
         if (topic.isBlank()) items else items.filter { topic in topics(it) }
 
     private fun topics(item: Series) =
-        item.tags.split(" · ").map(String::trim).filter {
-            it.isNotEmpty() && !it.all(Char::isDigit)
-        }
+        item.tags.split(" · ").map(String::trim).filter { it in genreTopics }.distinct()
+
+    companion object {
+        // Deliberately conservative: unknown website metadata stays on the card,
+        // but must not create a new filter. Content types already have board tabs.
+        private val genreTopics =
+            setOf(
+                "都市", "都市修仙", "玄幻", "仙侠", "修仙", "武侠", "奇幻", "科幻",
+                "穿越", "重生", "逆袭", "系统", "脑洞", "异能", "末世", "游戏", "电竞",
+                "古装", "古风", "古代", "历史", "宫廷", "宫斗", "宅斗", "权谋", "民国", "年代",
+                "爱情", "言情", "现言", "古言", "甜宠", "虐恋", "暗恋", "恋爱", "婚恋",
+                "闪婚", "先婚后爱", "破镜重圆", "总裁", "霸总", "豪门", "豪门恩怨",
+                "家庭", "家族", "亲情", "萌宝", "女性", "女性成长", "大女主",
+                "职场", "校园", "青春", "成长", "励志", "创业", "现实", "乡村", "农村",
+                "剧情", "喜剧", "搞笑", "轻喜剧", "治愈", "悬疑", "推理", "探案", "犯罪",
+                "复仇", "战神", "神医", "赘婿", "高手下山", "热血", "动作", "冒险", "战斗",
+            )
+    }
 }
 
 /** Retained while visiting details or another tab, bounded to four boards. */

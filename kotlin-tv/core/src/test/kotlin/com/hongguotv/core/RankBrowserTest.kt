@@ -119,6 +119,30 @@ class RankBrowserTest {
     }
 
     @Test
+    fun websiteCastAndContentTypesDoNotBecomeGenreFilters() {
+        val snapshot =
+            RankSnapshot(
+                RankBoard.ALL,
+                listOf(
+                    Series("1", "剧一", tags = "漫剧 · 玄幻 · 姜月初 · 百花宗主"),
+                    Series("2", "剧二", tags = "真人剧 · 家庭 · 张艳 · 杨凯文"),
+                    Series("3", "剧三", tags = "AI剧 · 剧情 · 沈栀 · 林瑶"),
+                    Series("4", "剧四", tags = "205 · 未知标签 · 99号 · 9.5分"),
+                    Series("5", "剧五", tags = "玄幻 · 玄幻 · 玄幻"),
+                ),
+                ComicRanking(mapOf("1" to RankPosition(7, "100万热度")), 1, ""),
+            )
+        assertEquals(listOf("玄幻", "剧情", "家庭"), snapshot.topics)
+        for (metadata in listOf("漫剧", "真人剧", "AI剧", "姜月初", "百花宗主", "未知标签", "99号")) {
+            assertTrue(snapshot.filtered(metadata).isEmpty())
+        }
+        assertEquals(listOf("1", "5"), snapshot.filtered("玄幻").map { it.id })
+        assertEquals(7, snapshot.ranking.positions["1"]?.rank)
+        assertEquals(snapshot.items, snapshot.filtered(""))
+        assertEquals("漫剧 · 玄幻 · 姜月初 · 百花宗主", snapshot.items.first().tags)
+    }
+
+    @Test
     fun changingBoardResetsTopicPageAndFocusWithoutDiscardingOtherSnapshots() {
         val state = RankBrowserState()
         state.topic = "穿越"

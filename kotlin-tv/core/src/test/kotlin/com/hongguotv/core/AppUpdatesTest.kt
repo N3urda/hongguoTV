@@ -1,5 +1,9 @@
 package com.hongguotv.core
 
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -19,6 +23,48 @@ class AppUpdatesTest {
     private fun withFile(block: (File) -> Unit) {
         val dir = Files.createTempDirectory("update-test").toFile()
         try { block(File(dir, "update.apk")) } finally { dir.deleteRecursively() }
+    }
+    private fun repository(reply: (String) -> ByteArray): AppUpdateRepository = AppUpdateRepository(
+        OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(200).message("OK").body(reply(chain.request().url.toString()).toResponseBody()).build()
+        }.build()
+    )
+    @Test fun metadataUsesAcceleratorFirst() {
+        val urls = mutableListOf<String>()
+        repository { url -> urls += url; json().toString().toByteArray() }.use {
+            assertEquals(update(), it.latest())
+        }
+        assertEquals(listOf(UpdateDownloadSources.MIRROR + AppUpdate.RELEASES + "/latest/download/update.json"), urls)
+    }
+    @Test fun malformedMirrorMetadataFallsBackToOrigin() {
+        val urls = mutableListOf<String>()
+        repository { url -> urls += url; if (urls.size == 1) "<html>error</html>".toByteArray() else json().toString().toByteArray() }.use {
+            assertEquals(update(), it.latest())
+        }
+        assertEquals(UpdateDownloadSources.urls(AppUpdate.RELEASES + "/latest/download/update.json"), urls)
+    }
+    @Test fun corruptMirrorApkFallsBackAndVerifiesOrigin() = withFile { file ->
+        val urls = mutableListOf<String>()
+        repository { url -> urls += url; if (urls.size == 1) ByteArray(bytes.size) else bytes }.use {
+            it.download(update(), file) {}
+        }
+        assertEquals(UpdateDownloadSources.urls(update().downloadUrl), urls)
+        assertTrue(UpdateFiles.verify(file, update()))
+    }
+    @Test fun failedMirrorRequestFallsBack() {
+        var requests = 0
+        repository { if (++requests == 1) throw IOException("timeout") else json().toString().toByteArray() }.use {
+            assertEquals(update(), it.latest())
+        }
+        assertEquals(2, requests)
+    }
+    @Test fun cancellationDoesNotStartFallback() {
+        var requests = 0
+        lateinit var source: AppUpdateRepository
+        source = repository { requests++; source.cancel(); throw IOException("cancelled") }
+        source.use { assertThrows(IOException::class.java) { it.latest() } }
+        assertEquals(1, requests)
     }
     @Test fun onlyHigherCompatibleVersionsAreUpdates() {
         val update = update()

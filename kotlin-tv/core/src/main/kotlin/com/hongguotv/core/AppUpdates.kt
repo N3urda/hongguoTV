@@ -66,39 +66,89 @@ object UpdateFiles {
     }
 }
 
-class AppUpdateRepository : java.io.Closeable {
-    private val http = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS)
+interface AppUpdateSource : java.io.Closeable {
+    fun latest(): AppUpdate
+    fun download(update: AppUpdate, file: File, progress: (Int) -> Unit)
+    fun cancel()
+}
+
+/** Public release files only; never send credentials to the accelerator. */
+internal object UpdateDownloadSources {
+    const val MIRROR = "https://ghfast.top/"
+    fun urls(origin: String) = listOf(MIRROR + origin, origin)
+    val hosts = setOf("ghfast.top", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com")
+}
+
+class AppUpdateRepository internal constructor(private val http: OkHttpClient) : AppUpdateSource {
+    constructor() : this(OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
         .callTimeout(5, TimeUnit.MINUTES).addNetworkInterceptor { chain ->
             val url = chain.request().url
-            // Follow GitHub's CDN redirects, never cleartext or arbitrary manifest-provided hosts.
-            if (url.scheme != "https" || url.host !in setOf("github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"))
+            // Restrict redirects as well as initial requests to known HTTPS download hosts.
+            if (url.scheme != "https" || url.host !in UpdateDownloadSources.hosts)
                 throw IOException("更新下载地址不受支持")
             chain.proceed(chain.request())
-        }.build()
+        }.build())
+
+    private val cancellation = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val activeCalls = java.util.concurrent.ConcurrentHashMap.newKeySet<okhttp3.Call>()
+    private val generation = java.util.concurrent.atomic.AtomicLong()
     private fun request(url: String) = Request.Builder().url(url).header("User-Agent", "HongguoTV-Updater")
         .header("Cache-Control", "no-cache").build()
-    fun latest(): AppUpdate {
-        val call = http.newCall(request("${AppUpdate.RELEASES}/latest/download/update.json"))
-        call.timeout().timeout(25, TimeUnit.SECONDS)
-        return call.execute().use { response ->
-            if (!response.isSuccessful) throw IOException(if (response.code == 404) "尚无可用的自动更新版本" else "无法检查更新，请稍后重试")
-            val bytes = response.body?.byteStream()?.use { input ->
-                val out = ByteArrayOutputStream(); val buffer = ByteArray(4096)
-                while (true) { val n = input.read(buffer); if (n < 0) break; if (out.size() + n > 65536) throw IOException("更新信息过大"); out.write(buffer, 0, n) }
-                out.toByteArray()
-            } ?: throw IOException("更新信息为空")
-            try { AppUpdate.parse(bytes.toString(Charsets.UTF_8)) } catch (_: Exception) { throw IOException("更新信息格式不正确") }
+
+    private fun <T> fromSources(origin: String, seconds: Long, action: (okhttp3.Response) -> T): T {
+        val ticket = generation.get()
+        var failure: IOException? = null
+        for (url in UpdateDownloadSources.urls(origin)) {
+            if (Thread.currentThread().isInterrupted || generation.get() != ticket) throw IOException("下载已取消")
+            val call = http.newCall(request(url))
+            call.timeout().timeout(seconds, TimeUnit.SECONDS)
+            activeCalls.add(call)
+            try {
+                if (generation.get() != ticket || Thread.currentThread().isInterrupted) throw IOException("下载已取消")
+                return call.execute().use { response ->
+                    if (generation.get() != ticket || Thread.currentThread().isInterrupted) throw IOException("下载已取消")
+                    if (!response.isSuccessful) throw IOException("更新源暂不可用，请稍后重试")
+                    action(response)
+                }
+            } catch (error: IOException) {
+                if (generation.get() != ticket || Thread.currentThread().isInterrupted) throw error
+                failure = error
+            } finally {
+                activeCalls.remove(call)
+            }
         }
+        throw failure ?: IOException("更新源暂不可用，请稍后重试")
     }
-    fun download(update: AppUpdate, file: File, progress: (Int) -> Unit) {
+
+    override fun latest(): AppUpdate = fromSources("${AppUpdate.RELEASES}/latest/download/update.json", 15) { response ->
+        val bytes = response.body?.byteStream()?.use { input ->
+            val out = ByteArrayOutputStream(); val buffer = ByteArray(4096)
+            while (true) { val n = input.read(buffer); if (n < 0) break; if (out.size() + n > 65536) throw IOException("更新信息过大"); out.write(buffer, 0, n) }
+            out.toByteArray()
+        } ?: throw IOException("更新信息为空")
+        try { AppUpdate.parse(bytes.toString(Charsets.UTF_8)) } catch (_: Exception) { throw IOException("更新信息格式不正确") }
+    }
+
+    override fun download(update: AppUpdate, file: File, progress: (Int) -> Unit) {
         if (UpdateFiles.verify(file, update)) return
-        http.newCall(request(update.downloadUrl)).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("安装包下载失败，请稍后重试")
+        fromSources(update.downloadUrl, 300) { response ->
             val body = response.body ?: throw IOException("安装包为空")
             if (body.contentLength() >= 0 && body.contentLength() != update.size) throw IOException("安装包长度异常")
+            progress(0)
             body.byteStream().use { UpdateFiles.receive(it, file, update, progress) }
         }
     }
-    fun cancel() = http.dispatcher.cancelAll()
-    override fun close() { cancel(); http.connectionPool.evictAll(); http.dispatcher.executorService.shutdown() }
+    override fun cancel() {
+        generation.incrementAndGet()
+        // Snapshot before dispatch: a delayed cancellation must not cancel a new request.
+        // Socket/TLS teardown can block, so never perform it on the UI thread.
+        val calls = activeCalls.toList()
+        if (calls.isNotEmpty()) cancellation.execute { calls.forEach { it.cancel() } }
+    }
+    override fun close() {
+        cancel()
+        cancellation.shutdown()
+        http.connectionPool.evictAll()
+        http.dispatcher.executorService.shutdown()
+    }
 }
