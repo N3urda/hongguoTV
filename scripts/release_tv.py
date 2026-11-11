@@ -15,7 +15,7 @@ REPOSITORY = 'N3urda/hongguoTV'
 PACKAGE = 'com.hongguotv.nativeapp'
 CERTIFICATE = '3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98'
 ROOT = Path(__file__).resolve().parents[1]
-NOTES = '支持扫码登录、账户收藏与预约同步；修复播放信息接口空响应/拒绝时的兼容回退，以及 Android 5 重启后的登录态恢复。Android 5 优先使用 AAC 软件音频解码，解决系统解码器卡在首帧的问题。'
+NOTES = '搜索结果过滤无关推荐并保留同系列不同季；选中剧名完整换行显示；增加有次数上限的视频解码停滞恢复，排除暂停、缓冲和后台状态。仅维护 APK 发布方式。具体故障盒子的卡顿仍需实机复测。'
 
 
 def require(condition, message):
