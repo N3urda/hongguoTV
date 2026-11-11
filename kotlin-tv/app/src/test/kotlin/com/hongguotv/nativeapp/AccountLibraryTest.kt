@@ -48,6 +48,35 @@ class AccountLibraryTest {
             .invoke(activity, value)
 
     @Test
+    fun settingsAccountStatusUpdatesInPlaceOnLoginAndLogout() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        val activity = controller.get()
+        try {
+            val account = get(activity, "cloudAccount") as AccountController
+            set(account, "busy", true)
+            set(get(activity, "library"), "index", LibraryIndex(BackupData(
+                emptyList(), emptyList(), emptySet(), emptyList(), BackupSettings(),
+            )))
+            method(activity, "switchTab", 6)
+            val root = activity.findViewById<View>(android.R.id.content)
+            root.findViewWithTag<View>("settings-category-2").performClick()
+            val status = texts(root).single { it.text.startsWith("当前未登录") }
+            val entry = texts(root).single { it.text.toString() == "登录与账户管理" }
+            entry.requestFocus()
+            set(account, "credentials", AccountCredentials("test-only"))
+            account.onHistoryChanged?.invoke()
+            assertEquals("当前已登录红果账户", status.text.toString())
+            assertTrue(entry.hasFocus())
+            set(account, "credentials", null)
+            account.onHistoryChanged?.invoke()
+            assertTrue(status.text.startsWith("当前未登录"))
+            assertTrue(entry.hasFocus())
+        } finally {
+            controller.destroy()
+        }
+    }
+
+    @Test
     fun sourceTabsKeepCollectionsSeparateRememberSelectionAndReachHeaderActions() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()
@@ -163,7 +192,7 @@ class AccountLibraryTest {
             set(
                 account,
                 "favorites",
-                FavoriteState(listOf(CloudFavorite(series, 1000)), loaded = true, loading = true),
+                FavoriteState(listOf(CloudFavorite(series.copy(badge = "全 6 集"), 1000)), loaded = true, loading = true),
             )
             set(
                 account,
@@ -194,6 +223,12 @@ class AccountLibraryTest {
             texts(root).single { it.text.toString() == "账户收藏" }.performClick()
             assertTrue(texts(root).any { it.text.toString() == "共 80 集\n看到第 12 集" })
             assertFalse(texts(root).any { it.text.toString() == "共 80 集\n看到第 4 集" })
+            @Suppress("UNCHECKED_CAST")
+            val cards = get(activity, "catalogCards") as Map<String, View>
+            cards.getValue("111").requestFocus()
+            val preview = get(activity, "selectionPreview") as SeriesPreview
+            assertTrue(texts(preview).any { it.text.contains("共 80 集") })
+            assertFalse(texts(preview).any { it.text.contains("全 6 集") })
             method(activity, "switchTab", 5)
             assertTrue(texts(root).any { it.text.toString().startsWith("共 80 集\n看到第 12 集\n已上线") })
             texts(root).single { it.text.toString() == "待上线 · 1" }.performClick()

@@ -266,6 +266,7 @@ class MainActivity : Activity() {
     private var screen = "catalog"
     private var tab = 0
     private var startupApplied = false
+    private var settingsAccountStatus: TextView? = null
     private var settingsGroup = 0
     private val settingsPositions = IntArray(4)
     private var settingsSidebar = emptyList<View>()
@@ -440,6 +441,7 @@ class MainActivity : Activity() {
                 openDetail(remote.series, true, cloudProgress = remote)
             }
         cloudAccount.onHistoryChanged = {
+            settingsAccountStatus?.text = accountSettingsLabel()
             if (homeFeedIdentity != cloudAccount.recommendationIdentity) {
                 homeFeedState.refresh(resetRecommendations = true)
                 homeFeedIdentity = cloudAccount.recommendationIdentity
@@ -610,6 +612,7 @@ class MainActivity : Activity() {
     }
 
     private fun releaseCatalogViews() {
+        settingsAccountStatus = null
         settingsSidebar = emptyList()
         settingsRows = emptyList()
         searchSuggestions?.close()
@@ -784,21 +787,34 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun collectionEpisodeLabel(series: Series): String {
+    // 卡片与焦点预览共用同一集数来源，账号片单不混入本机进度。
+    private fun collectionEpisodeTotal(series: Series): Int {
         val remote = isAccountFavorites() || isAccountHistory() || tab == 5
         val cloud = if (remote) cloudAccount.progress(series.id) else null
         val local = if (!remote) library.progress(series.id) else null
         val update = if (!remote) library.favoriteUpdate(series.id) else null
-        val total =
-            maxOf(
+        return maxOf(
                 EpisodeSummary.total(series.badge),
                 EpisodeSummary.total(cloud?.series?.badge.orEmpty()),
                 EpisodeSummary.total(local?.series?.badge.orEmpty()),
                 cloud?.episodeCount ?: 0,
                 update?.total ?: 0,
             )
+    }
+
+    private fun collectionPreviewSeries(series: Series): Series {
+        if (tab !in 3..5 || (tab == 5 && !reservationOnline)) return series
+        val total = collectionEpisodeTotal(series)
+        return if (total > 0) series.copy(badge = "共 $total 集") else series
+    }
+
+    private fun collectionEpisodeLabel(series: Series): String {
+        val remote = isAccountFavorites() || isAccountHistory() || tab == 5
+        val cloud = if (remote) cloudAccount.progress(series.id) else null
+        val local = if (!remote) library.progress(series.id) else null
+        val update = if (!remote) library.favoriteUpdate(series.id) else null
         return EpisodeSummary.label(
-            total,
+            collectionEpisodeTotal(series),
             cloud?.episodeIndex ?: local?.episodeIndex,
             account = remote,
             ready = cloudAccount.historyReady,
@@ -1598,7 +1614,7 @@ class MainActivity : Activity() {
                     if (focused) {
                         catalogFocus = item.id
                         loadCover(image, item.cover)
-                        preview.show(item, selectionStatus(item))
+                        preview.show(collectionPreviewSeries(item), selectionStatus(item))
                         if (!restoringScroll)
                             scroll.post {
                                 scroll.smoothScrollTo(
@@ -2094,7 +2110,7 @@ class MainActivity : Activity() {
         } else {
             catalog
                 .firstOrNull { it.id == changedId }
-                ?.let { selectionPreview?.show(it, selectionStatus(it)) }
+                ?.let { selectionPreview?.show(collectionPreviewSeries(it), selectionStatus(it)) }
             library
                 .favorites()
                 .firstOrNull { it.id == changedId }
@@ -2207,6 +2223,9 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun accountSettingsLabel() =
+        if (cloudAccount.signedIn) "当前已登录红果账户" else "当前未登录，可继续使用本机收藏与历史"
+
     // 分类与内容并列显示；焦点位置仅在当前应用会话内记忆。
     private fun settings(parent: LinearLayout) {
         parent.addView(Space(this), lp(1, dp(20)))
@@ -2292,6 +2311,7 @@ class MainActivity : Activity() {
         render = { index ->
             settingsGroup = index
             entries.clear()
+            settingsAccountStatus = null
             content.removeAllViews()
             scroll.scrollTo(0, 0)
             content.addView(text(categories[index], 20f).apply { setTypeface(null, Typeface.BOLD) })
@@ -2327,7 +2347,10 @@ class MainActivity : Activity() {
                     }
                 }
                 2 -> {
-                    content.addView(text(if (cloudAccount.signedIn) "当前已登录红果账户" else "当前未登录，可继续使用本机收藏与历史", 15f, muted).apply { setPadding(0, 0, 0, dp(14)) })
+                    content.addView(text(accountSettingsLabel(), 15f, muted).apply {
+                        settingsAccountStatus = this
+                        setPadding(0, 0, 0, dp(14))
+                    })
                     setting("登录与账户管理") { cloudAccount.show() }
                 }
                 3 -> {
