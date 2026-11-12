@@ -15,7 +15,7 @@ REPOSITORY = 'N3urda/hongguoTV'
 PACKAGE = 'com.hongguotv.nativeapp'
 CERTIFICATE = '3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98'
 ROOT = Path(__file__).resolve().parents[1]
-NOTES = '修复排行榜题材筛选混入演员、角色名与重复类型的问题，仅保留已知题材；更新检查与 APK 下载优先使用公开加速镜像，失败回退 GitHub，保留哈希及原签名校验；后台更新不弹窗，下载后在设置中主动安装。继续支持 Android 5.0+ 与原证书覆盖升级。国内网络速度仍以实际使用为准。'
+NOTES = '优化首页自动连续播放：切集时保留上一集画面，下一集准备较慢时也避免先清空画面；新增 3× 倍速，支持设为默认播放速度；更换为像素红果电视图标。继续支持 Android 5.0+、原证书覆盖升级及通用、ARM32、ARM64 三种安装包。'
 
 
 def require(condition, message):
