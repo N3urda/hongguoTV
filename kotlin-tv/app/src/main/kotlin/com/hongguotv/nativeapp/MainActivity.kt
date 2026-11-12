@@ -83,7 +83,7 @@ class MainActivity : Activity() {
             .put("playing", active && player?.isPlaying == true)
             .put("speed", library.playbackSpeed).put("quality", library.maxQuality)
             .put("scope", cloudAccount.historyScope).put("account", cloudAccount.accountLabel)
-            .put("message", phoneCatalog.message)
+            .put("message", phoneCatalog.message).put("reservation", phoneCatalog.reservationStatus())
         if (action == "account") {
             tvTools.close()
             cloudAccount.show()
@@ -2082,7 +2082,7 @@ class MainActivity : Activity() {
                                 val accountScope = cloudAccount.historyScope
                                 cloudAccount.reserve(chosen) { message ->
                                     if (stillCurrent() && accountScope == cloudAccount.historyScope)
-                                        tvTools.info("预约状态", message, anchor)
+                                        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
                                 }
                             }
                         },
@@ -3016,23 +3016,14 @@ class MainActivity : Activity() {
                 { related, anchor ->
                     if (related.upcoming) {
                         if (!cloudAccount.signedIn) cloudAccount.show()
-                        else
-                            tvTools.choose(
-                                related.series.title,
-                                listOf(cloudAccount.reservationLabel(related)),
-                                anchor,
-                                { _ ->
-                                    val scope = cloudAccount.historyScope
-                                    cloudAccount.reserve(related) { message ->
-                                        if (
-                                            screen == "detail" &&
-                                                detail?.series?.id == data.series.id &&
-                                                scope == cloudAccount.historyScope
-                                        )
-                                            tvTools.info("预约状态", message, anchor)
-                                    }
-                                },
-                            )
+                        else {
+                            val scope = cloudAccount.historyScope
+                            cloudAccount.reserve(related) { message ->
+                                if (screen == "detail" && detail?.series?.id == data.series.id &&
+                                    scope == cloudAccount.historyScope)
+                                    Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     } else {
                         if (detailTrail.size >= 10) detailTrail.removeFirst()
                         detailTrail.addLast(

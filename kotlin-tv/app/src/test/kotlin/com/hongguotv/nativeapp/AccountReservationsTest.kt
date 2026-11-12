@@ -97,6 +97,47 @@ class AccountReservationsTest {
     }
 
     @Test
+    fun oneClickAutomaticallyConfirmsAfterRetryWithoutRepeatingWrite() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup()
+        val account = AccountController(activity.get()) {}
+        try {
+            flush(account)
+            ShadowLooper.idleMainLooper()
+            var writes = 0
+            var reads = 0
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                val body = if (chain.request().method == "POST") {
+                    writes++
+                    """{"code":0}"""
+                } else {
+                    reads++
+                    if (reads == 1) """{"code":0,"data":{"subscribe_items":[]}}"""
+                    else """{"code":0,"data":{"subscribe_items":[{"subscribe_data":{"series_id":"123","title":"待上线测试剧"}}]}}"""
+                }
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                    .code(200).message("OK").body(body.toResponseBody()).build()
+            }.build()
+            set(account, "client", CloudAccountClient(http))
+            set(account, "credentials", AccountCredentials("test-only"))
+            val work = RelatedWork(Series("123", "待上线测试剧"), "第二季", true)
+            var message = ""
+            account.reserve(work) { message = it }
+            assertEquals("预约中…", account.reservationLabel(work))
+            account.reserve(work) {}
+            flush(account)
+            ShadowLooper.idleMainLooper()
+            assertEquals(1, writes)
+            assertEquals(2, reads)
+            assertEquals("已预约", message)
+            assertEquals("已预约", account.reservationLabel(work))
+            account.reserve(work) { message = it }
+            flush(account)
+            assertEquals(1, writes)
+            assertEquals(2, reads)
+        } finally { account.destroy(); activity.pause().stop().destroy() }
+    }
+
+    @Test
     fun acceptedReservationDoesNotPretendAccountListHasConfirmedIt() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup()
         val account = AccountController(activity.get()) {}
@@ -104,10 +145,12 @@ class AccountReservationsTest {
             flush(account)
             ShadowLooper.idleMainLooper()
             var calls = 0
+            var writes = 0
             val http =
                 OkHttpClient.Builder()
                     .addInterceptor { chain ->
                         calls++
+                        if (chain.request().method == "POST") writes++
                         Response.Builder()
                             .request(chain.request())
                             .protocol(Protocol.HTTP_1_1)
@@ -124,10 +167,16 @@ class AccountReservationsTest {
             account.reserve(work) { message = it }
             flush(account)
             ShadowLooper.idleMainLooper()
-            assertEquals(1, calls)
-            assertTrue(message.contains("尚未在账号列表确认"))
-            assertEquals("刷新预约状态", account.reservationLabel(work))
+            assertEquals(3, calls)
+            assertEquals("预约已提交", message)
+            assertEquals("已提交", account.reservationLabel(work))
             assertTrue(account.reservationState(false).rows.isEmpty())
+            account.reserve(work) { message = it }
+            flush(account)
+            ShadowLooper.idleMainLooper()
+            assertEquals(5, calls)
+            assertEquals(1, writes)
+            assertEquals("预约已提交", message)
             set(
                 account,
                 "reservations",

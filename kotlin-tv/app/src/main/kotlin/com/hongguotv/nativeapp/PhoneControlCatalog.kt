@@ -17,8 +17,15 @@ internal class PhoneControlCatalog(
     var message = ""
         private set
     private var mutationPending = false
+    private var reservationId: String? = null
 
-    fun clear() { entries.clear(); message = ""; mutationPending = false }
+    fun clear() { entries.clear(); message = ""; mutationPending = false; reservationId = null }
+
+    fun reservationStatus(): JSONObject? {
+        val id = reservationId ?: return null
+        val entry = entries[id] ?: return null
+        return JSONObject().put("id", id).put("label", account.reservationLabel(RelatedWork(entry.series, "", true)))
+    }
 
     fun checkScope() {
         if (scope != account.historyScope) { clear(); scope = account.historyScope }
@@ -39,6 +46,7 @@ internal class PhoneControlCatalog(
             entries[small.id] = Entry(small, work.upcoming, work.upcoming && small.id.matches(Regex("[0-9]{1,19}")))
             while (entries.size > 80) entries.remove(entries.keys.first())
             items.put(JSONObject().put("id", small.id).put("title", small.title).put("badge", work.label + " · " + small.badge)
+                .put("reservationLabel", if (work.upcoming) account.reservationLabel(work) else "")
                 .put("playable", !work.upcoming).put("reservable", entries[small.id]!!.reservable).put("scope", scope))
         }
         return JSONObject().put("items", items).put("hasMore", hasMore).put("message", status)
@@ -96,7 +104,7 @@ internal class PhoneControlCatalog(
             "favorite", "reserve" -> {
                 if (!account.signedIn) return JSONObject().put("error", "请先在电视登录账户")
                 if (mutationPending || account.historyLoading) return JSONObject().put("error", "账户操作进行中，请稍候")
-                if (action == "reserve") require(entry.reservable)
+                if (action == "reserve") { require(entry.reservable); reservationId = entry.series.id }
                 else require(!entry.upcoming)
                 mutationPending = true
                 val ticket = scope

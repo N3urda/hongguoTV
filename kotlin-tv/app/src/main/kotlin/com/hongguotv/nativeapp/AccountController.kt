@@ -148,6 +148,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
     private var history = emptyList<CloudProgress>()
     private var historyLoaded = false
     private val acceptedReservations = mutableSetOf<String>()
+    private val pendingReservations = mutableSetOf<String>()
     private var favorites = FavoriteState()
     private val unconfirmedFavorites = mutableSetOf<String>()
     private var reservations = emptyMap<Boolean, ReservationState>()
@@ -208,39 +209,49 @@ class AccountController(private val activity: Activity, private val play: (Cloud
             reservationState(false).rows.any {
                 it.series.id == work.series.id || it.series.id == "reservation:${work.series.id}"
             } -> "已预约"
-            work.series.id in acceptedReservations -> "刷新预约状态"
+            work.series.id in pendingReservations -> "预约中…"
+            work.series.id in acceptedReservations -> "已提交"
             else -> "预约"
         }
 
     fun reserve(work: RelatedWork, done: (String) -> Unit) {
-        val account =
-            credentials
-                ?: run {
-                    show()
-                    return
-                }
-        if (busy) {
-            toast("账号操作进行中，请稍候")
-            return
-        }
-        if (reservationLabel(work) == "已预约") {
-            done("该作品已在当前账号的预约列表中")
-            return
-        }
-        if (work.series.id in acceptedReservations) {
-            refreshReservations()
-            done("正在刷新预约列表，请稍后核对；未显示前暂不能确认预约生效。")
-            return
-        }
+        val account = credentials ?: run { show(); done("请先登录"); return }
+        if (busy || closed) { done("正在处理，请稍候"); return }
+        if (reservationLabel(work) == "已预约") { done("已预约"); return }
+        val submitted = work.series.id in acceptedReservations
+        val token = generation
+        pendingReservations += work.series.id
         task(
-            { client.reserve(account, work) },
             {
-                acceptedReservations += work.series.id
-                changed()
-                done("红果已接受预约请求，尚未在账号列表确认。请刷新预约状态，或在手机红果核对是否新增。")
+                if (!submitted) client.reserve(account, work)
+                // Verify automatically, with one bounded retry for eventual consistency.
+                var rows: List<CloudReservation>? = null
+                for (attempt in 0..1) {
+                    if (closed || token != generation) break
+                    if (attempt > 0) Thread.sleep(750)
+                    if (closed || token != generation) break
+                    rows = runCatching { client.reservations(account, false) }.getOrNull() ?: rows
+                    if (rows.orEmpty().any { it.series.id == work.series.id || it.series.id == "reservation:${work.series.id}" }) break
+                }
+                rows
             },
-            { done("预约未完成：${safeError(it)}") },
+            { rows ->
+                pendingReservations -= work.series.id
+                acceptedReservations += work.series.id
+                if (rows != null) reservations = reservations + (false to ReservationState(
+                    rows, loaded = true, message = "已读取 ${rows.size} 部预约记录"))
+                val confirmed = reservationLabel(work) == "已预约"
+                if (confirmed) acceptedReservations -= work.series.id
+                changed()
+                done(if (confirmed) "已预约" else "预约已提交")
+            },
+            {
+                pendingReservations -= work.series.id
+                changed()
+                done("预约未完成，请重试")
+            },
         )
+        changed()
     }
 
     internal fun favoriteState(): FavoriteState =
@@ -858,6 +869,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         unconfirmedFavorites.clear()
         reservations = emptyMap()
         acceptedReservations.clear()
+        pendingReservations.clear()
         generation++
         status = "已登录，正在读取云端记录"
         lastUpload = 0
@@ -1085,6 +1097,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         unconfirmedFavorites.clear()
         reservations = emptyMap()
         acceptedReservations.clear()
+        pendingReservations.clear()
         pending = null
         lastProgress = null
         draining = false
