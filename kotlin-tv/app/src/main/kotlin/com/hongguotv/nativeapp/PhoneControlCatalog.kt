@@ -16,10 +16,19 @@ internal class PhoneControlCatalog(
     private var scope = account.historyScope
     var message = ""
         private set
+    var revision = 0
+        private set
     private var mutationPending = false
     private var reservationId: String? = null
+    private var favoriteId: String? = null
 
-    fun clear() { entries.clear(); message = ""; mutationPending = false; reservationId = null }
+    fun clear() { entries.clear(); message = ""; mutationPending = false; reservationId = null; favoriteId = null }
+
+    fun favoriteStatus(): JSONObject? {
+        val id = favoriteId ?: return null
+        return JSONObject().put("id", id).put("favorite", account.accountFavorite(id))
+            .put("pending", account.favoriteNeedsRefresh(id)).put("loading", account.favoriteState().loading)
+    }
 
     fun reservationStatus(): JSONObject? {
         val id = reservationId ?: return null
@@ -47,6 +56,7 @@ internal class PhoneControlCatalog(
             while (entries.size > 80) entries.remove(entries.keys.first())
             items.put(JSONObject().put("id", small.id).put("title", small.title).put("badge", work.label + " · " + small.badge)
                 .put("reservationLabel", if (work.upcoming) account.reservationLabel(work) else "")
+                .put("favorite", account.accountFavorite(small.id)).put("favoritePending", account.favoriteNeedsRefresh(small.id))
                 .put("playable", !work.upcoming).put("reservable", entries[small.id]!!.reservable).put("scope", scope))
         }
         return JSONObject().put("items", items).put("hasMore", hasMore).put("message", status)
@@ -105,11 +115,11 @@ internal class PhoneControlCatalog(
                 if (!account.signedIn) return JSONObject().put("error", "请先在电视登录账户")
                 if (mutationPending || account.historyLoading) return JSONObject().put("error", "账户操作进行中，请稍候")
                 if (action == "reserve") { require(entry.reservable); reservationId = entry.series.id }
-                else require(!entry.upcoming)
+                else { require(!entry.upcoming); favoriteId = entry.series.id }
                 mutationPending = true
                 val ticket = scope
                 val done: (String) -> Unit = { text ->
-                    if (ticket == account.historyScope) { mutationPending = false; message = text }
+                    if (ticket == account.historyScope) { mutationPending = false; message = text; revision++ }
                 }
                 message = "正在提交账户操作…"
                 try {

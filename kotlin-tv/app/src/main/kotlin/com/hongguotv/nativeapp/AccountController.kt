@@ -150,7 +150,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
     private val acceptedReservations = mutableSetOf<String>()
     private val pendingReservations = mutableSetOf<String>()
     private var favorites = FavoriteState()
-    private val unconfirmedFavorites = mutableSetOf<String>()
+    private val unconfirmedFavorites = mutableMapOf<String, Boolean>()
     private var reservations = emptyMap<Boolean, ReservationState>()
     private var status = "未登录"
     private var busy = false
@@ -261,81 +261,68 @@ class AccountController(private val activity: Activity, private val play: (Cloud
 
     fun favoriteNeedsRefresh(id: String) = id in unconfirmedFavorites
 
+    fun favoriteTarget(id: String) = unconfirmedFavorites[id] ?: !accountFavorite(id)
+
     fun favoriteActionLabel(id: String): String =
         when {
             !signedIn -> "登录后加入账户收藏"
             favorites.loading -> "账户收藏处理中…"
-            favoriteNeedsRefresh(id) -> "刷新账户收藏状态"
+            favoriteNeedsRefresh(id) -> if (favoriteTarget(id)) "收藏待同步" else "取消待同步"
             accountFavorite(id) -> "取消账户收藏"
             else -> "加入账户收藏"
         }
 
     fun changeFavorite(series: Series, add: Boolean, done: (String) -> Unit) {
-        val account =
-            credentials
-                ?: run {
-                    show()
-                    return
-                }
-        if (closed || favorites.loading) {
-            done("账户收藏正在处理，请稍候")
-            return
-        }
-        if (favoriteNeedsRefresh(series.id)) {
-            refreshFavorites()
-            done("上次操作尚未确认，已刷新账户收藏，请核对后再操作。")
-            return
-        }
+        val account = credentials ?: run { show(); done("请先登录"); return }
+        if (closed || favorites.loading) { done("正在处理，请稍候"); return }
+        val pending = unconfirmedFavorites[series.id]
+        if (pending != null && pending != add) { done("上次操作正在同步"); return }
         val token = generation
-        favorites = favorites.copy(loading = true, message = "正在核对并更新账户收藏…")
+        favorites = favorites.copy(loading = true, message = "正在更新收藏…")
         changed()
         worker.execute {
             var attempted = false
+            var acknowledged = false
             val result = runCatching {
                 check(!closed && token == generation)
-                val before = client.favorites(account)
-                if (before.any { it.series.id == series.id } == add) before to false
-                else {
-                    check(!closed && token == generation)
-                    attempted = true
-                    client.setFavorite(account, series.id, add)
-                    check(!closed && token == generation)
-                    client.favorites(account) to true
+                var rows = client.favorites(account)
+                if (rows.any { it.series.id == series.id } != add) {
+                    if (pending == null) {
+                        check(!closed && token == generation)
+                        attempted = true
+                        // A lost response may still have applied the write: only retry reads.
+                        acknowledged = runCatching { client.setFavorite(account, series.id, add) }.isSuccess
+                    }
+                    for (attempt in 0..1) {
+                        check(!closed && token == generation)
+                        if (attempt > 0) Thread.sleep(750)
+                        check(!closed && token == generation)
+                        rows = runCatching { client.favorites(account) }.getOrNull() ?: rows
+                        if (rows.any { it.series.id == series.id } == add) break
+                    }
                 }
+                rows
             }
             main.post {
                 if (closed || token != generation) return@post
-                val message =
-                    result.fold(
-                        { (rows, wrote) ->
-                            val confirmed = rows.any { it.series.id == series.id } == add
-                            if (confirmed) unconfirmedFavorites.remove(series.id)
-                            else unconfirmedFavorites.add(series.id)
-                            favorites =
-                                FavoriteState(
-                                    rows,
-                                    loaded = true,
-                                    message =
-                                        if (confirmed) "已核对账户收藏，共读取 ${rows.size} 部"
-                                        else "请求已提交，列表尚未确认，请刷新或在手机核对",
-                                )
-                            if (!confirmed) "请求已提交，但账户列表尚未确认生效。请刷新或在手机红果核对，不要连续重复提交。"
-                            else if (wrote) if (add) "已加入账户收藏，并已在账户列表确认" else "已取消账户收藏，并已从本次读取的列表移除"
-                            else if (add) "这部剧已在账户收藏中，无需重复添加" else "本次读取的账户列表中已没有这部剧，无需重复取消"
-                        },
-                        { error ->
-                            if (attempted) unconfirmedFavorites.add(series.id)
-                            favorites =
-                                favorites.copy(
-                                    loading = false,
-                                    message =
-                                        if (attempted) "收藏操作未确认，请刷新或在手机核对"
-                                        else "读取失败：${safeError(error)}",
-                                )
-                            if (attempted) "收藏操作未确认：${safeError(error)}。请先刷新或在手机核对。"
-                            else "未修改账户收藏：${safeError(error)}"
-                        },
-                    )
+                val message = result.fold(
+                    { rows ->
+                        val confirmed = rows.any { it.series.id == series.id } == add
+                        if (confirmed) unconfirmedFavorites.remove(series.id)
+                        else unconfirmedFavorites[series.id] = add
+                        val text = if (confirmed) if (add) "已收藏" else "已取消收藏"
+                            else if (acknowledged) if (add) "收藏已提交" else "取消已提交"
+                            else "收藏暂未同步"
+                        favorites = FavoriteState(rows, loaded = true, message = text)
+                        text
+                    },
+                    {
+                        if (attempted) unconfirmedFavorites[series.id] = add
+                        val text = if (attempted || pending != null) "收藏暂未同步" else "收藏未完成，请重试"
+                        favorites = favorites.copy(loading = false, message = text)
+                        text
+                    },
+                )
                 changed()
                 done(message)
             }
@@ -356,7 +343,8 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                 favorites =
                     result.fold(
                         {
-                            unconfirmedFavorites.clear()
+                            val present = it.map { row -> row.series.id }.toSet()
+                            unconfirmedFavorites.entries.removeAll { entry -> (entry.key in present) == entry.value }
                             FavoriteState(it, loaded = true, message = "已读取 ${it.size} 部账户收藏")
                         },
                         { favorites.copy(loading = false, message = "读取失败：${safeError(it)}") },
@@ -1036,7 +1024,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         }
     }
 
-    private fun refresh(showResult: Boolean) {
+    private fun refresh(showResult: Boolean, after: (() -> Unit)? = null, failed: (() -> Unit)? = null) {
         val account = credentials ?: return
         if (busy || closed) return
         status = "正在读取账号观看历史…"
@@ -1049,24 +1037,34 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                     rows.distinctBy { it.series.id }.sortedByDescending { it.updatedAt }.take(50)
                 status = "已读取 ${rows.size} 部云端观看记录"
                 changed()
-                if (showResult) {
-                    toast(status)
-                    show()
-                }
+                if (after != null) after()
+                else if (showResult) { toast(status); show() }
             },
             {
                 changed()
-                toast(safeError(it))
+                if (failed != null) failed() else toast(safeError(it))
             },
         )
         changed()
     }
 
     private fun showHistory() {
-        if (history.isEmpty()) {
-            toast("暂无已读取的云端记录，请先刷新")
+        if (!historyLoaded) {
+            val expected = generation
+            showDialog(AlertDialog.Builder(activity).setTitle("云端继续观看")
+                .setMessage("正在读取观看记录…").setNegativeButton("取消", null))
+            val loading = dialog
+            refresh(false, after = {
+                if (generation == expected && dialog === loading && loading?.isShowing == true) showHistory()
+            }, failed = {
+                if (generation == expected && dialog === loading && loading?.isShowing == true)
+                    showDialog(AlertDialog.Builder(activity).setTitle("云端继续观看")
+                        .setMessage("暂时无法读取观看记录")
+                        .setPositiveButton("重试") { _, _ -> showHistory() }.setNegativeButton("关闭", null))
+            })
             return
         }
+        if (history.isEmpty()) { toast("暂无观看记录"); dialog?.dismiss(); return }
         val snapshot = history
         showDialog(
             AlertDialog.Builder(activity)

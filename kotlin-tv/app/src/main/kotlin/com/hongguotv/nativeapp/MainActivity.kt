@@ -84,6 +84,7 @@ class MainActivity : Activity() {
             .put("speed", library.playbackSpeed).put("quality", library.maxQuality)
             .put("scope", cloudAccount.historyScope).put("account", cloudAccount.accountLabel)
             .put("message", phoneCatalog.message).put("reservation", phoneCatalog.reservationStatus())
+            .put("catalogRevision", phoneCatalog.revision).put("favorite", phoneCatalog.favoriteStatus())
         if (action == "account") {
             tvTools.close()
             cloudAccount.show()
@@ -2353,22 +2354,17 @@ class MainActivity : Activity() {
             Toast.makeText(this, "账户收藏正在处理，请稍候", Toast.LENGTH_SHORT).show()
             return
         }
-        if (cloudAccount.favoriteNeedsRefresh(series.id)) {
-            cloudAccount.refreshFavorites()
-            return
-        }
-        val add = !cloudAccount.accountFavorite(series.id)
+        val pending = cloudAccount.favoriteNeedsRefresh(series.id)
+        val add = cloudAccount.favoriteTarget(series.id)
         val scope = cloudAccount.historyScope
-        tvTools.confirm(
-            if (add) "加入账户收藏" else "取消账户收藏",
-            "${if(add) "将《${series.title}》加入" else "将《${series.title}》从"}${cloudAccount.accountLabel}的红果收藏${if(add) "，手机端也会同步显示" else "中移除"}。本机收藏保持独立。",
-            anchor,
-        ) {
-            if (scope != cloudAccount.historyScope || !cloudAccount.signedIn) return@confirm
-            cloudAccount.changeFavorite(series, add) { message ->
-                tvTools.info("账户收藏", message, anchor)
-            }
+        val apply = {
+            if (scope == cloudAccount.historyScope && cloudAccount.signedIn)
+                cloudAccount.changeFavorite(series, add) { message ->
+                    Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+                }
         }
+        if (add || pending) apply()
+        else tvTools.confirm("取消账户收藏", "将《${series.title}》从账户收藏中移除？", anchor, apply)
     }
 
     private fun refreshFavoriteLabels() {
@@ -2898,9 +2894,7 @@ class MainActivity : Activity() {
         jump =
             addButton(groupRow, "跳转集数") {
                 tvTools.episodePicker(data.episodes.size, episodeIndex, jump) { target ->
-                    episodeIndex = target
-                    group = target / 20
-                    showDetail(true)
+                    playEpisode(target)
                 }
             }
         content.addView(groupRow)

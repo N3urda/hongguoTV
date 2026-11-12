@@ -80,19 +80,19 @@ class AccountFavoriteActionsTest {
             ShadowLooper.idleMainLooper()
             assertEquals(1, writes)
             assertTrue(account.accountFavorite("123"))
-            assertTrue(message.contains("已在账户列表确认"))
+            assertEquals("已收藏", message)
             assertEquals("取消账户收藏", account.favoriteActionLabel("123"))
             account.changeFavorite(series, true) { message = it }
             flush(account)
             ShadowLooper.idleMainLooper()
             assertEquals(1, writes)
-            assertTrue(message.contains("无需重复添加"))
+            assertEquals("已收藏", message)
             account.changeFavorite(series, false) { message = it }
             flush(account)
             ShadowLooper.idleMainLooper()
             assertEquals(2, writes)
             assertFalse(account.accountFavorite("123"))
-            assertTrue(message.contains("已取消账户收藏"))
+            assertEquals("已取消收藏", message)
         } finally {
             account.destroy()
             controller.pause().stop().destroy()
@@ -135,10 +135,18 @@ class AccountFavoriteActionsTest {
             account.changeFavorite(Series("123", "测试剧"), true) { message = it }
             flush(account)
             ShadowLooper.idleMainLooper()
-            assertTrue(message.contains("尚未确认"))
+            assertEquals("收藏已提交", message)
             assertFalse(account.accountFavorite("123"))
             assertTrue(account.favoriteNeedsRefresh("123"))
-            assertEquals("刷新账户收藏状态", account.favoriteActionLabel("123"))
+            assertEquals("收藏待同步", account.favoriteActionLabel("123"))
+            account.changeFavorite(Series("123", "测试剧"), true) {}
+            flush(account)
+            ShadowLooper.idleMainLooper()
+            assertEquals(1, writes)
+            account.refreshFavorites()
+            flush(account)
+            ShadowLooper.idleMainLooper()
+            assertTrue(account.favoriteNeedsRefresh("123"))
             account.changeFavorite(Series("123", "测试剧"), true) {}
             flush(account)
             ShadowLooper.idleMainLooper()
@@ -147,6 +155,54 @@ class AccountFavoriteActionsTest {
             account.destroy()
             controller.pause().stop().destroy()
         }
+    }
+
+    @Test
+    fun addFromTvRequiresNoConfirmationOrResultDialog() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        val activity = controller.get()
+        val account = MainActivity::class.java.getDeclaredField("cloudAccount").apply { isAccessible = true }.get(activity) as AccountController
+        try {
+            account.onHistoryChanged = null
+            flush(account); ShadowLooper.idleMainLooper()
+            set(account, "credentials", AccountCredentials("test-only"))
+            var writes = 0
+            set(account, "client", CloudAccountClient(OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().method == "POST") writes++
+                val body = if (chain.request().method == "POST") """{"code":0}""" else rows(writes > 0)
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK").body(body.toResponseBody()).build()
+            }.build()))
+            MainActivity::class.java.getDeclaredMethod("accountFavoriteAction", Series::class.java, android.view.View::class.java)
+                .apply { isAccessible = true }.invoke(activity, Series("123", "测试剧"), null)
+            flush(account); ShadowLooper.idleMainLooper()
+            assertEquals(1, writes)
+            assertTrue(account.accountFavorite("123"))
+            assertFalse(org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()?.isShowing == true)
+        } finally { controller.destroy() }
+    }
+
+    @Test
+    fun delayedFavoriteConfirmationRetriesReadsNotWrites() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val account = AccountController(controller.get()) {}
+        try {
+            flush(account); ShadowLooper.idleMainLooper()
+            set(account, "credentials", AccountCredentials("test-only"))
+            var writes = 0
+            var reads = 0
+            set(account, "client", CloudAccountClient(OkHttpClient.Builder().addInterceptor { chain ->
+                val body = if (chain.request().method == "POST") { writes++; """{"code":0}""" }
+                    else { reads++; rows(reads >= 3) }
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK").body(body.toResponseBody()).build()
+            }.build()))
+            var message = ""
+            account.changeFavorite(Series("123", "测试剧"), true) { message = it }
+            flush(account); ShadowLooper.idleMainLooper()
+            assertEquals(1, writes)
+            assertEquals(3, reads)
+            assertEquals("已收藏", message)
+            assertFalse(account.favoriteNeedsRefresh("123"))
+        } finally { account.destroy(); controller.pause().stop().destroy() }
     }
 
     @Test

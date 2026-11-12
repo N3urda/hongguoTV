@@ -8,18 +8,21 @@ const { chromium } = require('playwright');
 const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'kotlin-tv/core/src/main/kotlin/com/hongguotv/core/PhoneControlPage.kt'), 'utf8');
 const html = source.split('"""')[1].replaceAll('$nonce', 'fixture');
-const calls = []; let listReads = 0; let reserved = false;
+const calls = []; let listReads = 0; let reserved = false; let favorite = false; let favoriteChanged = false; let revision = 0; let failPage = true; let accountScope=7;
 const fixture = (body) => {
   calls.push(body);
-  if (body.action === 'status') return { active: true, title: '浏览器测试剧目', episode: 3, episodes: 30, position: 42000, duration: 120000, playing: true, account: '测试账户', speed: 1, quality: 1080, reservation: reserved ? { id: '9', label: '已预约' } : null };
-  if (body.action === 'search') return { items: [{ id: String(body.page), title: body.page === 1 ? '<script>window.injected=true</script>' : '第二页测试剧', badge: '共 30 集', playable: true, scope: 7 }], hasMore: body.page === 1 };
+  if (body.action === 'status') return { scope:accountScope, active: true, title: '浏览器测试剧目', episode: 3, episodes: 30, position: 42000, duration: 120000, playing: true, account: '测试账户', speed: 1, quality: 1080, catalogRevision: revision, favorite: favoriteChanged ? {id:'8',favorite:favorite,pending:false,loading:false}:null, reservation: reserved ? { id: '9', label: '已预约' } : null };
+  if (body.action === 'search' && body.page === 3 && failPage) { failPage=false; return {error:'临时查询失败'}; }
+  if (body.action === 'search') return { items: [{ id: String(body.page), title: body.page === 1 ? '<script>window.injected=true</script>' : body.page===2?'第二页测试剧':'第三页测试剧', badge: '共 30 集', playable: true, scope: 7 }], hasMore: body.page < 3 };
   if (body.action === 'related') return { items: [{ id: '9', title: '即将上线的第二季', playable: false, reservable: true, scope: 7 }], hasMore: false };
   if (body.action === 'list') {
     if (body.refresh) listReads = 0;
     listReads++;
-    return { items: listReads === 1 ? [] : [{ id: '8', title: body.kind === 'upcoming' ? '未上线预约' : '账户片单剧', playable: body.kind !== 'upcoming', scope: 7 }], loading: listReads === 1, hasMore: false, message: listReads === 1 ? '正在读取…' : '读取完成' };
+    return { items: listReads === 1 || (body.kind==='favorites'&&!favorite) ? [] : [{ id: '8', title: body.kind === 'upcoming' ? '未上线预约' : '账户片单剧', playable: body.kind !== 'upcoming', favorite:favorite, scope: 7 }], loading: listReads === 1, hasMore: false, message: listReads === 1 ? '正在读取…' : '读取完成' };
   }
-  if (body.action === 'reserve') reserved = true;
+  if (body.action === 'account') accountScope++;
+  if (body.action === 'reserve') {reserved = true; revision++;}
+  if (body.action === 'favorite') {favorite=body.add; favoriteChanged=true; revision++;}
   return { message: body.action === 'reserve' ? '正在预约…' : '已执行' };
 };
 const server = http.createServer((req, res) => {
@@ -48,6 +51,14 @@ const server = http.createServer((req, res) => {
     assert.equal(await page.evaluate(() => window.injected), undefined);
     await page.locator('#next').click();
     await page.waitForFunction(() => document.querySelector('#rows h3').textContent === '第二页测试剧');
+    await page.locator('#next').click();
+    await page.locator('#retry').waitFor({state:'visible'});
+    assert.equal(await page.locator('#page').textContent(),'第 2 页');
+    assert.equal(await page.locator('#rows h3').textContent(),'第二页测试剧');
+    await page.locator('#retry').click();
+    await page.waitForFunction(()=>document.querySelector('#rows h3').textContent==='第三页测试剧');
+    await page.locator('#prev').click();
+    await page.waitForFunction(()=>document.querySelector('#rows h3').textContent==='第二页测试剧');
     await page.getByRole('button', { name: '电视播放 / 续播', exact: true }).click();
     await page.waitForTimeout(80);
     assert(calls.some(c => c.action === 'play' && c.id === '2' && c.scope === 7));
@@ -58,10 +69,26 @@ const server = http.createServer((req, res) => {
     assert(calls.some(c => c.action === 'reserve' && c.id === '9' && c.scope === 7));
     await page.getByRole('button', { name: '已预约', exact: true }).waitFor();
     assert(await page.getByRole('button', { name: '已预约', exact: true }).isDisabled());
+    await page.locator('#backList').click();
+    await page.waitForFunction(()=>document.querySelector('#rows h3').textContent==='第二页测试剧');
+    assert.equal(await page.locator('#page').textContent(),'第 2 页');
+    await page.waitForTimeout(400);
     await page.getByRole('button', { name: '账户历史', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#rows h3')?.textContent === '账户片单剧');
     await page.getByRole('button', { name: '电视播放 / 续播', exact: true }).click(); await page.waitForTimeout(80);
     assert(calls.some(c => c.action === 'play' && c.source === 'history'));
+    await page.getByRole('button',{name:'加入账户收藏',exact:true}).click();
+    await page.getByRole('button',{name:'取消账户收藏',exact:true}).waitFor();
+    await page.getByRole('button',{name:'账户收藏',exact:true}).click();
+    await page.getByRole('button',{name:'取消账户收藏',exact:true}).waitFor();
+    page.once('dialog',dialog=>dialog.accept());
+    await page.getByRole('button',{name:'取消账户收藏',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('#rows h3').length===0);
+    assert(calls.some(c=>c.action==='favorite'&&c.add===false));
+    const readsBeforeSwitch=calls.filter(c=>c.action==='list').length;
+    await page.locator('#account').click();
+    await page.waitForTimeout(3500);
+    assert(calls.filter(c=>c.action==='list').length>readsBeforeSwitch);
     await page.locator('#speed').selectOption('2'); await page.waitForTimeout(80);
     await page.locator('#quality').selectOption('720'); await page.waitForTimeout(80);
     await page.locator('#episode').fill('8'); await page.locator('#jump').click(); await page.waitForTimeout(80);
@@ -77,6 +104,6 @@ const server = http.createServer((req, res) => {
     await page.waitForTimeout(3300);
     assert.equal(calls.filter(c => c.action === 'status').length, before);
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ passed: true, checks: ['search pagination', 'controls during search', 'XSS text rendering', 'play command and account scope', 'upcoming reservation', 'asynchronous list refresh', 'cloud history source', 'speed quality episode direction', 'mobile overflow', 'hidden-page polling stops'], requests: calls.length }, null, 2));
+    console.log(JSON.stringify({ passed: true, checks: ['search pagination', 'controls during search', 'XSS text rendering', 'play command and account scope', 'upcoming reservation', 'asynchronous list refresh', 'cloud history source', 'speed quality episode direction', 'mobile overflow', 'hidden-page polling stops', 'failed page retry preserves page', 'return from related preserves results', 'favorite button and list update automatically', 'account switch reloads active collection'], requests: calls.length }, null, 2));
   } finally { if (browser) await browser.close(); server.close(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

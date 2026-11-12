@@ -289,13 +289,13 @@ class TvTools(private val activity: Activity) {
         var replace = true
         val value = label(digits, 28f).apply { gravity = Gravity.CENTER }
         content.addView(value)
-        val error = label("定位到该集，再按确认播放", 14f)
+        val error = label("输入集数后，选择「播放此集」", 14f)
         content.addView(error)
         fun digit(key: String) {
             digits = if (replace) key else (digits + key).take(6)
             replace = false
             value.text = digits
-            error.text = "定位到该集，再按确认播放"
+            error.text = "输入集数后，选择「播放此集」"
         }
         fun erase() {
             digits = if (replace) "" else digits.dropLast(1)
@@ -344,7 +344,7 @@ class TvTools(private val activity: Activity) {
                 .setTitle("跳转集数 · 1—$count")
                 .setView(ScrollView(activity).apply { addView(content) })
                 .setNegativeButton("取消", null)
-                .setPositiveButton("定位", null)
+                .setPositiveButton("播放此集", null)
                 .create()
         next.setOnKeyListener { _, key, event ->
             when {
