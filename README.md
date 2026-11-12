@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/brand/readme-banner.png" width="720" alt="红果 TV — 好故事，大屏看" />
+  <img src="assets/brand/logo-pixel.png" width="200" alt="红果 TV 像素小电视" />
 </p>
 
 # 红果 TV
