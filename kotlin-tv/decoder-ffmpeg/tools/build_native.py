@@ -26,9 +26,19 @@ def source_archive():
     archive.parent.mkdir(parents=True, exist_ok=True)
     if not archive.exists():
         temporary = archive.with_suffix('.download')
-        subprocess.run(['curl', '-fL', '--retry', '3', '--connect-timeout', '30',
-                        f'https://ffmpeg.org/releases/ffmpeg-{VERSION}.tar.xz', '-o', str(temporary)], check=True)
-        temporary.replace(archive)
+        try:
+            # curl's default retry set excludes TLS/connection resets (exit 35).
+            # Bound both each transfer and the retry window on ephemeral CI runners.
+            subprocess.run(['curl', '-fL', '--retry', '3', '--retry-all-errors',
+                            '--retry-max-time', '300', '--connect-timeout', '30',
+                            '--max-time', '120',
+                            f'https://ffmpeg.org/releases/ffmpeg-{VERSION}.tar.xz',
+                            '-o', str(temporary)], check=True)
+            if hashlib.sha256(temporary.read_bytes()).hexdigest() != SHA256:
+                raise ValueError(f'FFmpeg source checksum mismatch: {temporary}')
+            temporary.replace(archive)
+        finally:
+            temporary.unlink(missing_ok=True)
     if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
         raise ValueError(f'FFmpeg source checksum mismatch: {archive}')
     return archive
