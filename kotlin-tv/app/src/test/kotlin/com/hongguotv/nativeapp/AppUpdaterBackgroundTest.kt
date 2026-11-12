@@ -38,7 +38,7 @@ class AppUpdaterBackgroundTest {
         }
         val updater = AppUpdater(activity, source) { true }
         try {
-            activity.getSharedPreferences("app_updates", 0).edit().clear().commit()
+            activity.getSharedPreferences("app_updates", 0).edit().clear().putBoolean("automatic", true).commit()
             updater.resume()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(8))
             assertTrue(called.await(5, TimeUnit.SECONDS))

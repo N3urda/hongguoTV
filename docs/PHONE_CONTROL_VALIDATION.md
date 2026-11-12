@@ -27,9 +27,9 @@ node scripts/test-phone-control-ui.cjs
 
 已验证连接和线程上限、卡片淘汰、会话关闭和后台停止行为；实现不引入额外播放器、电视 Bitmap 缓存、后台 Service 或全量片单镜像。状态轮询不访问上游。
 
-**尚无真机 PSS、CPU、GC 或播放掉帧测量。** 本次 `adb devices -l` 无连接设备。Robolectric/JVM 和浏览器测试不代表低内存电视的实际解码表现，不能宣称已达到 5 / 10 MiB 增量预算，也不能声称真实账户预约已验收。真机步骤与预算见 [PHONE_CONTROL.md](PHONE_CONTROL.md)。
+已补充 1 GB Android TV API 36 模拟器联网实测，结果见 [DEBUG_EMULATOR_VALIDATION.md](DEBUG_EMULATOR_VALIDATION.md)。尚无实体电视 CPU、GC 或掉帧测量，不能宣称已达到 5 / 10 MiB 增量预算，也不能声称真实账户预约已验收。真机步骤与预算见 [PHONE_CONTROL.md](PHONE_CONTROL.md)。
 
-产物为 debug 签名测试 APK，与正式签名不同，不能作为正式版的覆盖升级包。未发布 Release、未合并主线。
+产物为独立包名 `com.hongguotv.nativeapp.debug` 的 debug 签名测试 APK，名称「红果 TV 测试版」，与正式版并存，账户需单独登录，默认关闭自动更新。未发布 Release、未合并主线。
 
 ## 预约路径优化
 

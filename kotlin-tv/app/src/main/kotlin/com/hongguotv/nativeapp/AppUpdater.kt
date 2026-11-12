@@ -55,7 +55,7 @@ class AppUpdater(
     private var status = "当前版本 ${BuildConfig.VERSION_NAME}"
     private var retryAfter = 0L
     private val auto
-        get() = preferences.getBoolean("automatic", true)
+        get() = preferences.getBoolean("automatic", !BuildConfig.DEBUG)
 
     private val poll =
         object : Runnable {
