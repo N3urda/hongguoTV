@@ -139,6 +139,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
             .callTimeout(30, TimeUnit.SECONDS)
             .build()
     private val store = AccountStore(activity)
+    private val phoneRetryGate = PhoneLogin.RetryGate { android.os.SystemClock.elapsedRealtime() }
     @Volatile private var generation = 0
     @Volatile private var closed = false
     private var accountRestored = false
@@ -590,7 +591,10 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                 addView(hint)
             }
 
+        lateinit var phoneDialog: AlertDialog
         var login: PhoneLogin? = null
+        var requestInFlight = false
+        var resendAt = 0L
         var countdown: Runnable? = null
         fun stopCountdown() {
             countdown?.let(main::removeCallbacks)
@@ -598,23 +602,27 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         }
         fun startCountdown(seconds: Int) {
             stopCountdown()
-            var left = seconds.coerceIn(1, 600)
+            resendAt = maxOf(resendAt, android.os.SystemClock.elapsedRealtime() + seconds.toLong() * 1000)
+            fun secondsLeft() =
+                ((resendAt - android.os.SystemClock.elapsedRealtime() + 999) / 1000).coerceAtLeast(0)
             val tick =
                 object : Runnable {
                     override fun run() {
-                        if (dialog?.isShowing != true) return
-                        send.isEnabled = left <= 0
+                        if (!phoneDialog.isShowing) return
+                        val left = secondsLeft()
+                        val limited = phoneRetryGate.remainingSeconds() > 0
+                        send.isEnabled = left <= 0 && !limited && !requestInFlight
+                        phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled =
+                            !limited && !requestInFlight
                         send.text = if (left > 0) "${left}s 后重发" else "获取验证码"
                         if (left > 0) {
-                            left--
                             main.postDelayed(this, 1000)
                         }
                     }
                 }
             countdown = tick
             send.isEnabled = false
-            send.text = "${left}s 后重发"
-            left--
+            send.text = "${secondsLeft()}s 后重发"
             main.postDelayed(tick, 1000)
         }
 
@@ -627,9 +635,10 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                 .setNegativeButton("取消", null)
                 .setOnDismissListener { stopCountdown() }
                 .create()
-                .also { it.show() }
+                .also { phoneDialog = it; it.show() }
 
-        dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+        phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+            if (requestInFlight) return@setOnClickListener
             val current = login
             val value = code.text.toString().trim()
             if (current == null) {
@@ -640,7 +649,9 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                 hint.text = "请输入 4—8 位验证码"
                 return@setOnClickListener
             }
-            dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
+            phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
+            requestInFlight = true
+            send.isEnabled = false
             hint.text = "正在登录…"
             task(
                 { validatePhoneAccount(current.verify(value)).also { store.save(it.first) } },
@@ -649,9 +660,15 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                     acceptAccount(next, account)
                 },
                 { failure ->
-                    dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
+                    if (!phoneDialog.isShowing || dialog !== phoneDialog) return@task
+                    requestInFlight = false
+                    startCountdown(0)
+                    phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
                     hint.text = safeError(failure)
-                    if (failure is PhoneLogin.Failure && !failure.canRetryCode)
+                    if (failure is PhoneLogin.Failure && failure.retrySeconds > 0) {
+                        phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
+                        startCountdown(failure.retrySeconds)
+                    } else if (failure is PhoneLogin.Failure && !failure.canRetryCode)
                         phoneLoginFailure(failure)
                 },
             )
@@ -665,6 +682,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         }
 
         send.setOnClickListener {
+            if (requestInFlight) return@setOnClickListener
             val typed = mobile.text.toString().trim()
             val number =
                 runCatching {
@@ -676,7 +694,10 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                         hint.text = safeError(it)
                         return@setOnClickListener
                     }
-            val fresh = PhoneLogin(phoneHttp)
+            val fresh = PhoneLogin(phoneHttp, phoneRetryGate)
+            login = null
+            requestInFlight = true
+            phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
             stopCountdown()
             send.isEnabled = false
             send.text = "发送中…"
@@ -684,16 +705,28 @@ class AccountController(private val activity: Activity, private val play: (Cloud
             task(
                 { fresh.send(number) },
                 { sent ->
+                    if (!phoneDialog.isShowing || dialog !== phoneDialog) return@task
+                    requestInFlight = false
+                    phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
                     login = fresh
                     hint.text = "验证码已发送至 ${sent.maskedMobile}"
                     startCountdown(sent.retrySeconds)
                 },
                 { failure ->
+                    if (!phoneDialog.isShowing || dialog !== phoneDialog) return@task
+                    requestInFlight = false
                     send.isEnabled = true
                     send.text = "获取验证码"
                     hint.text = safeError(failure)
+                    if (failure is PhoneLogin.Failure && failure.retrySeconds > 0)
+                        startCountdown(failure.retrySeconds)
                 },
             )
+        }
+        phoneRetryGate.remainingSeconds().takeIf { it > 0 }?.let {
+            hint.text = "平台操作频率限制仍在冷却中，请稍后手动重试，或返回账号页改用扫码登录。"
+            phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
+            startCountdown(it)
         }
     }
 

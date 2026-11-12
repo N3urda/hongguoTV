@@ -100,7 +100,8 @@ class TvUsabilityTest {
             ShadowLooper.idleMainLooper()
             val root = get(activity, "root") as View
             val labels = texts(root).map { it.text.toString() }
-            assertTrue(labels.contains("本机历史"))
+            assertTrue(labels.contains("观看历史"))
+            assertFalse(labels.contains("本机历史"))
             assertFalse(labels.any { it.contains("Failed requirement") || it.contains("正在加载…") })
             assertEquals(listOf("123"), (get(activity, "catalog") as List<*>).filterIsInstance<Series>().map { it.id })
         } finally {

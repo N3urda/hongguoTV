@@ -10,13 +10,13 @@ import org.json.JSONObject
 
 /**
  * 手机号 + 验证码登录（大陆与境外号码都收）。
- * * [send]：先匿名注册一台**新设备**（[DeviceRegister]），再用这台设备的身份发码。 设备注册仅是前置条件；短信登录换取会话尚未完成实机验收。
+ * * [send]：沿用 passport 设备参数发送验证码，不进行匿名设备注册。
  * * [verify]：用**同一台设备**验码，平台在 `Set-Cookie` 里下发 `sessionid`。 换到的凭据带上这台设备的 `device_id` /
  *   `iid`（[AccountCredentials.device]）， 之后账号接口的签名都用它，会话与设备保持一致。
  *
- * 一个实例对应一次登录；重新发码会换一台新设备，之前的验证码随之作废。
+ * 一个实例对应一次登录；调用方应在重新打开登录面板时复用 [RetryGate]，避免连续重试。
  */
-class PhoneLogin(private val http: OkHttpClient) {
+class PhoneLogin(private val http: OkHttpClient, private val retryGate: RetryGate = RetryGate()) {
     var deviceId = ""
     var installId = ""
     var mobile = ""
@@ -28,18 +28,49 @@ class PhoneLogin(private val http: OkHttpClient) {
     val trace = mutableListOf<String>()
 
     /** 平台拒绝时的可读原因，界面直接显示 [message]。 */
-    class Failure(message: String, val errorCode: Int? = null, val canRetryCode: Boolean = false) :
+    class Failure(
+        message: String,
+        val errorCode: Int? = null,
+        val canRetryCode: Boolean = false,
+        val retrySeconds: Int = 0,
+    ) :
         Exception(message)
+
+    /** 本地退避仅减少重复请求，并不表示平台限制会在倒计时结束时解除。 */
+    class RetryGate(private val nowMillis: () -> Long = { System.nanoTime() / 1_000_000 }) {
+        @Volatile private var until = 0L
+
+        fun remainingSeconds(): Int =
+            ((until - nowMillis()).coerceAtLeast(0).let { (it + 999) / 1000 })
+                .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+        internal fun reject(seconds: Int): Nothing {
+            until = nowMillis() + seconds.coerceAtLeast(60).toLong() * 1000
+            check()
+            error("rate limit deadline must be in the future")
+        }
+
+        internal fun check() {
+            val seconds = remainingSeconds()
+            if (seconds > 0) throw Failure(
+                "平台提示操作过于频繁（错误码 7）。请至少等待 ${seconds} 秒后手动重试；倒计时不代表平台限制已解除。如仍失败，可稍后再试或改用扫码登录。",
+                errorCode = 7,
+                retrySeconds = seconds,
+            )
+        }
+    }
 
     /** [maskedMobile] 是平台回显的打码号码（如 `+886******23`）。 */
     data class Sent(val maskedMobile: String, val retrySeconds: Int)
 
     fun send(mobile: String): Sent {
+        retryGate.check()
         // 官方 App 的短信登录不注册新设备：它直接用设备表里的固定 device_id/iid，且不携带
         // 注册 cookie。实测新注册设备 + query 带 device_id 会被 passport 判 `2046`。
         deviceId = VendorConstants.device.getValue("device_id")
         installId = VendorConstants.device.getValue("iid")
         cookies.clear()
+        ticket = ""
         expired = false
         this.mobile = mobile
         val reply =
@@ -52,12 +83,14 @@ class PhoneLogin(private val http: OkHttpClient) {
         // 风控要求滑块验证：电视上没法做，也不去绕它。
         if (data.has("verify_center_decision_conf"))
             throw Failure("平台要求先完成滑块验证，当前电视登录流程不支持，尚未完成登录。")
-        if (reply.optString("message") != "success") throw Failure(describe(data) ?: "验证码没发出去")
+        if (reply.optString("message") != "success")
+            throw Failure(describe(data) ?: "验证码没发出去", data.optInt("error_code", 0))
         ticket = data.optString("mobile_ticket")
         return Sent(data.optString("mobile").ifBlank { mobile }, data.optInt("retry_time", 60))
     }
 
     fun verify(code: String): AccountCredentials {
+        retryGate.check()
         if (expired) throw Failure("本次登录会话已失效，请重新获取验证码", 1)
         check(deviceId.isNotEmpty()) { "请先发送验证码" }
         var params =
@@ -156,6 +189,12 @@ class PhoneLogin(private val http: OkHttpClient) {
                         JSONObject().put("http", response.code).put("raw", text.take(300))
                     }
             }
+        // Stop before fallback endpoints or UI retries; never rotate identity to evade a limit.
+        val data = reply.optJSONObject("data")
+        if (data?.optInt("error_code") == 7) {
+            cookies.clear()
+            retryGate.reject(data.optInt("retry_time", 60))
+        }
         // Never retain authentication responses or verification codes in diagnostics.
         return reply
     }

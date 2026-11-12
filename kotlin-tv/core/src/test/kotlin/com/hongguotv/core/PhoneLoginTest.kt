@@ -19,6 +19,73 @@ import org.junit.Test
  */
 class PhoneLoginTest {
 
+    @Test
+    fun sendPreservesRateLimitErrorAndStopsImmediateRetry() {
+        var calls = 0
+        val login = PhoneLogin(client {
+            calls++
+            200 to """{"message":"error","data":{"error_code":7,"description":"操作过于频繁，请稍后再试","retry_time":120}}"""
+        })
+        repeat(2) {
+            try {
+                login.send("13800000000")
+                fail("expected rate limit")
+            } catch (failure: PhoneLogin.Failure) {
+                assertEquals(7, failure.errorCode)
+            }
+        }
+        assertEquals("a retry during cooldown must not contact passport", 1, calls)
+    }
+
+    @Test
+    fun cooldownSurvivesNewLoginInstanceAndExpiresWithoutAutomaticRequests() {
+        var now = 1000L
+        val gate = PhoneLogin.RetryGate { now }
+        var calls = 0
+        val http = client {
+            calls++
+            200 to """{"message":"error","data":{"error_code":7,"retry_time":120}}"""
+        }
+        fun rejected(login: PhoneLogin): PhoneLogin.Failure {
+            try { login.send("13800000000"); fail("expected rejection") }
+            catch (failure: PhoneLogin.Failure) { return failure }
+            error("unreachable")
+        }
+        assertEquals(120, rejected(PhoneLogin(http, gate)).retrySeconds)
+        now += 119_001
+        assertEquals(1, rejected(PhoneLogin(http, gate)).retrySeconds)
+        assertEquals(1, calls)
+        now += 999
+        assertEquals(0, gate.remainingSeconds())
+        assertEquals(1, calls)
+        rejected(PhoneLogin(http, gate))
+        assertEquals(2, calls)
+    }
+
+    @Test
+    fun verifyRateLimitStopsFallbackAndBlocksBothOperations() {
+        var calls = 0
+        val login = PhoneLogin(client { request ->
+            calls++
+            if (request.url.encodedPath.contains("/send_code/"))
+                200 to """{"message":"success","data":{"mobile_ticket":"tk"}}"""
+            else 200 to """{"message":"error","data":{"error_code":7}}"""
+        })
+        login.send("13800000000")
+        for (attempt in listOf<() -> Unit>(
+            { login.verify("123456") }, { login.verify("123456") },
+            { login.send("13800000000") },
+        )) {
+            try { attempt(); fail("expected rate limit") }
+            catch (failure: PhoneLogin.Failure) {
+                assertEquals(7, failure.errorCode)
+                assertTrue(failure.retrySeconds in 1..60)
+            }
+        }
+        assertEquals(2, calls)
+        assertTrue(login.cookies.isEmpty())
+    }
+
     private fun client(
         cookies: Map<String, String> = emptyMap(),
         respond: (Request) -> Pair<Int, String>,

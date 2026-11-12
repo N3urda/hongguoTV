@@ -183,8 +183,8 @@ internal class DiscoveryScreen(
             maxLines = 1
             isFocusable = true
             isClickable = true
-            setPadding(dp(10), dp(7), dp(10), dp(7))
-            minHeight = dp(34)
+            setPadding(dp(8), dp(5), dp(8), dp(5))
+            minHeight = dp(30)
             fun paint() {
                 val selected = chosen()
                 isSelected = selected
@@ -272,8 +272,8 @@ internal class DiscoveryScreen(
                         }
                         .apply {
                             if (group.type != "genre") {
-                                minHeight = dp(28)
-                                setPadding(dp(10), dp(4), dp(10), dp(4))
+                                minHeight = dp(26)
+                                setPadding(dp(8), dp(3), dp(8), dp(3))
                             }
                         }
                 controls[group.type to option.id] = chip
@@ -306,7 +306,7 @@ internal class DiscoveryScreen(
                 row.addView(expand, LayoutParams(-2, -2).apply { leftMargin = dp(8) })
             }
             if (group.type == "genre") types.addView(row, LayoutParams(-1, -2))
-            else groups.addView(row, LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+            else groups.addView(row, LayoutParams(-1, -2).apply { bottomMargin = dp(3) })
         }
         val rows =
             available.map { group ->

@@ -77,7 +77,7 @@ class AccountLibraryTest {
     }
 
     @Test
-    fun sourceTabsKeepCollectionsSeparateRememberSelectionAndReachHeaderActions() {
+    fun mergedFavoritesKeepBothSourcesAndDeduplicateAfterLocalChanges() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()
         try {
@@ -121,16 +121,10 @@ class AccountLibraryTest {
             method(activity, "switchTab", 3)
             val root = activity.findViewById<View>(android.R.id.content)
             assertTrue(texts(root).any { it.text.toString() == "本机收藏测试" })
-            assertFalse(texts(root).any { it.text.toString() == "账户收藏测试" })
-            texts(root).single { it.text.toString() == "账户收藏" }.performClick()
             assertTrue(texts(root).any { it.text.toString() == "账户收藏测试" })
-            assertFalse(texts(root).any { it.text.toString() == "本机收藏测试" })
-            val source = texts(root).single { it.text.toString() == "账户收藏" }
-            val refresh = texts(root).single { it.text.toString() == "刷新收藏" }
-            assertEquals(refresh.id, source.nextFocusUpId)
+            assertFalse(texts(root).any { it.text.toString() in listOf("账户收藏", "本机收藏") })
             @Suppress("UNCHECKED_CAST")
             val cards = get(activity, "catalogCards") as Map<String, View>
-            assertEquals(source.id, cards.getValue("222").nextFocusUpId)
             cards.getValue("222").performLongClick()
             val dialog = ShadowAlertDialog.getLatestAlertDialog()
             val choices = texts(dialog.findViewById(android.R.id.content))
@@ -143,6 +137,7 @@ class AccountLibraryTest {
             assertFalse(choices.any { it.contains("稍后看") })
             dialog.findViewById<View>(android.R.id.content).findViewWithTag<View>("choice-3").performClick()
             assertTrue(library.favorite("222"))
+            assertEquals(1, (get(activity, "catalog") as List<*>).filterIsInstance<Series>().count { it.id == "222" })
             cards.getValue("222").performLongClick()
             val again = ShadowAlertDialog.getLatestAlertDialog()
             val remove = again.findViewById<View>(android.R.id.content).findViewWithTag<android.widget.LinearLayout>("choice-3")
@@ -151,11 +146,10 @@ class AccountLibraryTest {
             assertFalse(library.favorite("222"))
             method(activity, "switchTab", 4)
             method(activity, "switchTab", 3)
-            assertTrue((get(activity, "librarySources") as LibrarySources).accountFavorites)
-            assertTrue(LibrarySources(activity).accountFavorites)
+            assertTrue(texts(root).any { it.text.toString() == "账户收藏测试" })
             assertEquals(listOf("111"), library.favorites().map { it.id })
             @Suppress("UNCHECKED_CAST") val nav = get(activity, "nav") as List<View>
-            assertEquals(7, nav.size)
+            assertEquals(8, nav.size)
         } finally {
             controller.destroy()
         }
@@ -219,8 +213,6 @@ class AccountLibraryTest {
             )
             val root = activity.findViewById<View>(android.R.id.content)
             method(activity, "switchTab", 3)
-            assertTrue(texts(root).any { it.text.toString() == "共 80 集\n看到第 4 集" })
-            texts(root).single { it.text.toString() == "账户收藏" }.performClick()
             assertTrue(texts(root).any { it.text.toString() == "共 80 集\n看到第 12 集" })
             assertFalse(texts(root).any { it.text.toString() == "共 80 集\n看到第 4 集" })
             @Suppress("UNCHECKED_CAST")
@@ -263,16 +255,9 @@ class AccountLibraryTest {
                 )
             method(activity, "switchTab", 3)
             val root = activity.findViewById<View>(android.R.id.content)
-            texts(root).single { it.text.toString() == "账户收藏" }.performClick()
-            val login = texts(root).single { it.text.toString() == "登录红果" }
-            assertTrue(texts(root).any { it.text.contains("登录红果后查看账户收藏") })
-            assertEquals(
-                login.id,
-                texts(root).single { it.text.toString() == "账户收藏" }.nextFocusUpId,
-            )
-            texts(root).single { it.text.toString() == "本机收藏" }.performClick()
+            assertTrue(texts(root).any { it.text.toString() == "登录红果" })
+            assertTrue(texts(root).any { it.text.contains("登录后在这里合并显示") })
             assertTrue(texts(root).any { it.text.toString() == "本机依然存在" })
-            assertFalse(LibrarySources(activity).accountFavorites)
         } finally {
             controller.destroy()
         }

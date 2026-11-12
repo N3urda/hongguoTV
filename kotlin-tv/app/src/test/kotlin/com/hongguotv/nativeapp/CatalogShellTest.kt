@@ -20,6 +20,8 @@ class CatalogShellTest {
             activity.get().setContentView(shell)
             shell.body.addView(TextView(activity.get()).apply { text = "首页内容" })
             val top = shell.getChildAt(0)
+            assertEquals(shell.navigation[7].id, shell.navigation[1].nextFocusRightId)
+            assertEquals(shell.navigation[2].id, shell.navigation[7].nextFocusRightId)
             val tab = shell.navigation[2]
             val ids = shell.navigation.map { it.id }
             tab.requestFocus(); tab.performClick()
