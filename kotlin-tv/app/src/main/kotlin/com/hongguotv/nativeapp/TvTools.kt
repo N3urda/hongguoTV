@@ -68,6 +68,12 @@ class TvTools(private val activity: Activity) {
         next.window?.setDimAmount(.6f)
     }
 
+    internal fun dispatchPhoneKey(event: android.view.KeyEvent): Boolean {
+        val modal = dialog?.takeIf { it.isShowing } ?: return false
+        modal.dispatchKeyEvent(event)
+        return true
+    }
+
     fun close() {
         dialog?.dismiss()
         phone?.close()
@@ -386,6 +392,18 @@ class TvTools(private val activity: Activity) {
             setImageBitmap(Bitmap.createBitmap(pixels, 360, 360, Bitmap.Config.ARGB_8888))
             contentDescription = "二维码"
         }
+
+    fun phoneConsole(url: String, anchor: View?, disconnect: () -> Unit) {
+        val content = column()
+        val row = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
+        row.addView(qr(url), LinearLayout.LayoutParams(dp(185), dp(185)))
+        row.addView(label("手机扫码后用浏览器打开。\n关闭此窗口后仍可控制，播放中也能使用。\n电视退出应用后连接失效；请勿分享二维码。", 16f), LinearLayout.LayoutParams(0, -2, 1f))
+        content.addView(row)
+        content.addView(label(url, 12f))
+        open(AlertDialog.Builder(activity).setTitle("手机控制台")
+            .setView(content).setPositiveButton("继续看电视", null)
+            .setNegativeButton("断开所有手机") { _, _ -> disconnect() }.create(), anchor)
+    }
 
     fun phoneInput(
         anchor: View?,

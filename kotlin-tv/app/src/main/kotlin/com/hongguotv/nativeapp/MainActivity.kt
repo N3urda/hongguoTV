@@ -29,6 +29,7 @@ import androidx.media3.ui.PlayerView
 import com.hongguotv.core.*
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import org.json.JSONObject
 import kotlin.math.roundToInt
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -41,6 +42,103 @@ class MainActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newFixedThreadPool(3)
     private val repository = ContentRepository(playbackSession = PlaybackDeviceSession.shared)
+    private val phoneCatalog by lazy {
+        PhoneControlCatalog(library, cloudAccount) { series, progress ->
+            // Save while the old detail still identifies the playing episode.
+            saveProgress()
+            library.flush()
+            releasePlayer()
+            tvTools.close()
+            openDetail(series, resume = true, cloudProgress = progress)
+        }
+    }
+    private val phoneConsole by lazy {
+        PhoneConsole(this, tvTools, phoneCatalog, ::phoneControl) { keyword, requestedPage, result ->
+            saveProgress()
+            releasePlayer()
+            library.rememberSearch(keyword, ContentType.SHORT)
+            tvSearchOpen = true
+            searchDraft = keyword
+            query = keyword
+            submittedSearch = keyword
+            collection = null
+            tab = 1
+            page = requestedPage
+            catalog = result.items
+            hasMore = result.hasMore
+            catalogFocus = ""
+            showCatalog(false)
+        }
+    }
+
+    private fun phoneControl(body: JSONObject): JSONObject {
+        val action = body.getString("action")
+        val active = screen == "player" && detail != null
+        if (action == "status") return JSONObject()
+            .put("active", active).put("title", if (active) detail?.series?.title.orEmpty() else "")
+            .put("episode", if (active) episodeIndex + 1 else 0)
+            .put("episodes", if (active) detail?.episodes?.size ?: 0 else 0)
+            .put("position", if (active) currentPosition() else 0)
+            .put("duration", if (active) player?.duration?.coerceAtLeast(0) ?: 0 else 0)
+            .put("playing", active && player?.isPlaying == true)
+            .put("speed", library.playbackSpeed).put("quality", library.maxQuality)
+            .put("scope", cloudAccount.historyScope).put("account", cloudAccount.accountLabel)
+            .put("message", phoneCatalog.message)
+        if (action == "account") {
+            tvTools.close()
+            cloudAccount.show()
+            return JSONObject().put("message", "请在电视完成账户操作")
+        }
+        if (action == "key") {
+            val key = when (body.getString("value")) {
+                "up" -> KeyEvent.KEYCODE_DPAD_UP
+                "down" -> KeyEvent.KEYCODE_DPAD_DOWN
+                "left" -> KeyEvent.KEYCODE_DPAD_LEFT
+                "right" -> KeyEvent.KEYCODE_DPAD_RIGHT
+                "ok" -> KeyEvent.KEYCODE_DPAD_CENTER
+                "back" -> KeyEvent.KEYCODE_BACK
+                else -> throw IllegalArgumentException("Unknown key")
+            }
+            for (event in listOf(KeyEvent(KeyEvent.ACTION_DOWN, key), KeyEvent(KeyEvent.ACTION_UP, key))) {
+                if (!tvTools.dispatchPhoneKey(event) && !cloudAccount.dispatchPhoneKey(event) &&
+                    episodePanel?.dispatchPhoneKey(event) != true) dispatchKeyEvent(event)
+            }
+            return JSONObject().put("message", "已发送遥控指令")
+        }
+        if (!active) return JSONObject().put("error", "请先选择剧目并在电视播放；首页可使用方向遥控")
+        when (action) {
+            "pause" -> requestPlayback(false)
+            "resume" -> requestPlayback(true)
+            "previous" -> skipEpisode(-1)
+            "next" -> skipEpisode(1)
+            "backward", "forward" -> {
+                if (!playbackReady) return JSONObject().put("error", "播放器尚未准备完成")
+                seekTo(currentPosition() + if (action == "forward") 15000 else -15000)
+            }
+            "episode" -> {
+                val index = body.getInt("value") - 1
+                require(index in detail!!.episodes.indices)
+                playEpisode(index)
+            }
+            "speed" -> {
+                val speed = body.getDouble("value").toFloat()
+                require(speed in PlaybackSpeed.options)
+                library.playbackSpeed = speed
+                player?.setPlaybackSpeed(speed)
+            }
+            "quality" -> {
+                val quality = body.getInt("value")
+                require(quality in PlaybackQuality.options)
+                if (library.maxQuality != quality) {
+                    library.maxQuality = quality
+                    playEpisode(episodeIndex, currentPosition(), player?.playWhenReady ?: requestedAutoplay)
+                }
+            }
+            else -> throw IllegalArgumentException("Unknown command")
+        }
+        return JSONObject().put("message", "已执行")
+    }
+
     // 榜单专用并行加载通道：最多四榜各自在途、互不取消，与全局单飞 work() 隔离。
     private val rankWorker = Executors.newFixedThreadPool(3)
     private val networkCleanup = Executors.newSingleThreadExecutor()
@@ -256,6 +354,7 @@ class MainActivity : Activity() {
         object : ConnectivityManager.NetworkCallback() {
             private fun changed() {
                 main.post {
+                    phoneConsole.networkChanged()
                     if (connectivity.isActiveNetworkMetered || !networkAvailable()) cancelPrefetch()
                     if (foreground && screen == "player" && playError && autoRecovery)
                         scheduleRecovery()
@@ -1065,7 +1164,7 @@ class MainActivity : Activity() {
                         nav[tab],
                         repository::searchSuggestions,
                         ::runSearch,
-                        { anchor -> tvTools.phoneInput(anchor) { query, _ -> query?.let { runSearch(it) } } },
+                        { anchor -> phoneConsole.show(anchor) },
                         ::returnToDiscovery,
                     )
                 tvSearchPanel = panel
@@ -1119,10 +1218,10 @@ class MainActivity : Activity() {
                 recent.nextFocusUpId = input.nextFocusUpId
                 lateinit var phone: TextView
                 phone =
-                    addButton(searchRow, "手机输入") {
+                    addButton(searchRow, "手机控制台") {
                         (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                             .hideSoftInputFromWindow(input.windowToken, 0)
-                        tvTools.phoneInput(phone) { query, _ -> query?.let { runSearch(it) } }
+                        phoneConsole.show(phone)
                     }
                 phone.nextFocusUpId = input.nextFocusUpId
                 val keyboard =
@@ -2439,6 +2538,7 @@ class MainActivity : Activity() {
                         setPadding(0, 0, 0, dp(14))
                     })
                     setting("登录与账户管理") { cloudAccount.show() }
+                    setting("手机控制台 · 搜索 / 遥控 / 账户片单") { phoneConsole.show(null) }
                 }
                 3 -> {
                     lateinit var updates: TextView
@@ -5012,6 +5112,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        phoneConsole.resume()
         foreground = true
         startGradualPreloading()
         gradualPreloader?.resume()
@@ -5092,6 +5193,7 @@ class MainActivity : Activity() {
 
     // 应用离开前台时暂停播放及后台活动，防止页面不可见时继续消耗资源。
     override fun onStop() {
+        phoneConsole.stop()
         homeFeed?.close()
         homeFeed = null
         restoreStoppedPage = true
@@ -5117,6 +5219,7 @@ class MainActivity : Activity() {
 
     // 页面销毁时释放播放器、请求和工作线程，避免资源继续持有旧 Activity。
     override fun onDestroy() {
+        phoneConsole.stop()
         gradualPreloader?.close()
         generation++
         cancelWork()

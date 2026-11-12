@@ -99,7 +99,7 @@ class TvSearchPanelTest {
             assertEquals("历史剧名", searched)
             click("清空")
             assertTrue(panel.input.text.isEmpty())
-            click("手机输入")
+            click("手机控制台")
             assertTrue(phone)
             click("返回分类")
             assertTrue(back)

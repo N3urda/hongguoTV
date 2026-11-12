@@ -153,7 +153,7 @@ internal class TvSearchPanel(
                     (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                         .showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
                 },
-                action("手机输入") {
+                action("手机控制台") {
                     hideKeyboard()
                     phone(it)
                 },

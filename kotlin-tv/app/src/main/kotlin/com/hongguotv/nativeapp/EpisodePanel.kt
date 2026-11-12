@@ -24,6 +24,12 @@ class EpisodePanel(
     private val lastCompleted: Boolean = false,
 ) {
     private val dialog = Dialog(activity)
+    internal fun dispatchPhoneKey(event: android.view.KeyEvent): Boolean {
+        val modal = dialog.takeIf { it.isShowing } ?: return false
+        modal.dispatchKeyEvent(event)
+        return true
+    }
+
     private var group = current / 20
     private var focused = current
 

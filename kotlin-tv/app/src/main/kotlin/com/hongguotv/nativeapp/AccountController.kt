@@ -400,6 +400,12 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         onHistoryChanged?.invoke()
     }
 
+    internal fun dispatchPhoneKey(event: android.view.KeyEvent): Boolean {
+        val modal = dialog?.takeIf { it.isShowing } ?: return false
+        modal.dispatchKeyEvent(event)
+        return true
+    }
+
     val showing
         get() = dialog?.isShowing == true
 
