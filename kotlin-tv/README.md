@@ -1,3 +1,5 @@
+<p align="center"><img src="../assets/brand/logo-pixel.png" width="96" alt="红果 TV 标识" /></p>
+
 # 红果 TV 原生版
 
 Kotlin + Android 原生 View + Media3，单 APK，最低 Android 5.0 / API 21。包名 `com.hongguotv.nativeapp`；界面功能见 [项目说明](../README.md)，合并策略与验证见 [集成记录](MAIN_INTEGRATION.md)。

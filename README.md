@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/brand/readme-banner.png" width="720" alt="红果 TV — 好故事，大屏看" />
+</p>
+
 # 红果 TV
 
 非官方红果短剧电视客户端。Kotlin 原生 APK，安装后联网使用，仅提供 APK 安装包。

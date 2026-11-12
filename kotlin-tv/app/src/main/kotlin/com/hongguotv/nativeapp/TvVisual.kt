@@ -13,14 +13,14 @@ import android.widget.TextView
 internal object TvVisual {
     private var sharedNoise: Bitmap? = null
     val accent = Color.rgb(255, 120, 68)
-    val value = Color.rgb(168, 178, 196)
-    val primary = Color.rgb(209, 217, 232)
+    val value = Color.rgb(192, 204, 222)
+    val primary = Color.rgb(241, 245, 251)
     val focusedValue = Color.rgb(255, 158, 112)
 
     fun panel(context: Context, modal: Boolean = false) = GradientDrawable(GradientDrawable.Orientation.TL_BR,
-        intArrayOf(Color.argb(if (modal) 250 else 140, 20, 26, 38), Color.argb(if (modal) 250 else 140, 24, 32, 47))).apply {
+        intArrayOf(Color.argb(if (modal) 250 else 220, 44, 59, 80), Color.argb(if (modal) 250 else 220, 36, 49, 68))).apply {
         cornerRadius = 16 * context.resources.displayMetrics.density
-        setStroke(maxOf(1, context.resources.displayMetrics.density.toInt()), Color.argb(18, 255, 255, 255))
+        setStroke(maxOf(1, context.resources.displayMetrics.density.toInt()), Color.argb(40, 255, 255, 255))
     }
 
     fun row(context: Context, focused: Boolean, selected: Boolean = false, category: Boolean = false): Drawable =
@@ -94,7 +94,7 @@ internal object TvVisual {
             val w = bounds.width().toFloat().coerceAtLeast(1f)
             val h = bounds.height().toFloat().coerceAtLeast(1f)
             paint.shader = RadialGradient(w * .5f, h * .30f, w * .58f,
-                Color.rgb(36, 52, 80), Color.rgb(7, 10, 15), Shader.TileMode.CLAMP)
+                Color.rgb(61, 83, 113), Color.rgb(31, 43, 61), Shader.TileMode.CLAMP)
             canvas.drawRect(bounds, paint)
             paint.shader = RadialGradient(w * .92f, h * .95f, w * .48f,
                 Color.argb(22, 130, 75, 40), Color.TRANSPARENT, Shader.TileMode.CLAMP)

@@ -22,13 +22,13 @@ internal class CatalogShell(context: Context, private val selectTab: (Int) -> Un
         setPadding(dp(24), dp(16), dp(24), dp(16))
         val header = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
         val brand = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
-        brand.addView(ImageView(context).apply { setImageResource(R.drawable.app_icon) },
-            LayoutParams(dp(28), dp(28)).apply { rightMargin = dp(9) })
+        brand.addView(ImageView(context).apply { setImageResource(R.drawable.brand_mark); contentDescription = "红果 TV 像素小电视"; scaleType = ImageView.ScaleType.FIT_CENTER },
+            LayoutParams(dp(48), dp(42)).apply { rightMargin = dp(9) })
         brand.addView(TextView(context).apply {
             text = "红果 TV"; textSize = if (widthDp < 800) 17f else 22f
             setTextColor(TvVisual.primary); typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         })
-        header.addView(brand, LayoutParams(dp(if (widthDp < 800) 105 else 140), dp(44)))
+        header.addView(brand, LayoutParams(dp(if (widthDp < 800) 130 else 160), dp(44)))
         listOf("首页", "找剧", "排行榜", "收藏", "观看历史", "账户预约", "设置").forEachIndexed { index, title ->
             val tab = TextView(context).apply {
                 id = View.generateViewId(); text = title
