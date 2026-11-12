@@ -22,6 +22,8 @@ internal class PhoneControlCatalog(
     private var reservationId: String? = null
     private var favoriteId: String? = null
 
+    fun login(credentials: AccountCredentials, scope: Int) = account.acceptConsoleLogin(credentials, scope)
+
     fun clear() { entries.clear(); message = ""; mutationPending = false; reservationId = null; favoriteId = null }
 
     fun favoriteStatus(): JSONObject? {
@@ -68,7 +70,7 @@ internal class PhoneControlCatalog(
         val page = body.optInt("page", 1).also { require(it in 1..100) }
         val refresh = body.optBoolean("refresh")
         val cloud = kind in setOf("favorites", "history", "online", "upcoming")
-        if (cloud && !account.signedIn) return result(emptyList(), status = "请在电视登录红果账户")
+        if (cloud && !account.signedIn) return result(emptyList(), status = "请到「账户」登录红果")
         var status = ""
         var loading = false
         val rows = when (kind) {
@@ -112,7 +114,7 @@ internal class PhoneControlCatalog(
                 return JSONObject().put("message", "已发送到电视，正在准备播放")
             }
             "favorite", "reserve" -> {
-                if (!account.signedIn) return JSONObject().put("error", "请先在电视登录账户")
+                if (!account.signedIn) return JSONObject().put("error", "请先到「账户」登录")
                 if (mutationPending || account.historyLoading) return JSONObject().put("error", "账户操作进行中，请稍候")
                 if (action == "reserve") { require(entry.reservable); reservationId = entry.series.id }
                 else { require(!entry.upcoming); favoriteId = entry.series.id }

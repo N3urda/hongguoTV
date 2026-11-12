@@ -54,7 +54,7 @@ class WebLogin(http: OkHttpClient) {
     private var mobile = ""
     private var sent = false
 
-    data class Qr(val image: ByteArray, val expiresIn: Int)
+    data class Qr(val image: ByteArray, val expiresIn: Int, val appUrl: String = "")
 
     private fun call(
         path: String,
@@ -110,7 +110,7 @@ class WebLogin(http: OkHttpClient) {
                     .coerceAtMost(600)
                     .toInt()
             else expiry.coerceIn(0, 600).toInt()
-        return Qr(decode64(encoded), seconds)
+        return Qr(decode64(encoded), seconds, authorizationAppUrl(data.optString("qrcode_index_url"), token))
     }
 
     /** Returns false while awaiting the user's scan/confirmation. */
@@ -221,6 +221,16 @@ class WebLogin(http: OkHttpClient) {
     }
 
     companion object {
+        /** Only wrap the official authorization URL belonging to this QR session. */
+        internal fun authorizationAppUrl(value: String, token: String): String {
+            val url = runCatching { value.toHttpUrl() }.getOrNull() ?: return ""
+            if (value.length > 8192 || url.scheme != "https" || url.host != "reading.snssdk.com" ||
+                url.port != 443 || url.username.isNotEmpty() || url.password.isNotEmpty() ||
+                url.encodedPath != "/reading_offline/novelread/page/scan-code.html" ||
+                token.isBlank() || url.queryParameter("token") != token) return ""
+            return "dragon8662://webview?url=" + java.net.URLEncoder.encode(url.toString(), "UTF-8")
+        }
+
         const val BASE = "https://hongguoduanju.com"
         private const val UA =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"

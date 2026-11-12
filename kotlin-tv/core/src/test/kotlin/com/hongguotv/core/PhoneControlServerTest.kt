@@ -33,7 +33,7 @@ class PhoneControlServerTest {
             assertTrue(page.startsWith("HTTP/1.1 200"))
             assertTrue(page.contains("手机控制台"))
             assertTrue(page.contains("frame-ancestors 'none'"))
-            assertFalse(page.contains("<img"))
+            assertTrue(page.contains("img-src data:"))
             assertFalse(page.contains("<video"))
             assertFalse(page.contains("src=\"http"))
             repeat(30) { assertTrue(call(server).startsWith("HTTP/1.1 200")) }

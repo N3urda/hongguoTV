@@ -83,6 +83,7 @@ class MainActivity : Activity() {
             .put("playing", active && player?.isPlaying == true)
             .put("speed", library.playbackSpeed).put("quality", library.maxQuality)
             .put("scope", cloudAccount.historyScope).put("account", cloudAccount.accountLabel)
+            .put("signedIn", cloudAccount.signedIn).put("accountStatus", cloudAccount.status)
             .put("message", phoneCatalog.message).put("reservation", phoneCatalog.reservationStatus())
             .put("catalogRevision", phoneCatalog.revision).put("favorite", phoneCatalog.favoriteStatus())
         if (action == "account") {

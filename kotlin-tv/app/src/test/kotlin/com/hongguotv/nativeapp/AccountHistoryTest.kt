@@ -188,9 +188,10 @@ class AccountHistoryTest {
                     "acceptAccount",
                     AccountCredentials::class.java,
                     CloudProfile::class.java,
+                    Boolean::class.javaPrimitiveType,
                 )
                 .apply { isAccessible = true }
-                .invoke(account, AccountCredentials("test-only-b"), CloudProfile("b", "账号 B"))
+                .invoke(account, AccountCredentials("test-only-b"), CloudProfile("b", "账号 B"), true)
             assertTrue(account.signedIn)
             assertEquals("账号 B", account.accountLabel)
             assertTrue(account.reservationState(true).rows.isEmpty())

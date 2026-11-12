@@ -6,6 +6,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WebLoginTest {
+    @org.junit.Test fun appAuthorizationOnlyWrapsOfficialSessionUrl() {
+        val url = "https://reading.snssdk.com/reading_offline/novelread/page/scan-code.html?token=test-token&qr_source_aid=513755"
+        val link = WebLogin.authorizationAppUrl(url, "test-token")
+        org.junit.Assert.assertTrue(link.startsWith("dragon8662://webview?url="))
+        org.junit.Assert.assertEquals(url, java.net.URLDecoder.decode(link.substringAfter("url="), "UTF-8"))
+        listOf(url.replace("https:", "http:"), url.replace("reading.snssdk.com", "evil.example"), url.replace("scan-code.html", "other.html"), url.replace("test-token", "another"), url.replace("reading.snssdk.com", "user@reading.snssdk.com")).forEach {
+            org.junit.Assert.assertEquals("", WebLogin.authorizationAppUrl(it, "test-token"))
+        }
+    }
+
     private fun http(respond: (Request, Response.Builder) -> String) =
         OkHttpClient.Builder()
             .addInterceptor { chain ->

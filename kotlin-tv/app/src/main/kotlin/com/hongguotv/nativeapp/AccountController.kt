@@ -152,7 +152,8 @@ class AccountController(private val activity: Activity, private val play: (Cloud
     private var favorites = FavoriteState()
     private val unconfirmedFavorites = mutableMapOf<String, Boolean>()
     private var reservations = emptyMap<Boolean, ReservationState>()
-    private var status = "未登录"
+    internal var status = "未登录"
+        private set
     private var busy = false
     private var lastUpload = 0L
     private var lastEpisode = ""
@@ -846,7 +847,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         return next to account
     }
 
-    private fun acceptAccount(next: AccountCredentials, account: CloudProfile) {
+    private fun acceptAccount(next: AccountCredentials, account: CloudProfile, showResult: Boolean = true) {
         accountRestored = true
         accountRestoreFailed = false
         credentials = next
@@ -867,7 +868,19 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         draining = false
         changed()
         toast("已登录 ${account.nickname}")
-        refresh(true)
+        refresh(showResult)
+    }
+
+    /** Called on the main thread; credentials never travel back to the phone. */
+    internal fun acceptConsoleLogin(web: AccountCredentials, expectedScope: Int) {
+        check(expectedScope == historyScope && !busy && !closed) { "账户状态已变化，请重新登录" }
+        status = "正在同步手机登录…"
+        changed()
+        task(
+            { validateAccount(web).also { store.save(it.first) } },
+            { acceptAccount(it.first, it.second, false) },
+            { status = "账户同步失败，请重新登录"; changed() },
+        )
     }
 
     private fun qrLogin() {

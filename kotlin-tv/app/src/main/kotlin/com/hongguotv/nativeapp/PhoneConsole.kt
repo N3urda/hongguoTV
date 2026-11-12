@@ -16,6 +16,7 @@ import okhttp3.ResponseBody
 import okio.ForwardingSource
 import okio.buffer
 import org.json.JSONObject
+import org.json.JSONArray
 
 /** Owns one foreground session; no background service, wake lock, web view or player. */
 internal class PhoneConsole(
@@ -26,6 +27,7 @@ internal class PhoneConsole(
     private val addressProvider: () -> String? = {
         LanInputAddresses.find(activity.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as ConnectivityManager).firstOrNull()?.address
     },
+    private val httpProvider: () -> OkHttpClient = { ContentRepository().http },
     private val showSearch: (String, Int, CatalogPage) -> Unit,
 ) {
     private val main = Handler(Looper.getMainLooper())
@@ -38,6 +40,13 @@ internal class PhoneConsole(
 
     private class Session(val http: OkHttpClient, val repository: ContentRepository, val active: AtomicBoolean) {
         val browsing = AtomicBoolean(false)
+        val suggesting = AtomicBoolean(false)
+        val authenticating = AtomicBoolean(false)
+        var login: WebLogin? = null
+        var loginScope = 0
+        var resendAt = 0L
+        var qrExpiresAt = 0L
+        var pollAt = 0L
         private var window = System.nanoTime()
         private var commands = 0
         @Synchronized fun allowCommand(): Boolean {
@@ -48,6 +57,8 @@ internal class PhoneConsole(
         lateinit var server: PhoneControlServer
         fun close() {
             active.set(false)
+            login?.cancel()
+            login = null
             if (::server.isInitialized) server.close()
             Thread({ http.dispatcher.cancelAll(); http.connectionPool.evictAll() }, "hongguotv-phone-cleanup").apply { isDaemon = true; start() }
         }
@@ -89,7 +100,7 @@ internal class PhoneConsole(
         val ticket = ++generation
         Thread({
             val active = AtomicBoolean(true)
-            val http = ContentRepository().http.newBuilder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS)
+            val http = httpProvider().newBuilder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS)
                 .callTimeout(12, TimeUnit.SECONDS)
                 .addInterceptor { chain ->
                     if (!active.get()) throw java.io.IOException("Session closed")
@@ -145,10 +156,33 @@ internal class PhoneConsole(
     private fun request(current: Session, body: JSONObject): JSONObject {
         val action = body.getString("action")
         if (action != "status" && !current.allowCommand()) return JSONObject().put("error", "操作过快，请稍候再试")
-        if (action == "search" || action == "related") {
-            if (!current.browsing.compareAndSet(false, true)) return JSONObject().put("error", "正在读取，请稍候再试")
+        if (action in setOf("loginQr", "loginSend", "loginVerify", "loginPoll")) return login(current, body)
+        if (action in setOf("search", "related", "suggest", "discover")) {
+            val reading = if (action == "suggest") current.suggesting else current.browsing
+            if (!reading.compareAndSet(false, true)) return JSONObject().put("error", "正在读取，请稍候再试")
             try {
                 val scope = onMain(current) { control(JSONObject().put("action", "status")).getInt("scope") }
+                if (action == "suggest") {
+                    val query = body.getString("query").trim()
+                    require(query.length in 1..80 && query.none { it.isISOControl() })
+                    return JSONObject().put("items", JSONArray(current.repository.searchSuggestions(query).take(8).map { it.take(100) }))
+                }
+                if (action == "discover") {
+                    val raw = body.optJSONObject("filters") ?: JSONObject()
+                    val selection = DiscoverySelection(raw.keys().asSequence().associateWith { raw.getString(it) })
+                    val cursor = body.optJSONObject("cursor")?.let {
+                        DiscoveryCursor(it.getInt("offset"), it.getString("session"), it.getInt("page"))
+                    }
+                    val result = current.repository.filteredDiscovery(selection, cursor)
+                    return onMain(current) {
+                        check(scope == control(JSONObject().put("action", "status")).getInt("scope"))
+                        catalog.result(result.items.map { RelatedWork(it, "", false) }, result.next != null)
+                            .put("groups", JSONArray(result.groups.map { group ->
+                                JSONObject().put("type", group.type).put("label", group.label)
+                                    .put("options", JSONArray(group.options.map { JSONObject().put("id", it.id).put("label", it.label) }))
+                            })).put("cursor", result.next?.let { JSONObject().put("offset", it.offset).put("session", it.session).put("page", it.page) })
+                    }
+                }
                 if (action == "related") {
                     val series = onMain(current) { catalog.series(body.getString("id")) }
                     val rows = current.repository.related(series.id).take(40)
@@ -166,7 +200,7 @@ internal class PhoneConsole(
                     if (body.optBoolean("sync")) showSearch(query, page, result)
                     catalog.result(result.items.map { RelatedWork(it, "", false) }, result.hasMore)
                 }
-            } finally { current.browsing.set(false) }
+            } finally { reading.set(false) }
         }
         return onMain(current) {
             when (action) {
@@ -177,4 +211,54 @@ internal class PhoneConsole(
             }
         }
     }
+    private fun login(current: Session, body: JSONObject): JSONObject {
+        if (!current.authenticating.compareAndSet(false, true)) return JSONObject().put("error", "登录处理中，请稍候")
+        try {
+            val action = body.getString("action")
+            val scope = onMain(current) { control(JSONObject().put("action", "status")).getInt("scope") }
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (current.login != null && current.loginScope != scope) {
+                current.login?.cancel(); current.login = null; current.qrExpiresAt = 0
+            }
+            if (action == "loginQr" || action == "loginSend") {
+                if (action == "loginSend" && now < current.resendAt)
+                    return JSONObject().put("error", "请等待倒计时结束再获取验证码")
+                val login = current.login ?: WebLogin(current.http).also { current.login = it; current.loginScope = scope }
+                check(current.loginScope == scope) { "账户已变化，请重新连接" }
+                if (action == "loginQr") {
+                    val qr = login.qr()
+                    require(qr.image.size <= 128 * 1024)
+                    current.qrExpiresAt = android.os.SystemClock.elapsedRealtime() + qr.expiresIn * 1000L
+                    return JSONObject().put("image", "data:image/png;base64," + android.util.Base64.encodeToString(qr.image, android.util.Base64.NO_WRAP))
+                        .put("expiresIn", qr.expiresIn).put("appUrl", qr.appUrl)
+                }
+                val mobile = PhoneLogin.parse(body.getString("mobile").also { require(it.length <= 32) })
+                current.qrExpiresAt = 0
+                current.resendAt = now + 60000
+                val sent = login.send(mobile)
+                val seconds = sent.retrySeconds.coerceIn(60, 300)
+                current.resendAt = android.os.SystemClock.elapsedRealtime() + seconds * 1000L
+                return JSONObject().put("retrySeconds", seconds).put("message", "验证码已发送")
+            }
+            val login = current.login ?: return JSONObject().put("error", "请先获取验证码或二维码")
+            check(current.loginScope == scope) { "账户已变化，请重新连接" }
+            val credentials = when (action) {
+                "loginVerify" -> login.verify(body.getString("code").also { require(it.matches(Regex("[0-9]{4,8}"))) })
+                "loginPoll" -> {
+                    if (current.qrExpiresAt == 0L) return JSONObject().put("error", "请先获取授权链接")
+                    if (now < current.pollAt) return JSONObject().put("pending", true)
+                    current.pollAt = now + 2000
+                    if (!login.poll()) return if (now >= current.qrExpiresAt) JSONObject().put("error", "授权已过期，请重新获取") else JSONObject().put("pending", true)
+                    login.credentials()
+                }
+                else -> throw IllegalArgumentException("Unknown login action")
+            }
+            onMain(current) { catalog.login(credentials, scope) }
+            current.login = null
+            return JSONObject().put("submitted", true).put("message", "验证成功，正在同步到电视…")
+        } catch (e: PhoneLogin.Failure) {
+            return JSONObject().put("error", e.message ?: "红果验证失败")
+        } finally { current.authenticating.set(false) }
+    }
+
 }

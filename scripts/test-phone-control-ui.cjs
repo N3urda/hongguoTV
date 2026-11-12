@@ -1,109 +1,36 @@
 #!/usr/bin/env node
-// Browser-only fixtures: validates the shipped page, not upstream account APIs or TV playback.
-const fs = require('node:fs');
-const path = require('node:path');
-const http = require('node:http');
-const assert = require('node:assert/strict');
-const { chromium } = require('playwright');
-const root = path.resolve(__dirname, '..');
-const source = fs.readFileSync(path.join(root, 'kotlin-tv/core/src/main/kotlin/com/hongguotv/core/PhoneControlPage.kt'), 'utf8');
-const html = source.split('"""')[1].replaceAll('$nonce', 'fixture');
-const calls = []; let listReads = 0; let reserved = false; let favorite = false; let favoriteChanged = false; let revision = 0; let failPage = true; let accountScope=7;
-const fixture = (body) => {
-  calls.push(body);
-  if (body.action === 'status') return { scope:accountScope, active: true, title: '浏览器测试剧目', episode: 3, episodes: 30, position: 42000, duration: 120000, playing: true, account: '测试账户', speed: 1, quality: 1080, catalogRevision: revision, favorite: favoriteChanged ? {id:'8',favorite:favorite,pending:false,loading:false}:null, reservation: reserved ? { id: '9', label: '已预约' } : null };
-  if (body.action === 'search' && body.page === 3 && failPage) { failPage=false; return {error:'临时查询失败'}; }
-  if (body.action === 'search') return { items: [{ id: String(body.page), title: body.page === 1 ? '<script>window.injected=true</script>' : body.page===2?'第二页测试剧':'第三页测试剧', badge: '共 30 集', playable: true, scope: 7 }], hasMore: body.page < 3 };
-  if (body.action === 'related') return { items: [{ id: '9', title: '即将上线的第二季', playable: false, reservable: true, scope: 7 }], hasMore: false };
-  if (body.action === 'list') {
-    if (body.refresh) listReads = 0;
-    listReads++;
-    return { items: listReads === 1 || (body.kind==='favorites'&&!favorite) ? [] : [{ id: '8', title: body.kind === 'upcoming' ? '未上线预约' : '账户片单剧', playable: body.kind !== 'upcoming', favorite:favorite, scope: 7 }], loading: listReads === 1, hasMore: false, message: listReads === 1 ? '正在读取…' : '读取完成' };
-  }
-  if (body.action === 'account') accountScope++;
-  if (body.action === 'reserve') {reserved = true; revision++;}
-  if (body.action === 'favorite') {favorite=body.add; favoriteChanged=true; revision++;}
-  return { message: body.action === 'reserve' ? '正在预约…' : '已执行' };
-};
-const server = http.createServer((req, res) => {
-  if (req.method === 'GET') { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-fixture'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" }); res.end(html); return; }
-  let body = ''; req.on('data', c => body += c); req.on('end', () => {
-    assert.equal(req.headers.origin, `http://127.0.0.1:${server.address().port}`);
-    assert.equal(req.headers['x-control-request'], '1');
-    const data = JSON.parse(body);
-    // Slow search demonstrates that playback controls remain available while browsing.
-    setTimeout(() => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(fixture(data))); }, data.action === 'search' ? 300 : 0);
-  });
-});
-(async () => {
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  let browser;
-  try {
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
-    const errors = []; page.on('pageerror', e => errors.push(String(e)));
-    await page.goto(`http://127.0.0.1:${server.address().port}/fixture`);
-    await page.waitForFunction(() => document.getElementById('playing').textContent === '浏览器测试剧目');
-    await page.locator('#query').fill('测试'); await page.locator('#search').click();
-    await page.locator('[data-cmd=pause]').click();
-    await page.waitForFunction(() => document.querySelector('#rows h3'));
-    assert(calls.some(c => c.action === 'pause'));
-    assert.equal(await page.evaluate(() => window.injected), undefined);
-    await page.locator('#next').click();
-    await page.waitForFunction(() => document.querySelector('#rows h3').textContent === '第二页测试剧');
-    await page.locator('#next').click();
-    await page.locator('#retry').waitFor({state:'visible'});
-    assert.equal(await page.locator('#page').textContent(),'第 2 页');
-    assert.equal(await page.locator('#rows h3').textContent(),'第二页测试剧');
-    await page.locator('#retry').click();
-    await page.waitForFunction(()=>document.querySelector('#rows h3').textContent==='第三页测试剧');
-    await page.locator('#prev').click();
-    await page.waitForFunction(()=>document.querySelector('#rows h3').textContent==='第二页测试剧');
-    await page.getByRole('button', { name: '电视播放 / 续播', exact: true }).click();
-    await page.waitForTimeout(80);
-    assert(calls.some(c => c.action === 'play' && c.id === '2' && c.scope === 7));
-    await page.getByRole('button', { name: '相关作品 / 预约', exact: true }).click();
-    await page.waitForFunction(() => document.querySelector('#rows h3').textContent === '即将上线的第二季');
-    assert.equal(await page.getByRole('button', { name: '电视播放 / 续播', exact: true }).count(), 0);
-    await page.getByRole('button', { name: '预约', exact: true }).click(); await page.waitForTimeout(80);
-    assert(calls.some(c => c.action === 'reserve' && c.id === '9' && c.scope === 7));
-    await page.getByRole('button', { name: '已预约', exact: true }).waitFor();
-    assert(await page.getByRole('button', { name: '已预约', exact: true }).isDisabled());
-    await page.locator('#backList').click();
-    await page.waitForFunction(()=>document.querySelector('#rows h3').textContent==='第二页测试剧');
-    assert.equal(await page.locator('#page').textContent(),'第 2 页');
-    await page.waitForTimeout(400);
-    await page.getByRole('button', { name: '账户历史', exact: true }).click();
-    await page.waitForFunction(() => document.querySelector('#rows h3')?.textContent === '账户片单剧');
-    await page.getByRole('button', { name: '电视播放 / 续播', exact: true }).click(); await page.waitForTimeout(80);
-    assert(calls.some(c => c.action === 'play' && c.source === 'history'));
-    await page.getByRole('button',{name:'加入账户收藏',exact:true}).click();
-    await page.getByRole('button',{name:'取消账户收藏',exact:true}).waitFor();
-    await page.getByRole('button',{name:'账户收藏',exact:true}).click();
-    await page.getByRole('button',{name:'取消账户收藏',exact:true}).waitFor();
-    page.once('dialog',dialog=>dialog.accept());
-    await page.getByRole('button',{name:'取消账户收藏',exact:true}).click();
-    await page.waitForFunction(()=>document.querySelectorAll('#rows h3').length===0);
-    assert(calls.some(c=>c.action==='favorite'&&c.add===false));
-    const readsBeforeSwitch=calls.filter(c=>c.action==='list').length;
-    await page.locator('#account').click();
-    await page.waitForTimeout(3500);
-    assert(calls.filter(c=>c.action==='list').length>readsBeforeSwitch);
-    await page.locator('#speed').selectOption('2'); await page.waitForTimeout(80);
-    await page.locator('#quality').selectOption('720'); await page.waitForTimeout(80);
-    await page.locator('#episode').fill('8'); await page.locator('#jump').click(); await page.waitForTimeout(80);
-    await page.locator('[data-key=left]').click(); await page.waitForTimeout(80);
-    for (const [action, value] of [['speed', 2], ['quality', 720], ['episode', 8], ['key', 'left']]) assert(calls.some(c => c.action === action && c.value === value));
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-    fs.mkdirSync(path.join(root, 'outputs/phone-control'), { recursive: true });
-    await page.screenshot({ path: path.join(root, 'outputs/phone-control/mobile.png'), fullPage: true });
-    // Simulate visibility lifecycle and verify no background polling.
-    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
-    await page.waitForTimeout(100);
-    const before = calls.filter(c => c.action === 'status').length;
-    await page.waitForTimeout(3300);
-    assert.equal(calls.filter(c => c.action === 'status').length, before);
-    assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ passed: true, checks: ['search pagination', 'controls during search', 'XSS text rendering', 'play command and account scope', 'upcoming reservation', 'asynchronous list refresh', 'cloud history source', 'speed quality episode direction', 'mobile overflow', 'hidden-page polling stops', 'failed page retry preserves page', 'return from related preserves results', 'favorite button and list update automatically', 'account switch reloads active collection'], requests: calls.length }, null, 2));
-  } finally { if (browser) await browser.close(); server.close(); }
-})().catch(e => { console.error(e); process.exitCode = 1; });
+// Exercises the actual shipped page with synthetic accounts; no real SMS or account mutation.
+const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
+const {chromium}=require('playwright');const root=path.resolve(__dirname,'..');
+const html=fs.readFileSync(path.join(root,'kotlin-tv/core/src/main/kotlin/com/hongguotv/core/PhoneControlPage.kt'),'utf8').split('"""')[1].replaceAll('$nonce','fixture');
+const calls=[],checks=[];let signedIn=false,scope=7,confirmed=false,favorite=false,reserved=false,revision=0,listReads=0,failPage=true;
+function fixture(b){calls.push(b);
+ if(b.action==='status')return{scope,signedIn,account:signedIn?'测试账户':'未登录',accountStatus:'',active:true,title:'浏览器测试剧目',episode:3,episodes:30,position:42000,duration:120000,playing:true,speed:1,quality:1080,catalogRevision:revision,favorite:{id:'8',favorite,pending:false,loading:false},reservation:reserved?{id:'9',label:'已预约'}:null};
+ if(b.action==='suggest')return{items:[b.query+'联想剧','第二条联想']};
+ if(b.action==='search'&&b.page===3&&failPage){failPage=false;return{error:'临时查询失败'}};
+ if(b.action==='search')return{items:[{id:String(b.page),title:b.page===1?'<script>window.injected=true</script>':'第'+b.page+'页测试剧',scope,playable:true}],hasMore:b.page<3};
+ if(b.action==='discover')return{items:[{id:'20',title:b.cursor?'筛选第二页':b.filters.genre?'筛选结果':'分类推荐',scope,playable:true}],groups:b.cursor?[]:[{type:'genre',label:'类型',options:[{id:'real_series',label:'真人剧'},{id:'comic_series',label:'漫剧'}]},{type:'category_dim_theme',label:'主题',options:[{id:'sweet',label:'甜宠'}]}],cursor:b.cursor?null:{offset:24,session:'fixture',page:2},hasMore:!b.cursor};
+ if(b.action==='related')return{items:[{id:'9',title:'即将上线第二季',playable:false,reservable:true,scope}],hasMore:false};
+ if(b.action==='list'){if(b.refresh)listReads=0;listReads++;return{items:listReads===1||(b.kind==='favorites'&&!favorite)?[]:[{id:'8',title:'账户片单剧',scope,playable:true,favorite}],loading:listReads===1,hasMore:false,message:listReads===1?'正在读取…':''}}
+ if(b.action==='loginQr')return{image:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6vX8AAAAASUVORK5CYII=',expiresIn:180,appUrl:'dragon8662://webview?url='+encodeURIComponent('https://reading.snssdk.com/reading_offline/novelread/page/scan-code.html?token=fixture')};
+ if(b.action==='loginPoll'){if(!confirmed)return{pending:true};signedIn=true;scope++;confirmed=false;return{submitted:true,message:'正在同步到电视'}}
+ if(b.action==='loginSend')return{retrySeconds:60,message:'验证码已发送'};
+ if(b.action==='loginVerify'){signedIn=true;scope++;return{submitted:true,message:'正在同步到电视'}}
+ if(b.action==='reserve'){reserved=true;revision++}if(b.action==='favorite'){favorite=b.add;revision++}return{message:'已执行'};
+}
+const server=http.createServer((req,res)=>{if(req.method==='GET'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-fixture'; connect-src 'self'; img-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"});res.end(html);return}let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{assert.equal(req.headers.origin,`http://127.0.0.1:${server.address().port}`);assert.equal(req.headers['x-control-request'],'1');const b=JSON.parse(raw);setTimeout(()=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(fixture(b)))},b.action==='search'?300:0)})});
+(async()=>{await new Promise(r=>server.listen(0,'127.0.0.1',r));let browser;try{
+ browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:390,height:844}});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+ await page.goto(`http://127.0.0.1:${server.address().port}/fixture`);await page.waitForFunction(()=>document.getElementById('connection').textContent.includes('正在播放'));
+ assert.equal(await page.locator('[role=tab]').count(),4);assert.equal(await page.locator('[data-key]').count(),0);assert(await page.locator('#panel-player').isHidden());checks.push('four separate tabs, no direction remote');
+ await page.locator('#query').fill('测试');await page.getByRole('button',{name:'测试联想剧',exact:true}).click();await page.locator('#rows h3').waitFor();assert.equal(await page.evaluate(()=>window.injected),undefined);assert(calls.some(c=>c.action==='search'&&c.query==='测试联想剧'));checks.push('debounced suggestions select and search; XSS text rendering');
+ await page.locator('#next').click();await page.waitForFunction(()=>document.querySelector('#rows h3').textContent==='第2页测试剧');await page.locator('#next').click();await page.locator('#retry').waitFor();assert.equal(await page.locator('#page').textContent(),'第 2 页');await page.locator('#retry').click();await page.waitForFunction(()=>document.querySelector('#rows h3').textContent==='第3页测试剧');checks.push('pagination failure preserves results and retries');
+ await page.getByRole('button',{name:'电视播放',exact:true}).click();await page.locator('#panel-player').waitFor();assert(calls.some(c=>c.action==='play'&&c.id==='3'&&c.scope===7));await page.locator('#togglePlay').click();await page.waitForTimeout(100);await page.locator('#speed').selectOption('2');await page.waitForTimeout(100);await page.locator('#quality').selectOption('720');await page.waitForTimeout(100);await page.locator('#episode').fill('8');await page.locator('#jump').click();await page.waitForTimeout(100);for(const [action,value] of [['speed',2],['quality',720],['episode',8]])assert(calls.some(c=>c.action===action&&c.value===value));checks.push('play opens player tab; pause speed quality episode');
+ await page.locator('#tab-browse').click();await page.locator('#discoverMode').click();await page.getByRole('button',{name:'真人剧',exact:true}).waitFor();await page.getByRole('button',{name:'真人剧',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#rows h3').textContent==='筛选结果');await page.getByRole('button',{name:'甜宠',exact:true}).click();await page.waitForTimeout(150);assert(calls.some(c=>c.action==='discover'&&c.filters.genre==='real_series'&&c.filters.category_dim_theme==='sweet'));await page.locator('#next').click();await page.waitForFunction(()=>document.querySelector('#rows h3').textContent==='筛选第二页');await page.locator('#prev').click();await page.waitForFunction(()=>document.querySelector('#rows h3').textContent==='筛选结果');await page.getByRole('button',{name:'漫剧',exact:true}).click();await page.waitForTimeout(150);assert.deepEqual(calls.filter(c=>c.action==='discover').at(-1).filters,{genre:'comic_series'});checks.push('real filter groups, multi-tag selection, cursor paging, genre resets taxonomy');
+ await page.locator('#tab-library').click();await page.locator('#loginGate').waitFor();assert.equal(await page.locator('#libraryKind option[value=upcoming]').count(),0);await page.locator('#goLogin').click();await page.locator('#openApp').waitFor();assert.match(await page.locator('#openApp').getAttribute('href'),/^dragon8662:\/\/webview\?url=/);confirmed=true;await page.waitForFunction(()=>document.getElementById('accountLabel').textContent==='测试账户');assert(await page.locator('#loginPanel').isHidden());checks.push('guest redirected within phone; official app link; confirmation syncs account');
+ await page.locator('#tab-library').click();await page.locator('#libraryKind').selectOption('history');await page.waitForFunction(()=>document.querySelector('#rows h3')?.textContent==='账户片单剧');await page.getByRole('button',{name:'电视播放',exact:true}).click();await page.waitForTimeout(100);assert(calls.some(c=>c.action==='play'&&c.source==='history'));await page.locator('#tab-library').click();await page.waitForFunction(()=>document.querySelector('#rows h3')?.textContent==='账户片单剧');await page.getByRole('button',{name:'加入账户收藏',exact:true}).click();await page.getByRole('button',{name:'取消账户收藏',exact:true}).waitFor();await page.locator('#libraryKind').selectOption('favorites');await page.getByRole('button',{name:'取消账户收藏',exact:true}).waitFor();page.once('dialog',d=>d.accept());await page.getByRole('button',{name:'取消账户收藏',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#rows h3'));checks.push('history resume and automatic favorite state/list refresh');
+ await page.locator('#libraryKind').selectOption('online');await page.waitForFunction(()=>document.querySelector('#rows h3')?.textContent==='账户片单剧');assert(!calls.some(c=>c.kind==='upcoming'));await page.getByRole('button',{name:'相关作品',exact:true}).click();await page.getByRole('button',{name:'预约',exact:true}).click();await page.getByRole('button',{name:'已预约',exact:true}).waitFor();assert(await page.getByRole('button',{name:'已预约',exact:true}).isDisabled());await page.locator('#backList').click();await page.waitForFunction(()=>document.querySelector('#rows h3')?.textContent==='账户片单剧');checks.push('reservation list only online; related upcoming can reserve once and return');
+ await page.locator('#tab-account').click();await page.locator('#switchAccount').click();await page.locator('#smsDetails summary').click();await page.locator('#mobile').fill('13800138000');await page.locator('#sendCode').click();await page.waitForFunction(()=>document.getElementById('sendCode').textContent.includes('秒后'));assert(await page.locator('#sendCode').isDisabled());await page.locator('#code').fill('123456');await page.locator('#verifyCode').click();await page.waitForFunction(()=>document.getElementById('loginPanel').hidden);assert.equal(await page.locator('#code').inputValue(),'');checks.push('SMS cooldown, submit and clear sensitive input');
+ const out=path.join(root,'outputs/phone-control-v2');fs.mkdirSync(out,{recursive:true});for(const tab of ['browse','player','library','account']){await page.locator('#tab-'+tab).click();await page.waitForTimeout(400);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);await page.screenshot({path:path.join(out,tab+'.png'),fullPage:true})}checks.push('390px tab layouts have no horizontal overflow');
+ await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});document.dispatchEvent(new Event('visibilitychange'))});await page.waitForTimeout(150);const before=calls.length;await page.waitForTimeout(3300);assert.equal(calls.length,before);assert.deepEqual(errors,[]);checks.push('hidden page stops polling and no JS errors');console.log(JSON.stringify({passed:true,checks,requests:calls.length},null,2));
+ }finally{if(browser)await browser.close();server.close()}})().catch(e=>{console.error(e);process.exitCode=1});
