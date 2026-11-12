@@ -57,7 +57,6 @@ class MainActivity : Activity() {
             saveProgress()
             releasePlayer()
             library.rememberSearch(keyword, ContentType.SHORT)
-            tvSearchOpen = true
             searchDraft = keyword
             query = keyword
             submittedSearch = keyword

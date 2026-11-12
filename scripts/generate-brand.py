@@ -15,7 +15,7 @@ def write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text + '\n')
 def magick(*args):
-    subprocess.run(['magick', *map(str, args)], check=True)
+    subprocess.run(['magick', *map(str, args[:-1]), '-strip', str(args[-1])], check=True)
 with tempfile.TemporaryDirectory() as directory:
     sprite = Path(directory) / 'sprite.png'
     magick(BRAND / 'logo-pixel-source.png', '-trim', '+repage', sprite)
@@ -53,3 +53,15 @@ with tempfile.TemporaryDirectory() as directory:
     magick('-background','none', BRAND / 'readme-banner.svg', BRAND / 'readme-banner.png')
 write(RES / 'values/brand.xml', f'<resources><color name="app_icon_background">{BG}</color></resources>')
 write(RES / 'mipmap-anydpi-v26/ic_launcher.xml', '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android"><background android:drawable="@color/app_icon_background"/><foreground android:drawable="@drawable/app_icon_foreground"/></adaptive-icon>')
+
+# Keep the companion page logo in sync without another image request or image server.
+import re
+page = ROOT / 'kotlin-tv/core/src/main/kotlin/com/hongguotv/core/PhoneControlPage.kt'
+html = page.read_text()
+encoded = base64.b64encode((RES / 'drawable-nodpi/brand_mark.png').read_bytes()).decode()
+brand = '<!-- brand:start --><h1 style="display:flex;align-items:center;gap:10px"><img width="48" height="40" style="object-fit:contain;image-rendering:pixelated" src="data:image/png;base64,' + encoded + '" alt=""/>红果 TV</h1><!-- brand:end -->'
+if '<!-- brand:start -->' in html:
+    html = re.sub(r'<!-- brand:start -->.*?<!-- brand:end -->', lambda _: brand, html)
+else:
+    html = html.replace('<h1>红果 TV</h1>', brand)
+page.write_text(html)
