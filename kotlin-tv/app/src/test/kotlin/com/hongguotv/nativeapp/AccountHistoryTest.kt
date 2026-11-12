@@ -51,7 +51,7 @@ class AccountHistoryTest {
     }
 
     @Test
-    fun accountTabShowsCloudRowsWhileRecentTabKeepsDeviceRows() {
+    fun historyMergesLocalAndCloudRows() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()
         fun get(name: String) =
@@ -89,29 +89,40 @@ class AccountHistoryTest {
                     .java
                     .getDeclaredMethod("switchTab", Int::class.javaPrimitiveType)
                     .apply { isAccessible = true }
-            (get("librarySources") as LibrarySources).accountHistory = true
             switch.invoke(activity, 4)
             val root = activity.findViewById<android.view.View>(android.R.id.content)
-            assertTrue(texts(root).any { it.contains("登录红果后") })
+            assertTrue(texts(root).any { it.contains("登录后在这里合并显示") })
             field(account, "credentials", AccountCredentials("test-only"))
             field(account, "profile", CloudProfile("a", "账号 A"))
             field(
                 account,
                 "history",
-                listOf(CloudProgress(Series("221", "云端独有记录"), "222", 3, 45000, 90000, 2000)),
+                listOf(
+                    CloudProgress(Series("221", "云端独有记录"), "222", 3, 45000, 90000, 2000),
+                    CloudProgress(local, "113", 2, 2000, 90000, 500),
+                ),
             )
             field(account, "busy", true)
             switch.invoke(activity, 4)
             assertTrue(texts(root).contains("云端独有记录"))
-            assertFalse(texts(root).contains("本机独有记录"))
-            assertTrue(texts(root).any { it.contains("第 4 集") })
-            MainActivity::class
-                .java
-                .getDeclaredMethod("switchLibrarySource", Boolean::class.javaPrimitiveType)
-                .apply { isAccessible = true }
-                .invoke(activity, false)
             assertTrue(texts(root).contains("本机独有记录"))
-            assertFalse(texts(root).contains("云端独有记录"))
+            assertTrue(texts(root).any { it.contains("第 4 集") })
+            assertEquals(listOf("221", "111"), (get("catalog") as List<*>).filterIsInstance<Series>().map { it.id })
+            assertEquals(1, (get("catalog") as List<*>).filterIsInstance<Series>().count { it.id == local.id })
+            val selectedCloud = MainActivity::class.java
+                .getDeclaredMethod("mergedCloudProgress", String::class.java).apply { isAccessible = true }
+            assertNull(selectedCloud.invoke(activity, local.id))
+            val newer = CloudProgress(local, "114", 4, 3000, 90000, 3000)
+            field(account, "history", listOf(newer))
+            switch.invoke(activity, 4)
+            assertEquals(newer, selectedCloud.invoke(activity, local.id))
+            assertEquals(1, (get("catalog") as List<*>).filterIsInstance<Series>().count { it.id == local.id })
+            assertTrue(texts(root).any { it.contains("第 5 集") })
+            field(account, "credentials", null)
+            switch.invoke(activity, 4)
+            assertNull(selectedCloud.invoke(activity, local.id))
+            assertTrue(texts(root).contains("本机独有记录"))
+            assertFalse(texts(root).any { it.contains("第 5 集") })
         } finally {
             controller.destroy()
         }

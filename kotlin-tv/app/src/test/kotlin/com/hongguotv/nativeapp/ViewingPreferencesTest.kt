@@ -27,7 +27,7 @@ class ViewingPreferencesTest {
         assertEquals(1, ViewingPreferences.decode(mapOf("startupTab" to 1, "startupPage" to 1)).initialTab())
     }
     @Test fun invalidStorageFallsBackWithoutBreakingStartup() {
-        val p = ViewingPreferences.decode(mapOf("startupTab" to 7, "clockMode" to -1, "homeAutoplay" to "false"))
+        val p = ViewingPreferences.decode(mapOf("startupTab" to 8, "clockMode" to -1, "homeAutoplay" to "false"))
         assertEquals(0, p.initialTab())
         assertEquals(1, p.clockMode)
         assertTrue(p.homeAutoplay)

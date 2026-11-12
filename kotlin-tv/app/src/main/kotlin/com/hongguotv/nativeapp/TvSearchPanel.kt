@@ -19,7 +19,6 @@ internal class TvSearchPanel(
     fetch: (String) -> List<String>,
     private val search: (String) -> Unit,
     phone: (View) -> Unit,
-    back: () -> Unit,
 ) : LinearLayout(context) {
     val input =
         EditText(context).apply {
@@ -153,11 +152,21 @@ internal class TvSearchPanel(
                     (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                         .showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
                 },
-                action("手机输入") {
+                action("手机控制台") {
                     hideKeyboard()
                     phone(it)
+                }.apply {
+                    fun paint(focused: Boolean) {
+                        setTextColor(android.graphics.Color.WHITE)
+                        background = android.graphics.drawable.GradientDrawable().apply {
+                            setColor(android.graphics.Color.rgb(if (focused) 210 else 166, if (focused) 85 else 60, 18))
+                            cornerRadius = dp(8).toFloat()
+                            if (focused) setStroke(dp(2), android.graphics.Color.rgb(255, 208, 160))
+                        }
+                    }
+                    paint(false)
+                    setOnFocusChangeListener { _, focused -> paint(focused) }
                 },
-                action("返回分类") { back() },
             )
         actions.chunked(3).forEach { row ->
             val line = LinearLayout(context)

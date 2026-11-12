@@ -34,7 +34,6 @@ class TvSearchPanelTest {
                 { emptyList() },
                 {},
                 {},
-                {},
             )
         try {
             activity.setContentView(panel)
@@ -46,7 +45,7 @@ class TvSearchPanelTest {
             assertTrue(panel.results.width >= 280)
             val scroll = panel.getChildAt(0) as ScrollView
             assertTrue(scroll.getChildAt(0).measuredHeight > scroll.height)
-            assertTrue(texts(panel).first { it.text == "返回分类" }.isFocusable)
+            assertFalse(texts(panel).any { it.text == "返回分类" })
         } finally {
             panel.suggestions.close()
             controller.pause().stop().destroy()
@@ -64,7 +63,6 @@ class TvSearchPanelTest {
         val activity = controller.get()
         val upper = TextView(activity).apply { id = View.generateViewId() }
         var searched = ""
-        var back = false
         var phone = false
         val panel =
             TvSearchPanel(
@@ -75,7 +73,6 @@ class TvSearchPanelTest {
                 { emptyList() },
                 { searched = it },
                 { phone = true },
-                { back = true },
             )
         try {
             activity.setContentView(panel)
@@ -99,10 +96,9 @@ class TvSearchPanelTest {
             assertEquals("历史剧名", searched)
             click("清空")
             assertTrue(panel.input.text.isEmpty())
-            click("手机输入")
+            click("手机控制台")
             assertTrue(phone)
-            click("返回分类")
-            assertTrue(back)
+            assertFalse(texts(panel).any { it.text == "返回分类" })
             panel.input.setText("a".repeat(80))
             panel.input.setSelection(80)
             click("B")
@@ -127,7 +123,6 @@ class TvSearchPanelTest {
                 upper,
                 { listOf("大佬，该出手了") },
                 { searched = it },
-                {},
                 {},
             )
         val result =
