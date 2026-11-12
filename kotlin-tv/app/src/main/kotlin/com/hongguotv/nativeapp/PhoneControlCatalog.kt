@@ -47,16 +47,25 @@ internal class PhoneControlCatalog(
         return entries[id]?.series ?: throw IllegalArgumentException("Expired card")
     }
 
+    private fun safeCover(value: String): String = value.takeIf { it.length <= 2048 &&
+        runCatching { java.net.URI(it).let { uri -> uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.userInfo == null } }.getOrDefault(false)
+    }.orEmpty()
+
+    private fun mergedSeries(rows: List<Series>): List<Series> = rows.groupBy { it.id }.values.map { versions ->
+        val first = versions.first()
+        first.copy(cover = versions.firstOrNull { safeCover(it.cover).isNotEmpty() }?.cover.orEmpty())
+    }
+
     fun result(rows: List<RelatedWork>, hasMore: Boolean = false, status: String = ""): JSONObject {
         checkScope()
         val items = JSONArray()
         rows.take(40).forEach { work ->
             val source = work.series
-            val small = Series(source.id.take(64), source.title.take(200), badge = source.badge.take(120))
+            val small = Series(source.id.take(64), source.title.take(200), cover = safeCover(source.cover), badge = source.badge.take(120))
             entries.remove(small.id)
             entries[small.id] = Entry(small, work.upcoming, work.upcoming && small.id.matches(Regex("[0-9]{1,19}")))
             while (entries.size > 80) entries.remove(entries.keys.first())
-            items.put(JSONObject().put("id", small.id).put("title", small.title).put("badge", work.label + " · " + small.badge)
+            items.put(JSONObject().put("id", small.id).put("title", small.title).put("cover", small.cover).put("badge", work.label + " · " + small.badge)
                 .put("reservationLabel", if (work.upcoming) account.reservationLabel(work) else "")
                 .put("favorite", account.accountFavorite(small.id)).put("favoritePending", account.favoriteNeedsRefresh(small.id))
                 .put("playable", !work.upcoming).put("reservable", entries[small.id]!!.reservable).put("scope", scope))
@@ -69,22 +78,27 @@ internal class PhoneControlCatalog(
         val kind = body.getString("kind")
         val page = body.optInt("page", 1).also { require(it in 1..100) }
         val refresh = body.optBoolean("refresh")
-        val cloud = kind in setOf("favorites", "history", "online", "upcoming")
+        val cloud = kind in setOf("online", "upcoming")
         if (cloud && !account.signedIn) return result(emptyList(), status = "请到「账户」登录红果")
         var status = ""
         var loading = false
         val rows = when (kind) {
             "favorites" -> {
-                if (refresh) account.refreshFavorites()
-                status = account.favoriteState().message
+                if (refresh && account.signedIn) account.refreshFavorites()
+                status = if (account.signedIn) "本机与账户收藏合并显示 · " + account.favoriteState().message
+                    else "本机收藏 · 登录后在这里合并显示账户收藏"
                 loading = account.favoriteState().loading
-                account.favoriteState().rows.map { RelatedWork(it.series, "", false) }
+                mergedSeries(library.favorites() + account.favoriteState().rows.map { it.series })
+                    .map { RelatedWork(it, "", false) }
             }
             "history" -> {
-                if (refresh) account.refreshHistory()
-                status = account.historyStatus
-                loading = account.historyLoading
-                account.historyRows().map { RelatedWork(it.series, "", false) }
+                if (refresh && account.signedIn) account.refreshHistory()
+                status = if (account.signedIn) "按最近观看排序 · " + account.historyStatus
+                    else "本机历史 · 登录后在这里合并显示账户历史"
+                loading = account.signedIn && account.historyLoading
+                val recent = (library.history().map { it.series to it.updatedAt } +
+                    account.historyRows().map { it.series to it.updatedAt }).sortedByDescending { it.second }
+                mergedSeries(recent.map { it.first }).map { RelatedWork(it, "", false) }
             }
             "online", "upcoming" -> {
                 if (refresh) account.refreshReservations()
@@ -109,7 +123,11 @@ internal class PhoneControlCatalog(
         when (action) {
             "play" -> {
                 require(!entry.upcoming)
-                val progress = if (body.optString("source") == "history" && account.signedIn) account.progress(entry.series.id) else null
+                val progress = if (body.optString("source") == "history" && account.signedIn)
+                    account.progress(entry.series.id)?.takeIf { cloud ->
+                        val local = library.progress(entry.series.id)
+                        local == null || cloud.updatedAt > local.updatedAt
+                    } else null
                 play(entry.series, progress)
                 return JSONObject().put("message", "已发送到电视，正在准备播放")
             }

@@ -26,14 +26,16 @@ class PhoneControlServerTest {
         }
     }
 
-    @Test fun repeatedRequestsKeepSessionAndPageContainsNoExternalResources() {
+    @Test fun repeatedRequestsKeepSessionAndOnlyImagesAllowExternalHttps() {
         val calls = AtomicInteger()
         PhoneControlServer("127.0.0.1") { calls.incrementAndGet(); JSONObject().put("title", "测试") }.use { server ->
             val page = call(server, null, origin = null, marker = false)
             assertTrue(page.startsWith("HTTP/1.1 200"))
             assertTrue(page.contains("手机控制台"))
             assertTrue(page.contains("frame-ancestors 'none'"))
-            assertTrue(page.contains("img-src data:"))
+            assertTrue(page.contains("img-src data: https:;"))
+            assertTrue(page.contains("Referrer-Policy: no-referrer"))
+            assertTrue(page.contains("connect-src 'self'"))
             assertFalse(page.contains("<video"))
             assertFalse(page.contains("src=\"http"))
             repeat(30) { assertTrue(call(server).startsWith("HTTP/1.1 200")) }

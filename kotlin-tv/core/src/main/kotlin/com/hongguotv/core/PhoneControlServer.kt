@@ -130,7 +130,7 @@ class PhoneControlServer(address: String, private val request: (JSONObject) -> J
         val bytes = text.toByteArray(Charsets.UTF_8)
         val headers = "HTTP/1.1 $code Response\r\nContent-Type: ${if (html) "text/html" else "application/json"}; charset=utf-8\r\n" +
             "Content-Length: ${bytes.size}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\n" +
-            "X-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-$token'; connect-src 'self'; img-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n\r\n"
+            "X-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-$token'; connect-src 'self'; img-src data: https:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n\r\n"
         socket.getOutputStream().apply { write(headers.toByteArray(Charsets.US_ASCII)); write(bytes); flush() }
     }
 }

@@ -49,7 +49,7 @@ class MainActivity : Activity() {
             library.flush()
             releasePlayer()
             tvTools.close()
-            openDetail(series, resume = true, cloudProgress = progress)
+            openDetail(series, resume = true, cloudProgress = progress, fromPhone = true)
         }
     }
     private val phoneConsole by lazy {
@@ -236,6 +236,7 @@ class MainActivity : Activity() {
     private lateinit var playbackTitle: TextView
     private var homePlayback = false
     private var directPlayback = false
+    private var phonePlayback = false
     private var collection: String? = null
     private var collectionReturn: CatalogState? = null
     private var collectionFocus = ""
@@ -2485,6 +2486,7 @@ class MainActivity : Activity() {
         cloudProgress: CloudProgress? = null,
         fromRelated: Boolean = false,
         fromHome: Boolean = false,
+        fromPhone: Boolean = false,
     ) {
         if (!fromRelated) detailTrail.clear()
         relatedSection = null
@@ -2498,6 +2500,7 @@ class MainActivity : Activity() {
         releaseCatalogViews()
         screen = "detail"
         homePlayback = fromHome
+        phonePlayback = fromPhone
         directPlayback = resume && !fromHome
         detail = null
         synopsisExpanded = false
@@ -2537,7 +2540,7 @@ class MainActivity : Activity() {
                 error(body, problem) {
                     if (cloudProgress != null && accountScope != cloudAccount.historyScope)
                         showCatalog()
-                    else openDetail(series, resume, detailAutoplay, cloudProgress, fromRelated, fromHome)
+                    else openDetail(series, resume, detailAutoplay, cloudProgress, fromRelated, fromHome, fromPhone)
                 }
             },
         )
@@ -4766,9 +4769,10 @@ class MainActivity : Activity() {
         library.flush()
         invalidatePage()
         releasePlayer()
-        if (directPlayback && !forceDetail) showCatalog()
+        if (directPlayback && !forceDetail && !phonePlayback) showCatalog()
         else {
             directPlayback = false
+            phonePlayback = false
             showDetail(true)
         }
     }
@@ -4799,7 +4803,7 @@ class MainActivity : Activity() {
         }
         when (screen) {
             "player" ->
-                if (homePlayback) returnToDetail(forceDetail = true)
+                if (homePlayback || phonePlayback) returnToDetail(forceDetail = true)
                 else if (waitingForFirstFrame) returnToDetail()
                 else if (hud.visibility == View.VISIBLE && !playError) hidePlaybackOverlay()
                 else returnToDetail()
@@ -4953,6 +4957,7 @@ class MainActivity : Activity() {
                                         directPlayback,
                                         autoplay = false,
                                         cloudProgress = cloud.takeIf { directPlayback },
+                                        fromPhone = phonePlayback,
                                     )
                                 }
                             } ?: showCatalog()
