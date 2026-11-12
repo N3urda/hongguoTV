@@ -54,6 +54,8 @@ internal class HomeFeedScreen(
     private val attemptedPrefetch = mutableSetOf<String>()
     private val prefetchFailures = mutableMapOf<String, Int>()
     private var nextEpisode: TrialClip? = null
+    // Keep the ended source alive until its replacement is attached (or the user leaves).
+    private var heldEpisode: TrialClip? = null
     private var nextEpisodeAttempts = 0
     private var nextEpisodeRetryAt = 0L
     private var prefetchGeneration = 0
@@ -625,9 +627,16 @@ internal class HomeFeedScreen(
         remember(force = true)
         cancelRequest()
         if (!keepPrefetch) cancelPrefetch()
-        if (!keepPlayer) playback.clear()
+        if (!keepPlayer) {
+            playback.clear()
+            heldEpisode?.close()
+            heldEpisode = null
+        }
         clip?.let {
-            if (retain && !failed && it.trialEpisodeIndex == 1) {
+            if (keepPlayer && !retain) {
+                heldEpisode?.close()
+                heldEpisode = it
+            } else if (retain && !failed && it.trialEpisodeIndex == 1) {
                 cachedTrials.put(it.detail.series.id, CachedTrial(it))?.let(::closeCached)
             } else it.close()
         }
@@ -786,7 +795,7 @@ internal class HomeFeedScreen(
     }
 
     // 优先复用缓存或正在进行的预加载，避免为同一部作品重复请求。
-    private fun loadCurrent(statusHint: String? = null, recovering: Boolean = false, settle: Boolean = false) {
+    private fun loadCurrent(statusHint: String? = null, recovering: Boolean = false, settle: Boolean = false, continuingEpisode: Boolean = false) {
         val series = state.current ?: return
         if (restoredSeries != series.id) {
             restoredSeries = series.id
@@ -803,7 +812,7 @@ internal class HomeFeedScreen(
         }
         // 记下展示过的作品：冷启动时用它跳过重复内容，而不是每次都从同一部开始。
         noteDisplayed(series)
-        clearCurrent(keepPrefetch = prefetchTarget == series.id)
+        clearCurrent(keepPlayer = continuingEpisode, keepPrefetch = prefetchTarget == series.id)
         failed = false
         describe()
         status.visibility = View.VISIBLE
@@ -844,6 +853,11 @@ internal class HomeFeedScreen(
             playback.load(next, state.position, autoplay)
             cachedTrials.values.forEach { queueCached(it.clip) }
         }
+        heldEpisode?.let {
+            playback.removeClip(it)
+            it.close()
+        }
+        heldEpisode = null
         paintActions()
     }
 
@@ -866,12 +880,12 @@ internal class HomeFeedScreen(
                 it.detail.series.id == finished.detail.series.id && it.trialEpisodeIndex == finished.trialEpisodeIndex + 1
             }
             if (warmed != null) nextEpisode = null
-            clearCurrent()
+            clearCurrent(keepPlayer = true)
             state.episodeIndex = finished.trialEpisodeIndex
             state.position = 0
             state.ended = false
             state.userPaused = false
-            if (warmed != null) attach(warmed) else loadCurrent()
+            if (warmed != null) attach(warmed) else loadCurrent(continuingEpisode = true)
         }
     }
 

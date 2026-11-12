@@ -349,6 +349,8 @@ internal interface TrialPlayback {
 
     fun remove(seriesId: String) {}
 
+    fun removeClip(clip: TrialClip) {}
+
     fun select(clip: TrialClip, position: Long, autoplay: Boolean): Boolean = false
 
     fun canPrefetch(): Boolean = true
@@ -433,6 +435,7 @@ internal class Media3TrialPlayback(context: Context, private val speed: Float = 
                 VideoFrameMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                 VideoFrameMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
             }
+            setKeepContentOnPlayerReset(true)
             setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
             this.player = this@Media3TrialPlayback.player
         }
@@ -538,6 +541,7 @@ internal class Media3TrialPlayback(context: Context, private val speed: Float = 
         }
 
     private fun play(clip: TrialClip, position: Long, autoplay: Boolean) {
+        surface.setKeepContentOnPlayerReset(true)
         val item = register(clip, currentIndex)
         activeId = key(clip)
         startedAt = android.os.SystemClock.elapsedRealtime()
@@ -560,6 +564,11 @@ internal class Media3TrialPlayback(context: Context, private val speed: Float = 
 
     override fun remove(seriesId: String) {
         val id = items.keys.firstOrNull { it.startsWith("$seriesId:") } ?: return
+        if (id != activeId) items.remove(id)?.let { preloadManager.remove(it) }
+    }
+
+    override fun removeClip(clip: TrialClip) {
+        val id = key(clip)
         if (id != activeId) items.remove(id)?.let { preloadManager.remove(it) }
     }
 
@@ -587,6 +596,8 @@ internal class Media3TrialPlayback(context: Context, private val speed: Float = 
     override fun position() = player.currentPosition.coerceAtLeast(0)
 
     override fun clear() {
+        // Leaving a series must not leave its last frame over another title or an error.
+        surface.setKeepContentOnPlayerReset(false)
         activeId = null
         preloading = false
         player.stop()

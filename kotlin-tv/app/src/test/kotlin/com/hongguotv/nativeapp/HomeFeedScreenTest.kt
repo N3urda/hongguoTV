@@ -119,11 +119,68 @@ class HomeFeedScreenTest {
             val warmed = get(screen, "nextEpisode") as TrialClip
             assertEquals(2, warmed.trialEpisodeIndex)
             val prepares = backend.prepares
+            val clears = player.clears
+            val previous = get(screen, "clip") as TrialClip
             player.status?.invoke(TrialStatus.ENDED); pump(screen)
             assertSame(warmed, get(screen, "clip"))
             assertEquals(prepares, backend.prepares)
             assertNull(get(screen, "nextEpisode"))
+            assertEquals(clears, player.clears)
+            assertTrue(get(previous.video, "closed") as Boolean)
+            assertNull(get(screen, "heldEpisode"))
         } finally { screen.close(); controller.pause().stop().destroy() }
+    }
+
+    @Test fun waitingForNextEpisodeKeepsOldSourceUntilReplacement() = pendingEpisode(false)
+
+    @Test fun leavingWhileNextEpisodeLoadsClosesOldAndLateSources() = pendingEpisode(true)
+
+    private fun pendingEpisode(leave: Boolean) {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        var late: TrialClip? = null
+        val backend = object : Backend(1) {
+            override fun episode(series: Series, index: Int): TrialClip {
+                if (index == 1) {
+                    entered.countDown()
+                    // Model a response already arriving when cancellation happens.
+                    while (true) {
+                        try { release.await(); break } catch (_: InterruptedException) {}
+                    }
+                }
+                return super.episode(series, index).also { if (index == 1) late = it }
+            }
+        }
+        val player = Playback(activity, prefetchEnabled = false)
+        val screen = HomeFeedScreen(activity, DramaFeedState(), listOf(TextView(activity)), {},
+            { _, _ -> }, { "收藏" }, backend, player)
+        try {
+            activity.setContentView(screen); screen.start(true, false); pump(screen)
+            val previous = get(screen, "clip") as TrialClip
+            val clears = player.clears
+            player.status?.invoke(TrialStatus.ENDED)
+            ShadowLooper.idleMainLooper()
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            assertEquals(clears, player.clears)
+            assertSame(previous, get(screen, "heldEpisode"))
+            assertFalse(get(previous.video, "closed") as Boolean)
+            if (leave) screen.close()
+            release.countDown()
+            if (leave) {
+                (get(screen, "worker") as java.util.concurrent.ExecutorService).awaitTermination(5, TimeUnit.SECONDS)
+                ShadowLooper.idleMainLooper()
+                assertTrue(get(late!!.video, "closed") as Boolean)
+                assertNull(get(screen, "clip"))
+            } else {
+                pump(screen)
+                assertEquals(2, (get(screen, "clip") as TrialClip).trialEpisodeIndex)
+                assertEquals(clears, player.clears)
+            }
+            assertTrue(get(previous.video, "closed") as Boolean)
+            assertNull(get(screen, "heldEpisode"))
+        } finally { release.countDown(); screen.close(); controller.pause().stop().destroy() }
     }
 
     @Test fun finalCheckpointCallbackCannotReenterClose() {
