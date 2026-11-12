@@ -38,23 +38,51 @@ class PhoneControlCatalogTest {
     private fun list(kind: String, page: Int = 1) = JSONObject().put("kind", kind).put("page", page)
     private fun action(name: String, id: String, scope: Int) = JSONObject().put("action", name).put("id", id).put("scope", scope)
 
-    @Test fun localAndCloudListsStaySeparateAndPaginated() = fixture { catalog, library, account, _ ->
+    @Test fun mergedListsDeduplicateBeforePaginationAndKeepGuestRecords() = fixture { catalog, library, account, _ ->
         val local = (1..45).map { Series("$it", "本机 $it", cover = "https://example.com/large.jpg") }
         set(library, "index", LibraryIndex(BackupData(local, emptyList(), emptySet(), emptyList(), BackupSettings())))
-        val first = catalog.list(list("localFavorites"))
+        val first = catalog.list(list("favorites"))
         assertEquals(20, first.getJSONArray("items").length())
         assertTrue(first.getBoolean("hasMore"))
-        val last = catalog.list(list("localFavorites", 3))
-        assertEquals(5, last.getJSONArray("items").length())
-        assertFalse(last.getBoolean("hasMore"))
-        assertFalse(first.toString().contains("large.jpg"))
-        assertTrue(catalog.list(list("favorites")).getString("message").contains("登录"))
+        assertEquals("https://example.com/large.jpg", first.getJSONArray("items").getJSONObject(0).getString("cover"))
         set(account, "credentials", AccountCredentials("private-cookie"))
-        set(account, "favorites", FavoriteState(listOf(CloudFavorite(Series("99", "云端"), 0)), loaded = true))
-        val cloud = catalog.list(list("favorites"))
-        assertEquals("99", cloud.getJSONArray("items").getJSONObject(0).getString("id"))
-        assertFalse(cloud.toString().contains("private-cookie"))
-        assertFalse(cloud.toString().contains("本机"))
+        set(account, "favorites", FavoriteState(listOf(CloudFavorite(local[0], 1), CloudFavorite(Series("99", "云端"), 0)), loaded = true))
+        val last = catalog.list(list("favorites", 3))
+        assertEquals(6, last.getJSONArray("items").length())
+        assertEquals("99", last.getJSONArray("items").getJSONObject(5).getString("id"))
+        assertFalse(last.getBoolean("hasMore"))
+        assertFalse(last.toString().contains("private-cookie"))
+        set(account, "credentials", null)
+        assertEquals(5, catalog.list(list("favorites", 3)).getJSONArray("items").length())
+    }
+
+    @Test fun mergedHistoryUsesNewestProgressAndFillsMissingCover() = fixture { catalog, library, account, played ->
+        val local = Series("1", "同一部剧")
+        val remote = local.copy(cover = "https://example.com/poster.jpg")
+        set(library, "index", LibraryIndex(BackupData(emptyList(),
+            listOf(BackupProgress(local, "ep-1", 0, 1000, 90000, false, 2000)), emptySet(), emptyList(), BackupSettings())))
+        set(account, "credentials", AccountCredentials("test-only"))
+        val older = CloudProgress(remote, "ep-2", 1, 5000, 90000, 1000)
+        val other = CloudProgress(Series("2", "最近观看"), "ep-3", 2, 6000, 90000, 3000)
+        set(account, "history", listOf(older, other))
+        val rows = catalog.list(list("history")).getJSONArray("items")
+        assertEquals(2, rows.length())
+        assertEquals("2", rows.getJSONObject(0).getString("id"))
+        assertEquals(remote.cover, rows.getJSONObject(1).getString("cover"))
+        catalog.act(action("play", "1", account.historyScope).put("source", "history"))
+        assertNull(played.last().second)
+        val newer = older.copy(updatedAt = 4000)
+        set(account, "history", listOf(newer, other))
+        assertEquals("1", catalog.list(list("history")).getJSONArray("items").getJSONObject(0).getString("id"))
+        catalog.act(action("play", "1", account.historyScope).put("source", "history"))
+        assertEquals(newer, played.last().second)
+    }
+
+    @Test fun coversOnlyExposeBoundedHttpsUrls() = fixture { catalog, _, _, _ ->
+        val urls = listOf("javascript:alert(1)", "file:///secret", "http://example.com/a", "https://user:pass@example.com/a", "https://example.com/" + "a".repeat(2048), "https://example.com/poster.jpg")
+        val rows = catalog.result(urls.mapIndexed { i, url -> RelatedWork(Series("$i", "剧", cover = url), "", false) }).getJSONArray("items")
+        (0..4).forEach { assertEquals("", rows.getJSONObject(it).getString("cover")) }
+        assertEquals(urls.last(), rows.getJSONObject(5).getString("cover"))
     }
 
     @Test fun onlyCurrentBoundedCardsCanTriggerPlayback() = fixture { catalog, _, account, played ->

@@ -93,9 +93,10 @@ class CloudResumePlaybackTest {
                 CloudProgress::class.java,
                 Boolean::class.javaPrimitiveType,
                 Boolean::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType,
             )
             .apply { isAccessible = true }
-            .invoke(activity, series, resume, true, remote, false, fromHome)
+            .invoke(activity, series, resume, true, remote, false, fromHome, false)
         (get(activity, "workJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
         ShadowLooper.idleMainLooper()
     }
@@ -118,6 +119,33 @@ class CloudResumePlaybackTest {
             assertEquals("detail", get(activity, "screen"))
             assertEquals(false, get(activity, "homePlayback"))
         }
+
+
+    @Test
+    fun phonePushBackOpensCurrentDetailDuringLoadingAndWithEitherHudState() {
+        for (waiting in listOf(true, false)) for (visible in listOf(true, false)) {
+            fixture { activity, _, account ->
+                val catalog = MainActivity::class.java.getDeclaredMethod("getPhoneCatalog")
+                    .apply { isAccessible = true }.invoke(activity) as PhoneControlCatalog
+                catalog.result(listOf(RelatedWork(series, "", false)))
+                catalog.act(org.json.JSONObject().put("action", "play").put("id", series.id)
+                    .put("scope", account.historyScope).put("source", "history"))
+                (get(activity, "workJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
+                ShadowLooper.idleMainLooper()
+                assertPlayback(activity, 2, 45000)
+                assertEquals(true, get(activity, "phonePlayback"))
+                set(activity, "waitingForFirstFrame", waiting)
+                (get(activity, "hud") as View).visibility = if (visible) View.VISIBLE else View.GONE
+                MainActivity::class.java.getDeclaredMethod("goBack").apply { isAccessible = true }.invoke(activity)
+                assertEquals("detail", get(activity, "screen"))
+                assertEquals(series.id, (get(activity, "detail") as Detail).series.id)
+                assertEquals(2, get(activity, "episodeIndex"))
+                assertEquals(false, get(activity, "phonePlayback"))
+                assertEquals(false, get(activity, "directPlayback"))
+                assertTrue(texts(activity.findViewById(android.R.id.content)).any { it.contentDescription == "第 3 集" })
+            }
+        }
+    }
 
     @Test
     fun cloudHistoryUsesItsEpisodeNumberAndPositionEvenWhenIdsDiffer() =
