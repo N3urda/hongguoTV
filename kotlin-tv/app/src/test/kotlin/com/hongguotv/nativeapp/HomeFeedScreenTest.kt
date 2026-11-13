@@ -22,6 +22,95 @@ import org.robolectric.shadows.ShadowLooper
 @Config(sdk = [21, 23, 26], qualifiers = "w960dp-h540dp-land-mdpi")
 @LooperMode(LooperMode.Mode.PAUSED)
 class HomeFeedScreenTest {
+    @Test fun stalledBufferReloadsSameEpisodeAndPositionThenStopsAfterBoundedRetries() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val state = DramaFeedState().apply {
+            append(CatalogPage(listOf(Series("1", "第一部")), false), 1)
+            episodeIndex = 1
+        }
+        val player = Playback(activity, prefetchEnabled = false)
+        val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {}, { _, _ -> },
+            { "收藏" }, Backend(), player)
+        try {
+            activity.setContentView(screen); screen.start(true, false); pump(screen)
+            player.status?.invoke(TrialStatus.READY)
+            player.saved = 12_345
+            repeat(2) { attempt ->
+                player.status?.invoke(TrialStatus.BUFFERING)
+                ShadowLooper.idleMainLooper(16, TimeUnit.SECONDS); pump(screen)
+                assertEquals(attempt + 2, player.loads)
+                assertEquals("1", player.loaded)
+                assertEquals(2, (get(screen, "clip") as TrialClip).trialEpisodeIndex)
+                assertEquals("102", (get(screen, "clip") as TrialClip).episodeId)
+                assertEquals(12_345L, player.saved)
+                player.status?.invoke(TrialStatus.READY)
+            }
+            player.status?.invoke(TrialStatus.BUFFERING)
+            ShadowLooper.idleMainLooper(16, TimeUnit.SECONDS); pump(screen)
+            assertEquals(3, player.loads)
+            assertFalse(player.playing)
+            assertNull(get(screen, "clip"))
+            player.status?.invoke(TrialStatus.READY)
+            assertEquals(true, get(screen, "failed"))
+            assertTrue((get(screen, "status") as TextView).text.contains("加载超时"))
+            ShadowLooper.idleMainLooper(60, TimeUnit.SECONDS); pump(screen)
+            assertEquals("No endless background retry", 3, player.loads)
+            (get(screen, "stage") as View).performClick(); pump(screen)
+            assertEquals("Explicit retry is still available", 4, player.loads)
+            assertEquals(12_345L, player.saved)
+        } finally { screen.close(); controller.pause().stop().destroy() }
+    }
+
+    @Test fun bufferingRecoveryIgnoresPauseAndCancelsWhenReadyOrPageCloses() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val state = DramaFeedState().apply { append(CatalogPage(listOf(Series("1", "第一部")), false), 1) }
+        val player = Playback(activity, prefetchEnabled = false)
+        val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {}, { _, _ -> },
+            { "收藏" }, Backend(), player)
+        try {
+            activity.setContentView(screen); screen.start(true, false); pump(screen)
+            player.status?.invoke(TrialStatus.BUFFERING)
+            (get(screen, "stage") as View).performClick()
+            ShadowLooper.idleMainLooper(30, TimeUnit.SECONDS)
+            assertEquals(1, player.loads)
+            (get(screen, "stage") as View).performClick()
+            ShadowLooper.idleMainLooper(10, TimeUnit.SECONDS)
+            player.status?.invoke(TrialStatus.READY)
+            ShadowLooper.idleMainLooper(30, TimeUnit.SECONDS)
+            assertEquals(1, player.loads)
+            player.status?.invoke(TrialStatus.BUFFERING)
+            screen.pause()
+            ShadowLooper.idleMainLooper(30, TimeUnit.SECONDS)
+            assertEquals(1, player.loads)
+            screen.resume()
+            ShadowLooper.idleMainLooper(10, TimeUnit.SECONDS)
+            screen.close()
+            ShadowLooper.idleMainLooper(30, TimeUnit.SECONDS)
+            assertEquals(1, player.loads)
+            assertTrue(player.released)
+        } finally { screen.close(); controller.pause().stop().destroy() }
+    }
+
+    @Test fun bufferingWithAdvancingPositionDoesNotTriggerFalseRecovery() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val state = DramaFeedState().apply { append(CatalogPage(listOf(Series("1", "第一部")), false), 1) }
+        val player = Playback(activity, prefetchEnabled = false)
+        val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {}, { _, _ -> },
+            { "收藏" }, Backend(), player)
+        try {
+            activity.setContentView(screen); screen.start(true, false); pump(screen)
+            player.status?.invoke(TrialStatus.BUFFERING)
+            repeat(4) {
+                ShadowLooper.idleMainLooper(10, TimeUnit.SECONDS)
+                player.saved += 5000
+            }
+            assertEquals(1, player.loads)
+        } finally { screen.close(); controller.pause().stop().destroy() }
+    }
+
     @Test fun pendingNextCardKeepsCurrentVideoAndCoalescesRapidRightPresses() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup()
         val state = DramaFeedState().apply { append(CatalogPage(listOf(Series("1", "第一部")), false), 1) }
@@ -43,7 +132,7 @@ class HomeFeedScreenTest {
             val stage = get(screen, "stage") as View
             repeat(3) { stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)) }
             assertEquals("1", state.current?.id)
-            assertEquals(View.VISIBLE, (get(screen, "nextCard") as View).visibility)
+            assertEquals(View.VISIBLE, (get(screen, "info") as View).visibility)
             assertEquals("1", player.loaded)
             release.countDown()
             (get(screen, "catalogJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
@@ -100,7 +189,7 @@ class HomeFeedScreenTest {
             assertEquals("1", state.current?.id)
             assertEquals("2", state.next?.id)
             assertEquals(9, state.items.size)
-            assertEquals(View.VISIBLE, (get(screen, "nextCard") as View).visibility)
+            assertEquals(View.VISIBLE, (get(screen, "info") as View).visibility)
         } finally { screen.close(); activity.pause().stop().destroy() }
     }
 
@@ -113,7 +202,7 @@ class HomeFeedScreenTest {
             { _, _ -> }, { "收藏" }, backend, player)
         try {
             activity.setContentView(screen); screen.start(true, false); pump(screen)
-            player.totalDuration = 60000; player.saved = 40000
+            player.totalDuration = 60000; player.saved = 54000
             player.status?.invoke(TrialStatus.READY)
             ShadowLooper.idleMainLooper(2250, TimeUnit.MILLISECONDS); finishPrefetch(screen)
             val warmed = get(screen, "nextEpisode") as TrialClip
@@ -223,15 +312,14 @@ class HomeFeedScreenTest {
             val stage = get(screen, "stage") as View
             stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
             assertEquals("1", state.current?.id)
-            assertEquals(View.INVISIBLE, (get(screen, "previousCard") as View).visibility)
-            assertEquals(View.VISIBLE, (get(screen, "nextCard") as View).visibility)
+            assertSame(stage.parent, (get(screen, "info") as View).parent)
             assertTrue(texts(screen).first { it.text == "播放全集" }.hasFocus())
             assertTrue(screen.back())
             assertTrue(stage.hasFocus())
             stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT))
             pump(screen)
             texts(screen).first { it.text == "相关剧集 / 预约" }.performClick()
-            assertEquals(View.VISIBLE, (get(screen, "previousCard") as View).visibility)
+            assertEquals(View.VISIBLE, (get(screen, "info") as View).visibility)
             assertEquals("2", relatedId)
             assertFalse(player.playing)
             stage.performClick()
@@ -535,6 +623,44 @@ class HomeFeedScreenTest {
         }
     }
 
+    @Test fun firstInstallRegistrationEmptyResponseRecoversOnFeedWithoutAnotherDrama() {
+        val previous = ContentRepository.deviceStore
+        val registrations = java.util.concurrent.atomic.AtomicInteger()
+        ContentRepository.deviceStore = object : PlayerDeviceStore {
+            @Volatile var saved: String? = null
+            override fun load() = saved
+            override fun save(value: String?) { saved = value }
+        }
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val compatible = request.url.host == "api3-normal-sinfonlinea.fqnovel.com"
+            val registering = request.url.encodedPath == "/service/2/device_register/"
+            val optional = request.url.encodedPath in listOf("/service/2/app_alert_check/", "/reading/crypt/registerkey")
+            val body = when {
+                registering -> if (registrations.incrementAndGet() == 1) "" else
+                    """{"device_id":"7000000000001234567","install_id":"7000000000007654321"}"""
+                compatible -> """{"code":0,"data":{"video_model":{"video_list":{"video_1":{"vheight":720,"codec_type":"h264","main_url":"https://example.com/recovered.mp4"}}}}}"""
+                else -> ""
+            }
+            okhttp3.Response.Builder().request(request).protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(if (registering || compatible || optional) 200 else 403).message("fixture")
+                .body(okhttp3.ResponseBody.create(null, body)).build()
+        }.build()
+        val repository = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        try {
+            TrialRecoveryFixture { _, _ -> runCatching { repository.streamLadderWithCompatibility("101") }.exceptionOrNull() }.use { f ->
+                assertEquals(1, registrations.get())
+                assertTrue(f.hasText("2 秒后自动恢复"))
+                assertFalse(f.hasText("character"))
+                f.advance(2)
+                assertEquals(2, registrations.get())
+                assertEquals(2, f.reads())
+                assertEquals("1", f.player.loaded)
+                assertTrue(f.player.playing)
+            }
+        } finally { ContentRepository.deviceStore = previous }
+    }
+
     @Test
     fun emptyTrialAutomaticallyRecoversTwiceWithoutManualClicks() {
         TrialRecoveryFixture { _, count -> if (count <= 2) EmptyPlaybackResponseException() else null }.use { f ->
@@ -824,16 +950,16 @@ class HomeFeedScreenTest {
             pump(screen)
             assertEquals(1, backend.prepares)
             player.status?.invoke(TrialStatus.READY)
-            ShadowLooper.idleMainLooper(1999, TimeUnit.MILLISECONDS)
+            ShadowLooper.idleMainLooper(499, TimeUnit.MILLISECONDS)
             assertEquals(1, backend.prepares)
             ShadowLooper.idleMainLooper(251, TimeUnit.MILLISECONDS)
             finishPrefetch(screen)
             assertEquals(2, backend.prepares)
             assertEquals(setOf("2"), (get(screen, "cachedTrials") as Map<*, *>).keys)
-            ShadowLooper.idleMainLooper(6, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper(3, TimeUnit.SECONDS)
             finishPrefetch(screen)
             assertEquals(setOf("2", "3"), (get(screen, "cachedTrials") as Map<*, *>).keys)
-            ShadowLooper.idleMainLooper(8, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper(3, TimeUnit.SECONDS)
             finishPrefetch(screen)
             assertEquals(4, backend.prepares)
             assertEquals(setOf("2", "3", "4"), (get(screen, "cachedTrials") as Map<*, *>).keys)

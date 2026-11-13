@@ -17,7 +17,7 @@ class ViewingPreferencesTest {
         assertEquals(1, p.clockMode)
     }
     @Test fun everyNavigationTabCanBeSelectedDirectly() {
-        for (tab in 0..6) {
+        for (tab in 0..8) {
             assertEquals(tab, ViewingPreferences.decode(mapOf("startupTab" to tab)).initialTab())
         }
     }
@@ -27,7 +27,7 @@ class ViewingPreferencesTest {
         assertEquals(1, ViewingPreferences.decode(mapOf("startupTab" to 1, "startupPage" to 1)).initialTab())
     }
     @Test fun invalidStorageFallsBackWithoutBreakingStartup() {
-        val p = ViewingPreferences.decode(mapOf("startupTab" to 8, "clockMode" to -1, "homeAutoplay" to "false"))
+        val p = ViewingPreferences.decode(mapOf("startupTab" to 9, "clockMode" to -1, "homeAutoplay" to "false"))
         assertEquals(0, p.initialTab())
         assertEquals(1, p.clockMode)
         assertTrue(p.homeAutoplay)

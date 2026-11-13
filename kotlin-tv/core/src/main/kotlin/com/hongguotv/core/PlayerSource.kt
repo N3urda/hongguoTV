@@ -22,10 +22,16 @@ internal class PlayerDeviceSource(
     @Volatile private var cached: PlayerDevice? = null
 
     @Synchronized
-    fun obtain(): PlayerDevice {
+    fun existing(): PlayerDevice? {
         cached?.let { return it }
-        store()?.load()?.let { stored -> PlayerDevice.fromJson(stored)?.let { cached = it; return it } }
+        return store()?.load()?.let(PlayerDevice::fromJson)?.also { cached = it }
+    }
+
+    @Synchronized
+    fun obtain(): PlayerDevice {
+        existing()?.let { return it }
         val fresh = registrar.register(http)
+        RequestScope.ensureActive()
         cached = fresh
         store()?.save(fresh.toJson())
         return fresh

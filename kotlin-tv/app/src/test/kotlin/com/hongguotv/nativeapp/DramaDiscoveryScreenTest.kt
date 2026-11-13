@@ -186,9 +186,14 @@ class DramaDiscoveryScreenTest {
             assertEquals("102", browser.capture()?.id)
             val state = get(activity, "discoveryBrowser") as DiscoveryBrowserState
             assertTrue(state.expanded)
+            assertNull("Discovery must not mount the search panel", get(activity, "tvSearchPanel"))
+            assertNull("Discovery must not contain a search input", get(activity, "searchInput"))
+            assertTrue(views(root).none { it is EditText })
+            assertEquals(5, browser.grid.numColumns)
             @Suppress("UNCHECKED_CAST")
             val nav = get(activity, "nav") as List<View>
             nav[7].performClick()
+            assertNull("Search must not mount discovery filters", get(activity, "discoveryScreen"))
             assertTrue((get(activity, "tvSearchPanel") as TvSearchPanel).entry().hasFocus())
             val input = get(activity, "searchInput") as EditText
             input.setText("大佬")
@@ -234,9 +239,9 @@ class DramaDiscoveryScreenTest {
                 .apply { isAccessible = true }
                 .invoke(activity)
             layout(activity)
-            assertEquals("101", restored.capture()?.id)
-            assertTrue(texts(root).single { it.text.toString() == "找剧" }.hasFocus())
-            assertEquals(0, (get(activity, "discoveryScreen") as DiscoveryScreen).scrollY)
+            assertEquals("102", restored.capture()?.id)
+            assertTrue(texts(root).single { it.isClickable && it.text.toString() == "找剧" }.hasFocus())
+            assertEquals(savedSelection, state.selection)
             texts(root).single { it.text.toString() == "真人剧" }.performClick()
             pump(activity)
             assertEquals(mapOf("genre" to "short_play"), state.selection.values)

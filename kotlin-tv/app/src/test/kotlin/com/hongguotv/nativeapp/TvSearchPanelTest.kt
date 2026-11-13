@@ -33,7 +33,6 @@ class TvSearchPanelTest {
                 TextView(activity).apply { id = View.generateViewId() },
                 { emptyList() },
                 {},
-                {},
             )
         try {
             activity.setContentView(panel)
@@ -63,7 +62,6 @@ class TvSearchPanelTest {
         val activity = controller.get()
         val upper = TextView(activity).apply { id = View.generateViewId() }
         var searched = ""
-        var phone = false
         val panel =
             TvSearchPanel(
                 activity,
@@ -72,12 +70,11 @@ class TvSearchPanelTest {
                 upper,
                 { emptyList() },
                 { searched = it },
-                { phone = true },
             )
         try {
             activity.setContentView(panel)
             fun click(label: String) =
-                texts(panel).first { it.text.toString() == label }.performClick()
+                texts(panel).first { it.isClickable && it.text.toString() == label }.performClick()
             click("A")
             click("B")
             assertEquals("ab", panel.input.text.toString())
@@ -96,8 +93,10 @@ class TvSearchPanelTest {
             assertEquals("历史剧名", searched)
             click("清空")
             assertTrue(panel.input.text.isEmpty())
-            click("手机控制台")
-            assertTrue(phone)
+            click("打开输入法")
+            assertTrue(panel.input.showSoftInputOnFocus)
+            assertTrue(panel.input.hasFocus())
+            assertFalse(texts(panel).any { it.text == "中文输入" || it.text == "手机控制台" })
             assertFalse(texts(panel).any { it.text == "返回分类" })
             panel.input.setText("a".repeat(80))
             panel.input.setSelection(80)
@@ -110,7 +109,7 @@ class TvSearchPanelTest {
     }
 
     @Test
-    fun threeColumnsFitTelevisionAndRemoteCanMoveFromKeyboardToWordsAndResults() {
+    fun twoColumnsFitTelevisionAndRemoteCanMoveFromKeyboardToWordsAndResults() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()
         val upper = TextView(activity).apply { id = View.generateViewId() }
@@ -123,7 +122,6 @@ class TvSearchPanelTest {
                 upper,
                 { listOf("大佬，该出手了") },
                 { searched = it },
-                {},
             )
         val result =
             TextView(activity).apply {

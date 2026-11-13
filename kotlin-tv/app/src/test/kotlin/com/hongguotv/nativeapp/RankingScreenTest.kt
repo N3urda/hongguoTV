@@ -95,7 +95,7 @@ class RankingScreenTest {
             )
             assertEquals("1", longPressed)
             val allViews = views(screen)
-            assertTrue(allViews.filterIsInstance<TextView>().any { it.text.toString() == "第 11 名" })
+            assertTrue(allViews.filterIsInstance<TextView>().any { it.text.toString().startsWith("第 11 名 · ") })
             assertNotEquals(View.NO_ID, browser.grid.nextFocusUpId)
             assertEquals(25, browser.grid.adapter.count)
             browser.grid.setSelection(20)
@@ -149,7 +149,7 @@ class RankingScreenTest {
             assertNotNull(filtered.findViewWithTag<View>("25"))
             assertNull(filtered.findViewWithTag<View>("1"))
             assertTrue(
-                views(filtered).filterIsInstance<TextView>().any { it.text.toString() == "第 35 名" }
+                views(filtered).filterIsInstance<TextView>().any { it.text.toString().startsWith("第 35 名 · ") }
             )
         } finally {
             tools.destroy()
@@ -506,7 +506,7 @@ class RankingScreenTest {
             )
             assertEquals("万妖图录传\n第十四季", firstCard.title.text.toString())
             assertEquals(2, firstCard.title.lineCount)
-            assertEquals("9437万热度", firstCard.badge.text.toString())
+            assertEquals("第 1 名 · 9437万热度", firstCard.badge.text.toString())
             assertTrue(firstCard.badge.height > 0)
 
             val visibleTitle = unclippedRectInRoot(firstCard.title, decor)
@@ -603,7 +603,7 @@ class RankingScreenTest {
 
             val firstCard = browser.grid.getChildAt(0) as CatalogPosterCard
             assertEquals(2, firstCard.title.lineCount)
-            assertEquals("9437万热度", firstCard.badge.text.toString())
+            assertEquals("第 1 名 · 9437万热度", firstCard.badge.text.toString())
             assertEquals(
                 "grid=${browser.grid.height}, card=${firstCard.height}, scrollY=${screen.scrollY}",
                 firstCard.title.height,

@@ -46,7 +46,7 @@ internal class DeviceRejectedException(message: String) : java.io.IOException(me
 internal class DeviceRegistrar(
     private val clock: () -> Long = System::currentTimeMillis,
     private val random: SecureRandom = SecureRandom(),
-    private val sleep: (Long) -> Unit = { ms -> runCatching { Thread.sleep(ms) } },
+    private val sleep: (Long) -> Unit = Thread::sleep,
 ) {
     private inner class DevInfo(
         val osApi: String, val osVersion: String, val openudid: String, val cdid: String,
@@ -90,8 +90,19 @@ internal class DeviceRegistrar(
     fun register(http: OkHttpClient): PlayerDevice {
         val di = newDevInfo()
         val (deviceId, installId) = deviceRegister(http, di)
-        runCatching { appAlertCheck(http, di, deviceId, installId) }
-        val secretKey = runCatching { registerKey(http, di, deviceId, installId) }.getOrDefault("")
+        // Optional registration extras must not consume the first playback's entire budget.
+        runCatching {
+            RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(1)) {
+                appAlertCheck(http, di, deviceId, installId)
+            }
+        }
+        RequestScope.ensureActive()
+        val secretKey = runCatching {
+            RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2)) {
+                registerKey(http, di, deviceId, installId, attempts = 1)
+            }
+        }.getOrDefault("")
+        RequestScope.ensureActive()
         return PlayerDevice(deviceId, installId, di.cdid, di.openudid, secretKey)
     }
 
@@ -131,7 +142,7 @@ internal class DeviceRegistrar(
             .post(ttEncrypt(gzip(body.toString().toByteArray()), randomBytes(32)).toRequestBody("application/octet-stream".toMediaType()))
             .build()
         val raw = execute(http, request)
-        val parsed = JSONObject(raw.toString(Charsets.UTF_8))
+        val parsed = playbackJson(raw.toString(Charsets.UTF_8), "device-register")
         val deviceId = pickString(parsed, "device_id_str", "device_id")
         val installId = pickString(parsed, "install_id_str", "install_id")
         if (deviceId.isEmpty() || installId.isEmpty()) throw java.io.IOException("设备注册响应异常")
@@ -155,7 +166,7 @@ internal class DeviceRegistrar(
         runCatching { execute(http, builder.build()) }
     }
 
-    private fun registerKey(http: OkHttpClient, di: DevInfo, deviceId: String, installId: String): String {
+    private fun registerKey(http: OkHttpClient, di: DevInfo, deviceId: String, installId: String, attempts: Int = 3): String {
         val content = encryptRegisterKeyRequest(deviceId, null)
         val parts = listOf(
             "aid=1967", "app_name=novelapp", "channel=0", "device_id=$deviceId",
@@ -163,7 +174,7 @@ internal class DeviceRegistrar(
             "version_code=6.1.5.32", "version_name=6.1.5.32",
         ).sorted().joinToString("&")
         var lastError: Exception? = null
-        for (attempt in 0 until 3) {
+        for (attempt in 0 until attempts) {
             try {
                 val payload = gzip(JSONObject().put("content", content).toString().toByteArray())
                 val request = Request.Builder()
@@ -180,8 +191,9 @@ internal class DeviceRegistrar(
                 if (key.isEmpty()) throw java.io.IOException("注册密钥响应缺少 key")
                 return decryptRegisterKey(key).hex().uppercase()
             } catch (e: Exception) {
+                RequestScope.ensureActive()
                 lastError = e
-                sleep(1000)
+                if (attempt + 1 < attempts) sleep(1000)
             }
         }
         throw lastError ?: java.io.IOException("注册密钥失败")

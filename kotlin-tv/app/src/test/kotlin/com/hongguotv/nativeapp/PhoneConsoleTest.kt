@@ -54,6 +54,48 @@ class PhoneConsoleTest {
         finally { console.stop(); tools.destroy(); library.close(); account.destroy(); activity.pause().stop().destroy() }
     }
 
+    @Test fun phoneReceivesTvThumbnailWithoutDirectCdnAccessAndCannotSupplyAnArbitraryUrl() {
+        val bitmap = android.graphics.Bitmap.createBitmap(600, 900, android.graphics.Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(android.graphics.Color.RED)
+        val output = java.io.ByteArrayOutputStream()
+        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output); bitmap.recycle()
+        val fetches = AtomicInteger()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            fetches.incrementAndGet()
+            assertEquals("http://example.com/poster.png", chain.request().url.toString())
+            assertNull(chain.request().header("Cookie"))
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(output.toByteArray().toResponseBody()).build()
+        }.build()
+        fixture(http) { console, _, _ ->
+            val catalog = get(console, "catalog") as PhoneControlCatalog
+            val row = catalog.result(listOf(RelatedWork(Series("123", "作品", cover = "http://example.com/poster.png"), "", true)))
+                .getJSONArray("items").getJSONObject(0)
+            val client = Executors.newSingleThreadExecutor()
+            try {
+                console.resume(); console.show(null); waitFor { server(console) != null }
+                fun request(body: JSONObject, status: Int = 200): JSONObject {
+                    val future = client.submit<String> { call(server(console)!!, body.toString(), status) }
+                    waitFor { future.isDone }; return JSONObject(future.get())
+                }
+                val body = JSONObject().put("action", "cover").put("id", "123").put("scope", row.getInt("scope"))
+                val image = request(body).getString("image")
+                assertTrue(image.startsWith("data:image/jpeg;base64,"))
+                val bytes = android.util.Base64.decode(image.substringAfter(','), android.util.Base64.DEFAULT)
+                val decoded = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                assertNotNull(decoded)
+                assertTrue(maxOf(decoded.width, decoded.height) <= 480)
+                decoded.recycle()
+                assertEquals(image, request(body).getString("image"))
+                assertEquals("Session cache avoids downloading the same cover twice", 1, fetches.get())
+                request(JSONObject(body.toString()).put("id", "999"), 400)
+                request(JSONObject(body.toString()).put("scope", -1), 400)
+                request(JSONObject(body.toString()).put("url", "http://127.0.0.1/private"), 400)
+                assertEquals(1, fetches.get())
+            } finally { client.shutdownNow() }
+        }
+    }
+
     @Test fun closingQrKeepsSessionButStoppingRevokesItAndResumeRotatesToken() = fixture { console, tools, count ->
         val client = Executors.newSingleThreadExecutor()
         try {

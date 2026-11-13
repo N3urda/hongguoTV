@@ -34,6 +34,55 @@ class AccountRecommendationStartupTest {
         else if (view is TextView) listOf(view.text.toString()) else emptyList()
 
     @Test
+    fun defaultHomepageShowsShelvesWithoutStartingAutoplay() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        val activity = controller.get()
+        try {
+            val library = get(activity, "library")!!
+            (get(library, "loader") as ExecutorService).submit {}.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            (library as Library).save(WatchProgress(com.hongguotv.core.Series("test-resume", "续播作品"), "episode-2", 1, 12000, 60000, false, 1))
+            set(activity, "tab", 0)
+            set(activity, "catalog", listOf(com.hongguotv.core.Series("test-home", "精选作品")))
+            MainActivity::class.java.getDeclaredMethod("showCatalog", Boolean::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+                .apply { isAccessible = true }.invoke(activity, false, false, false)
+            val decor = activity.window.decorView
+            decor.measure(View.MeasureSpec.makeMeasureSpec(960, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(540, View.MeasureSpec.EXACTLY))
+            decor.layout(0, 0, 960, 540)
+            ShadowLooper.idleMainLooper()
+            assertNull("Browsing must not create a preview player", get(activity, "homeFeed"))
+            assertNotNull(get(activity, "homeScreen"))
+            val home = get(activity, "homeScreen") as HomeScreen
+            assertTrue("Default focus stays in the scrolling shelves", home.hasFocus())
+            val resumeCard = home.findViewWithTag<View>("resume:test-resume")
+            val hotCard = home.findViewWithTag<View>("hot:test-home")
+            assertNotNull(resumeCard)
+            assertNotNull(hotCard)
+            fun scrollParent(view: View): android.widget.ScrollView? {
+                var parent = view.parent
+                while (parent is View) {
+                    if (parent is android.widget.ScrollView) return parent
+                    parent = parent.parent
+                }
+                return null
+            }
+            assertNotNull(scrollParent(resumeCard))
+            assertSame("Resume and popular shelves scroll together", scrollParent(resumeCard), scrollParent(hotCard))
+
+            assertTrue(texts(decor).contains("接着上次的故事"))
+            val independentResume = home.findViewWithTag<View>("home:spotlight:play")
+            assertNotNull(independentResume)
+            assertSame("Independent resume section must scroll with the shelves", scrollParent(hotCard), scrollParent(independentResume))
+            assertTrue(independentResume.hasFocus())
+            assertTrue(texts(decor).contains("随心看"))
+            assertFalse(texts(decor).any { it.contains("今晚") || it == "随心看  ›" })
+            assertTrue(texts(decor).contains("我的"))
+        } finally { controller.destroy() }
+    }
+
+    @Test
     fun pendingAccountValidationMustNotStartAGuestHomepage() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()
@@ -46,6 +95,7 @@ class AccountRecommendationStartupTest {
             set(account, "credentials", AccountCredentials("sessionid=test-only"))
             set(account, "profile", null)
             set(account, "busy", true)
+            set(activity, "tab", 8)
             MainActivity::class.java.getDeclaredMethod("showCatalog", Boolean::class.javaPrimitiveType,
                 Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
                 .apply { isAccessible = true }.invoke(activity, false, false, false)

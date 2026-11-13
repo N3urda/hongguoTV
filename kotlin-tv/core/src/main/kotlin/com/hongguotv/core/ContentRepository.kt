@@ -20,7 +20,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** 站点 CDN 在重定向时下发 ttwid 并拦截无 Cookie 的后续请求，内存 Cookie 罐使其自动流转。 */
-internal class MemoryCookies : CookieJar {
+class MemoryCookies : CookieJar {
     private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
 
     // RFC 语义：同名 + 同域 + 同路径的新 Cookie 替换旧值，而不是叠加。
@@ -164,6 +164,15 @@ class SearchSessionExpiredException : IOException("搜索结果已过期，请�
 class EmptyPlaybackResponseException(val detail: String? = null) :
     IOException("播放接口暂时返回空响应，请稍后重试")
 
+/** Classify empty playback responses before JSON parsing so bounded recovery can handle them. */
+internal fun playbackJson(raw: String, stage: String): JSONObject {
+    val text = raw.trim().removePrefix("\uFEFF").trim()
+    if (text.isEmpty()) throw EmptyPlaybackResponseException("stage=$stage")
+    return try { JSONObject(text) } catch (_: org.json.JSONException) {
+        throw IOException(if (stage == "device-register") "播放设备初始化响应格式异常，请重试" else "播放信息响应格式异常，请重试")
+    }
+}
+
 /** 连续前台空失败的恢复阈值；全路径已知为空时，还可在本轮剩余额度内提前恢复。 */
 private const val IDENTITY_ROTATE_ROUNDS = 2
 
@@ -266,7 +275,10 @@ constructor(
                 .header("User-Agent", VendorConstants.VIDEO_UA)
                 .header("Accept-Language", "zh-CN,zh;q=0.9")
         if (signed == null && request.build().url.host == "hongguoduanju.com") {
-            request.header("Referer", "$site/").header("User-Agent", "Mozilla/5.0")
+            request.header("Referer", "$site/")
+            // Search rejects the abbreviated browser UA; retain the complete client UA there.
+            if (request.build().url.encodedPath != "/api/search/result")
+                request.header("User-Agent", "Mozilla/5.0")
         }
         signed?.headers?.forEach { (k, v) -> request.header(k, v) }
         signed?.body?.let {
@@ -963,8 +975,18 @@ constructor(
             return streamLadder(id, metadataAhead, speculative)
         } catch (error: IOException) {
             RequestScope.ensureActive()
-            if (speculative || !(error is EmptyPlaybackResponseException ||
+            if (!(error is EmptyPlaybackResponseException ||
                     error is ContentHttpException && error.statusCode in listOf(401, 403))) throw error
+            if (speculative) {
+                // Reuse an already registered device; background work must never register or rotate one.
+                val device = devices.existing() ?: throw error
+                return RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(2)) {
+                    playerLadder(id, device)
+                }
+            }
+            // A fresh installation must register before the model request's own budget starts.
+            // The enclosing playback deadline still bounds both phases and cancellation.
+            RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(8)) { devices.obtain() }
             return RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(8)) {
                 try { playerLadder(id) } catch (fallback: IOException) {
                     RequestScope.ensureActive()
@@ -1221,7 +1243,7 @@ constructor(
             }
         if (!fallback.startsWith("https://")) throw IOException("播放地址格式异常")
         var info =
-            JSONObject(text(fallback)).optJSONObject("video_info")?.optJSONObject("data")
+            playbackJson(text(fallback), "video-info").optJSONObject("video_info")?.optJSONObject("data")
                 ?: throw IOException("没有播放资源")
         var videoList = info.optJSONObject("video_list") ?: throw IOException("没有可用清晰度")
         val offered = videoList.keys().asSequence().mapNotNull(videoList::optJSONObject).toList()
@@ -1235,7 +1257,7 @@ constructor(
                 .setQueryParameter("codec_type", "0")
                 .setQueryParameter("force_codec", "h264")
                 .build().toString()
-            info = JSONObject(text(compatible)).optJSONObject("video_info")?.optJSONObject("data")
+            info = playbackJson(text(compatible), "compatible-video-info").optJSONObject("video_info")?.optJSONObject("data")
                 ?: throw IOException("没有播放资源")
             videoList = info.optJSONObject("video_list") ?: throw IOException("没有可用清晰度")
         }
@@ -1354,8 +1376,7 @@ constructor(
         return if (selected.quality > maxQuality) stream.copy(quality = stream.quality + "（兼容资源）") else stream
     }
 
-    private fun playerLadder(id: String): StreamLadder {
-        val device = devices.obtain()
+    private fun playerLadder(id: String, device: PlayerDevice = devices.obtain()): StreamLadder {
         val rows = mutableListOf<Rendition>()
         var rejected = false
         var sawResponse = false
@@ -1367,7 +1388,7 @@ constructor(
         for ((url, body, headers) in requests) {
             try {
                 val signed = PlayerSigner.headers(url.substringAfter('?', ""), body)
-                val data = JSONObject(fetch(url, headers + signed, body))
+                val data = playbackJson(fetch(url, headers + signed, body), "compatibility-model")
                 val code = data.optInt("code", data.optInt("Code", 0))
                 if (code == 10001 || code == 10002 || code == 110001) throw DeviceRejectedException("播放接口拒绝该设备")
                 sawResponse = true
@@ -1378,16 +1399,17 @@ constructor(
                     rows += PlaybackModels.renditions(model)
                     val fallbackUrl = StreamModels.fallbackApiUrl(model)
                     if (fallbackUrl.startsWith("https://")) runCatching {
-                        val fallback = JSONObject(fetch(fallbackUrl, mapOf("User-Agent" to PlayerDeviceSource.FALLBACK_USER_AGENT, "Accept-Language" to "zh-CN,zh;q=0.9"), null))
+                        val fallback = playbackJson(fetch(fallbackUrl, mapOf("User-Agent" to PlayerDeviceSource.FALLBACK_USER_AGENT, "Accept-Language" to "zh-CN,zh;q=0.9"), null), "compatibility-video-info")
                         val info = fallback.optJSONObject("video_info")?.optJSONObject("data")
                         if (info != null) rows += PlaybackModels.renditions(info)
-                    }
+                    }.onFailure { if (it is IOException) transportFailure = it }
                 }
             } catch (e: DeviceRejectedException) { rejected = true }
             catch (e: Exception) { if(Thread.currentThread().isInterrupted) throw e; transportFailure = e }
         }
         if (rows.isEmpty()) {
             if (rejected) throw DeviceRejectedException("播放设备已被上游拒绝")
+            if (transportFailure is EmptyPlaybackResponseException) throw transportFailure
             if (!sawResponse) throw transportFailure ?: IOException("播放接口暂不可用")
             throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
         }

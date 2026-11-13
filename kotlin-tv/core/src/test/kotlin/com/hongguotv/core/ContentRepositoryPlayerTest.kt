@@ -68,8 +68,90 @@ class ContentRepositoryPlayerTest {
         }
     }
 
-    @Test fun speculativeEmptyResponseNeverStartsCompatibilityRequests() {
+    @Test fun emptyFirstRegistrationCanRecoverInSamePlayerWithoutOpeningAnotherDrama() {
+        val store = FakeStore(null)
+        ContentRepository.deviceStore = store
+        var registrations = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val body = when {
+                request.url.encodedPath == "/service/2/device_register/" -> {
+                    registrations++
+                    if (registrations == 1) "" else """{"device_id":"7000000000001234567","install_id":"7000000000007654321"}"""
+                }
+                request.url.host == "api3-normal-sinfonlinea.fqnovel.com" ->
+                    JSONObject().put("code", 0).put("data", JSONObject().put("video_model",
+                        JSONObject().put("video_list", list(entry(720, "h264", "https://example.com/recovered"))))).toString()
+                else -> ""
+            }
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200)
+                .message("fixture").body(body.toResponseBody()).build()
+        }.build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        val empty = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadderWithCompatibility("123") }
+        assertEquals("stage=device-register", empty.detail)
+        assertNull("Failed registration must not poison the stored device", store.value)
+        assertEquals("https://example.com/recovered", repo.streamLadderWithCompatibility("123").select(720)!!.url)
+        assertEquals(2, registrations)
+        assertNotNull(store.value)
+    }
+
+    @Test fun emptyCompatibilityModelsAreRecoverableInsteadOfRawJsonErrors() {
         ContentRepository.deviceStore = FakeStore()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200)
+                .message("fixture").body("  ".toResponseBody()).build()
+        }.build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        val empty = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadderWithCompatibility("123") }
+        assertEquals("stage=compatibility-model", empty.detail)
+        assertFalse(empty.message.orEmpty().contains("character"))
+    }
+
+    @Test fun freshInstallRegistersWithoutDetailAndOptionalFailuresLeaveTimeForPlayback() {
+        val store = FakeStore(null)
+        ContentRepository.deviceStore = store
+        var registrations = 0
+        var keyRequests = 0
+        var registrationDeadline = 0L
+        var modelDeadline = 0L
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val path = request.url.encodedPath
+            val body = when {
+                path == "/service/2/device_register/" -> {
+                    registrations++
+                    registrationDeadline = chain.call().timeout().deadlineNanoTime()
+                    """{"device_id":"7000000000001234567","install_id":"7000000000007654321"}"""
+                }
+                path == "/service/2/app_alert_check/" -> throw java.net.SocketTimeoutException("optional alert unavailable")
+                path == "/reading/crypt/registerkey" -> {
+                    keyRequests++
+                    throw java.net.SocketTimeoutException("optional key unavailable")
+                }
+                path == "/novel/player/video_model/v1/" -> {
+                    modelDeadline = chain.call().timeout().deadlineNanoTime()
+                    JSONObject().put("code", 0).put("data", JSONObject().put("video_model",
+                        JSONObject().put("video_list", list(entry(720, "h264", "https://example.com/first.mp4"))))).toString()
+                }
+                else -> ""
+            }
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                .code(200).message("fixture").body(body.toResponseBody()).build()
+        }.build()
+        fun repository() = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        val first = repository().streamLadderWithCompatibility("123")
+        assertEquals("https://example.com/first.mp4", first.select(720)!!.url)
+        assertEquals(1, registrations)
+        assertEquals("Optional key failure must not retry or sleep during first playback", 1, keyRequests)
+        assertTrue("Model gets its own deadline after cold registration", modelDeadline > registrationDeadline)
+        assertNotNull(store.value)
+        assertEquals("https://example.com/first.mp4", repository().streamLadderWithCompatibility("456").select(720)!!.url)
+        assertEquals("Next player reuses the initialized device", 1, registrations)
+    }
+
+    @Test fun speculativeEmptyResponseNeverRegistersADevice() {
+        ContentRepository.deviceStore = FakeStore(null)
         var compatibleRequests = 0
         val http = OkHttpClient.Builder().addInterceptor { chain ->
             if (chain.request().url.host == "api3-normal-sinfonlinea.fqnovel.com" &&
@@ -80,6 +162,25 @@ class ContentRepositoryPlayerTest {
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
         assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadderWithCompatibility("123", speculative = true) }
         assertEquals(0, compatibleRequests)
+    }
+
+    @Test fun preloadingReusesRegisteredCompatibilityDeviceWithoutRegistration() {
+        ContentRepository.deviceStore = FakeStore()
+        var requests = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val path = chain.request().url.encodedPath
+            check(!path.contains("device_register"))
+            val body = if (path == "/novel/player/video_model/v1/" && chain.request().url.host == "api3-normal-sinfonlinea.fqnovel.com") {
+                requests++
+                JSONObject().put("code", 0).put("data", JSONObject().put("video_model",
+                    JSONObject().put("video_list", list(entry(720, "h264", "https://example.com/preload"))))).toString()
+            } else ""
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200)
+                .message("fixture").body(body.toResponseBody()).build()
+        }.build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        assertEquals("https://example.com/preload", repo.streamLadderWithCompatibility("123", speculative = true).select(720)!!.url)
+        assertEquals(1, requests)
     }
 
     @Test fun shortplayModelListResolvesWithoutAnyFallbackCall() {

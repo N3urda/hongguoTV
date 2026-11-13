@@ -85,7 +85,7 @@ internal class RankingScreen(
                     }
                     .apply {
                         isSelected = state.board == board
-                        nextFocusUpId = nav[2].id
+                        nextFocusUpId = id
                     }
             bar.addView(
                 control,
@@ -97,9 +97,9 @@ internal class RankingScreen(
             controls += control
         }
         bar.addView(View(activity), params(0, 1).apply { weight = 1f })
-        filterButton = button("筛选题材") { chooseTopic() }.apply { nextFocusUpId = nav[2].id }
+        filterButton = button("筛选题材") { chooseTopic() }.apply { nextFocusUpId = id }
         refreshButton = button("刷新") { maybeRefresh(state.board, force = true) }
-            .apply { nextFocusUpId = nav[2].id }
+            .apply { nextFocusUpId = id }
         bar.addView(filterButton, params(-2))
         bar.addView(refreshButton, params(-2).apply { leftMargin = dp(8) })
         controls += filterButton
@@ -342,6 +342,7 @@ internal class RankingScreen(
                 resetHeaderOffset()
             }
         }
+        list.setSideEntry(nav[2])
         browser = list
         body.addView(list, params(-1, 0).apply { weight = 1f })
         list.show(

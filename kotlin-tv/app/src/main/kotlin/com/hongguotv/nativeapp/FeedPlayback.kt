@@ -81,6 +81,7 @@ internal class PublicFeedBackend(
     private val http: OkHttpClient =
         OkHttpClient.Builder()
             .connectionPool(feedPool)
+            .cookieJar(com.hongguotv.core.MemoryCookies())
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .callTimeout(35, TimeUnit.SECONDS)
@@ -200,8 +201,7 @@ internal class PublicFeedBackend(
     ) {
         if (closed.get()) return
         cursor.markSeen(series.id)
-        // 同步落盘：这一条是「下次进来别再看到它」的唯一依据，异步写会和退出时的 close()
-        // 抢跑，导致快照丢失。快照受 64 KiB 与最近 540 条去重记录限制。
+        // Update the shared snapshot immediately; disk persistence must not block D-pad input.
         startupCache?.saveCursor(cacheIdentity, category?.route ?: "recommend", cursor.snapshot())
     }
 
@@ -306,14 +306,20 @@ internal class PublicFeedBackend(
         val id = full.episodes.getOrNull(index) ?: throw java.io.IOException("该集暂不可用")
         val opened = open(id, speculative = true)
         try {
-            opened.video.read(0, minOf(opened.video.total, 512 * 1024L).toInt())
+            opened.video.warm(512 * 1024)
             return TrialClip(full.copy(episodes = listOf(id)), opened.video,
                 full.episodes.size, opened.track, index + 1)
         } catch (error: Throwable) { opened.video.close(); throw error }
     }
 
     // 后台只轻量准备一次，不消耗前台恢复额度；成功后立即交付视频索引。
-    override fun preload(series: Series): TrialClip = trial(series, speculative = true)
+    override fun preload(series: Series): TrialClip {
+        val prepared = trial(series, speculative = true)
+        try {
+            prepared.video.warm(512 * 1024)
+            return prepared
+        } catch (error: Throwable) { prepared.close(); throw error }
+    }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -354,6 +360,8 @@ internal interface TrialPlayback {
     fun select(clip: TrialClip, position: Long, autoplay: Boolean): Boolean = false
 
     fun canPrefetch(): Boolean = true
+
+    fun suspendPrefetch() {}
 
     fun pause()
 
@@ -447,6 +455,12 @@ internal class Media3TrialPlayback(context: Context, private val speed: Float = 
             preloadManager.invalidate()
         }
         return allowed
+    }
+
+    override fun suspendPrefetch() {
+        if (!preloading) return
+        preloading = false
+        preloadManager.invalidate()
     }
 
     override val view: View
