@@ -5,7 +5,7 @@ import android.content.Context
 import com.hongguotv.core.CatalogPage
 import com.hongguotv.core.FeedStartupSnapshot
 
-/** One account scope, three sources; feed workers read pages, selected-work snapshots commit on UI. */
+/** One account scope, three sources; feed workers read pages, selected-work snapshots update memory immediately and persist asynchronously. */
 internal class FeedStartupCache(
     context: Context,
     private val clock: () -> Long = System::currentTimeMillis,
@@ -50,9 +50,10 @@ internal class FeedStartupCache(
         runCatching {
             synchronized(lock) {
                 owner(identity)
-                // 用同步落盘：用户刷几部就强制退出时，apply 的异步写入可能还没落地就被杀掉了。
+                // apply updates the shared in-memory snapshot immediately, then serializes disk writes
+                // off the UI thread. A subsequent backend can read it without waiting for fsync.
                 if (snapshot.length <= 64_000)
-                    prefs.edit().putString("cursor:$source", snapshot).commit()
+                    prefs.edit().putString("cursor:$source", snapshot).apply()
             }
         }
     }
@@ -68,9 +69,9 @@ internal class FeedStartupCache(
 
     fun save(identity: String, source: String, page: CatalogPage) {
         runCatching {
+            val value = FeedStartupSnapshot.encode(page, clock())
             synchronized(lock) {
                 owner(identity)
-                val value = FeedStartupSnapshot.encode(page, clock())
                 if (value.length <= 200_000) prefs.edit().putString(source, value).apply()
             }
         }

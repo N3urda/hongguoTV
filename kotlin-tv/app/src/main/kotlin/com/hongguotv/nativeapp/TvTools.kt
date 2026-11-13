@@ -397,10 +397,10 @@ class TvTools(private val activity: Activity) {
         val content = column()
         val row = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
         row.addView(qr(url), LinearLayout.LayoutParams(dp(185), dp(185)))
-        row.addView(label("手机扫码后用浏览器打开。\n关闭此窗口后仍可控制，播放中也能使用。\n电视退出应用后连接失效；请勿分享二维码。", 16f), LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(label("手机与电视连接同一局域网，扫码后用浏览器打开。\n可以搜索剧名、遥控播放、管理片单。\n关闭此窗口后仍可控制，播放中也能使用。\n电视退出应用后连接失效；请勿分享二维码。", 16f), LinearLayout.LayoutParams(0, -2, 1f))
         content.addView(row)
         content.addView(label(url, 12f))
-        open(AlertDialog.Builder(activity).setTitle("手机控制台")
+        open(AlertDialog.Builder(activity).setTitle("手机扫码控制")
             .setView(content).setPositiveButton("继续看电视", null)
             .setNegativeButton("断开所有手机") { _, _ -> disconnect() }.create(), anchor)
     }

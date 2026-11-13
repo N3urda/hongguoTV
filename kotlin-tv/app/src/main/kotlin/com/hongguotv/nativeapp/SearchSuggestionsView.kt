@@ -23,6 +23,7 @@ internal class SearchSuggestionsView(
     private val fetch: (String) -> List<String>,
     private val search: (String) -> Unit,
     private val vertical: Boolean = false,
+    private val exitHorizontalEdges: Boolean = false,
 ) : HorizontalScrollView(context) {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -151,9 +152,10 @@ internal class SearchSuggestionsView(
         chips.forEachIndexed { i, chip ->
             chip.nextFocusUpId = input.id
             chip.nextFocusDownId = target
-            chip.nextFocusLeftId = chips.getOrNull(i - 1)?.id ?: chip.id
-            chip.nextFocusRightId = chips.getOrNull(i + 1)?.id ?: chip.id
+            chip.nextFocusLeftId = chips.getOrNull(i - 1)?.id ?: if (exitHorizontalEdges) peers.lastOrNull()?.id ?: input.id else chip.id
+            chip.nextFocusRightId = chips.getOrNull(i + 1)?.id ?: if (exitHorizontalEdges) target else chip.id
         }
+        if (exitHorizontalEdges) navigationChanged?.invoke()
     }
 
     fun cancel() {

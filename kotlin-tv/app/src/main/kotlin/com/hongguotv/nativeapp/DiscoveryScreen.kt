@@ -44,6 +44,7 @@ internal class DiscoveryScreen(
         }
     private val reset = button("重置") { change(DiscoverySelection()) }
     private val refresh = button("刷新") { request(null) }
+    private val emptyState = TvEmptyState(context, "正在加载剧目", "稍候，即可按类型浏览")
     private val browser: ContinuousCatalogView
     private var filterDialog: AlertDialog? = null
     private var loading = false
@@ -65,13 +66,21 @@ internal class DiscoveryScreen(
         bar.addView(toggle)
         bar.addView(reset)
         bar.addView(refresh)
-        addView(bar)
+        val header = LinearLayout(context).apply { orientation = VERTICAL }
+        header.addView(TextView(context).apply {
+            text = "找剧"; textSize = 28f; setTextColor(TvStyle.text)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(0, 0, 0, dp(12))
+        })
+        header.addView(bar)
+        addView(header)
         addView(scroll, LayoutParams(-1, dp(200)))
+        summary.setPadding(0, dp(8), 0, dp(8))
         addView(summary)
         browser =
             ContinuousCatalogView(
                 context,
-                6,
+                5,
                 toggle,
                 { item, recycled ->
                     (recycled as? CatalogPosterCard ?: CatalogPosterCard(context)).apply {
@@ -89,12 +98,13 @@ internal class DiscoveryScreen(
             if (focused) {
                 resetting = false
                 updateHeaderOffset()
-            } else if (resetting || browser.grid.selectedItemPosition < 6 || !hasFocus()) {
+            } else if (resetting || browser.grid.selectedItemPosition < 5 || !hasFocus()) {
                 resetHeaderOffset()
             }
         }
         browser.useRemoteNavigation()
         addView(browser, LayoutParams(-1, 0, 1f))
+        addView(emptyState, LayoutParams(-1, 0, 1f))
         renderFilters()
         showItems()
         expand(state.expanded)
@@ -153,7 +163,7 @@ internal class DiscoveryScreen(
         val cardHeight = browser.grid.getChildAt(0)?.height ?: 0
         if (browseStep == 0 && cardHeight > 0) browseStep = cardHeight + dp(10)
         val step = if (browseStep > 0) browseStep else dp(180) + dp(10)
-        val row = position / 6
+        val row = position / 5
         val offset =
             if (!state.expanded) 0
             else if (row > 0) minOf(header, row * step)
@@ -323,7 +333,7 @@ internal class DiscoveryScreen(
                         ?.let { previous ->
                             previous.getOrElse(index.coerceAtMost(previous.lastIndex)) { entry() }
                         }
-                        ?.id ?: upper.id
+                        ?.id ?: chip.id
                 chip.nextFocusDownId =
                     rows
                         .getOrNull(rowIndex + 1)
@@ -333,7 +343,7 @@ internal class DiscoveryScreen(
                         ?.id ?: browser.grid.id
             }
         }
-        listOf(toggle, reset, refresh).forEach { it.nextFocusUpId = upper.id }
+        listOf(toggle, reset, refresh).forEach { it.nextFocusUpId = it.id }
         toggle.nextFocusLeftId = rows.firstOrNull()?.lastOrNull()?.id ?: upper.id
         toggle.nextFocusRightId = reset.id
         reset.nextFocusLeftId = toggle.id
@@ -398,7 +408,8 @@ internal class DiscoveryScreen(
             state.next != null,
             state.position?.let { ContinuousCatalogView.Position(it.first, it.second) },
         )
-        browser.visibility = if (state.loaded) VISIBLE else INVISIBLE
+        browser.visibility = if (state.loaded) VISIBLE else GONE
+        emptyState.visibility = if (state.loaded) GONE else VISIBLE
         summary.text = selectionSummary()
     }
 
@@ -437,6 +448,8 @@ internal class DiscoveryScreen(
     private fun request(cursor: DiscoveryCursor?) {
         val ticket = ++serial
         loading = true
+        emptyState.heading.text = "正在加载剧目"
+        emptyState.description.text = "稍候，即可按类型浏览"
         refresh.text = "读取中…"
         summary.text = if (cursor == null) "正在按当前条件加载…" else "正在继续加载…"
         fetch(state.selection, cursor) { result, error ->
@@ -463,11 +476,17 @@ internal class DiscoveryScreen(
                 summary.text = "加载失败，已保留列表 · ${selectionSummary()}"
             } else {
                 summary.text = "分类读取失败，请按刷新重试"
+                if (!state.loaded) {
+                    emptyState.heading.text = "暂时无法加载剧目"
+                    emptyState.description.text = "请检查网络连接，再选择右上角刷新"
+                }
             }
         }
     }
 
     fun entry(): View = controls["genre" to state.selection.values["genre"].orEmpty()] ?: toggle
+
+    fun setSideEntry(view: View) { browser.setSideEntry(view) }
 
     fun backToTop() {
         resetting = true

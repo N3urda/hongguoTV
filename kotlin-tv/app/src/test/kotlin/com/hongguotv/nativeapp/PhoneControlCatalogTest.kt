@@ -78,11 +78,35 @@ class PhoneControlCatalogTest {
         assertEquals(newer, played.last().second)
     }
 
+    @Test fun coverRelayPreservesTelevisionUrlAndRejectsExpiredCardsAndScope() = fixture { catalog, _, _, _ ->
+        val items = catalog.result(listOf(RelatedWork(Series("123", "封面", cover = "http://example.com/a b.jpg"), "", false)))
+            .getJSONArray("items")
+        val scope = items.getJSONObject(0).getInt("scope")
+        assertEquals("http://example.com/a%20b.jpg", catalog.cover("123", scope))
+        assertThrows(IllegalArgumentException::class.java) { catalog.cover("123", scope + 1) }
+        assertThrows(IllegalArgumentException::class.java) { catalog.cover("unlisted", scope) }
+        catalog.clear()
+        assertThrows(IllegalArgumentException::class.java) { catalog.cover("123", scope) }
+    }
+
     @Test fun coversOnlyExposeBoundedHttpsUrls() = fixture { catalog, _, _, _ ->
-        val urls = listOf("javascript:alert(1)", "file:///secret", "http://example.com/a", "https://user:pass@example.com/a", "https://example.com/" + "a".repeat(2048), "https://example.com/poster.jpg")
+        val urls = listOf("javascript:alert(1)", "file:///secret", "https://user:pass@example.com/a", "https://example.com/" + "a".repeat(8192), "https://example.com/poster.jpg")
         val rows = catalog.result(urls.mapIndexed { i, url -> RelatedWork(Series("$i", "剧", cover = url), "", false) }).getJSONArray("items")
-        (0..4).forEach { assertEquals("", rows.getJSONObject(it).getString("cover")) }
-        assertEquals(urls.last(), rows.getJSONObject(5).getString("cover"))
+        (0..3).forEach { assertEquals("", rows.getJSONObject(it).getString("cover")) }
+        assertEquals(urls.last(), rows.getJSONObject(4).getString("cover"))
+    }
+
+    @Test fun discoveryAndUpcomingCoversKeepUsableUrlsAndSignedQueries() = fixture { catalog, _, _, _ ->
+        val signed = "https://example.com/cover.webp?signature=" + "a".repeat(2300) + "&expires=123"
+        val inputs = listOf("http://example.com/cover.jpg", "//example.com/cover.jpg", "https://example.com/a b.jpg?size=100&amp;v=2", signed)
+        for (upcoming in listOf(false, true)) {
+            val items = catalog.result(inputs.mapIndexed { i, url -> RelatedWork(Series("${i+1}", "作品", cover = url), "", upcoming) }).getJSONArray("items")
+            assertEquals("https://example.com/cover.jpg", items.getJSONObject(0).getString("cover"))
+            assertEquals("https://example.com/cover.jpg", items.getJSONObject(1).getString("cover"))
+            assertEquals("https://example.com/a%20b.jpg?size=100&v=2", items.getJSONObject(2).getString("cover"))
+            assertEquals(signed, items.getJSONObject(3).getString("cover"))
+            assertEquals(!upcoming, items.getJSONObject(0).getBoolean("playable"))
+        }
     }
 
     @Test fun onlyCurrentBoundedCardsCanTriggerPlayback() = fixture { catalog, _, account, played ->

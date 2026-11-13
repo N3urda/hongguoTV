@@ -4,6 +4,7 @@ package com.hongguotv.nativeapp
 import com.hongguotv.core.*
 import org.json.JSONArray
 import org.json.JSONObject
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /** Main-thread snapshots. Retain at most 80 small cards, never bitmaps or complete result pages. */
 internal class PhoneControlCatalog(
@@ -11,7 +12,7 @@ internal class PhoneControlCatalog(
     private val account: AccountController,
     private val play: (Series, CloudProgress?) -> Unit,
 ) {
-    private data class Entry(val series: Series, val upcoming: Boolean, val reservable: Boolean)
+    private data class Entry(val series: Series, val upcoming: Boolean, val reservable: Boolean, val artwork: String)
     private val entries = linkedMapOf<String, Entry>()
     private var scope = account.historyScope
     var message = ""
@@ -47,9 +48,25 @@ internal class PhoneControlCatalog(
         return entries[id]?.series ?: throw IllegalArgumentException("Expired card")
     }
 
-    private fun safeCover(value: String): String = value.takeIf { it.length <= 2048 &&
-        runCatching { java.net.URI(it).let { uri -> uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.userInfo == null } }.getOrDefault(false)
-    }.orEmpty()
+    private fun safeCover(value: String, secureOnly: Boolean = true): String {
+        if (value.length > 8192 || value.any { it.isISOControl() }) return ""
+        val cleaned = value.trim().replace("\\/", "/")
+            .replace("\\u002F", "/", ignoreCase = true).replace("\\u0026", "&", ignoreCase = true)
+            .replace("&amp;", "&")
+        val absolute = if (cleaned.startsWith("//")) "https:$cleaned" else cleaned
+        val url = absolute.toHttpUrlOrNull() ?: return ""
+        if (url.username.isNotEmpty() || url.password.isNotEmpty()) return ""
+        // Match the TV HTTP client's URL encoding, while keeping the phone page HTTPS-only.
+        val secure = if (secureOnly && url.scheme == "http") url.newBuilder().scheme("https")
+            .port(if (url.port == 80) 443 else url.port).build() else url
+        return secure.toString().takeIf { it.length <= 8192 }.orEmpty()
+    }
+
+    fun cover(id: String, expectedScope: Int): String {
+        checkScope()
+        require(expectedScope == scope) { "账户已切换" }
+        return entries[id]?.artwork ?: throw IllegalArgumentException("Expired card")
+    }
 
     private fun mergedSeries(rows: List<Series>): List<Series> = rows.groupBy { it.id }.values.map { versions ->
         val first = versions.first()
@@ -63,7 +80,7 @@ internal class PhoneControlCatalog(
             val source = work.series
             val small = Series(source.id.take(64), source.title.take(200), cover = safeCover(source.cover), badge = source.badge.take(120))
             entries.remove(small.id)
-            entries[small.id] = Entry(small, work.upcoming, work.upcoming && small.id.matches(Regex("[0-9]{1,19}")))
+            entries[small.id] = Entry(small, work.upcoming, work.upcoming && small.id.matches(Regex("[0-9]{1,19}")), safeCover(source.cover, secureOnly = false))
             while (entries.size > 80) entries.remove(entries.keys.first())
             items.put(JSONObject().put("id", small.id).put("title", small.title).put("cover", small.cover).put("badge", work.label + " · " + small.badge)
                 .put("reservationLabel", if (work.upcoming) account.reservationLabel(work) else "")

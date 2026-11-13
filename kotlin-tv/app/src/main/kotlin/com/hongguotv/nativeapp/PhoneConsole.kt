@@ -38,8 +38,9 @@ internal class PhoneConsole(
     private var foreground = false
     private var address: String? = null
 
-    private class Session(val http: OkHttpClient, val repository: ContentRepository, val active: AtomicBoolean) {
+    private class Session(val http: OkHttpClient, val repository: ContentRepository, val active: AtomicBoolean, val covers: PhoneCoverLoader) {
         val browsing = AtomicBoolean(false)
+        val readingCover = AtomicBoolean(false)
         val suggesting = AtomicBoolean(false)
         val authenticating = AtomicBoolean(false)
         var login: WebLogin? = null
@@ -60,7 +61,7 @@ internal class PhoneConsole(
             login?.cancel()
             login = null
             if (::server.isInitialized) server.close()
-            Thread({ http.dispatcher.cancelAll(); http.connectionPool.evictAll() }, "hongguotv-phone-cleanup").apply { isDaemon = true; start() }
+            Thread({ http.dispatcher.cancelAll(); http.connectionPool.evictAll(); covers.close() }, "hongguotv-phone-cleanup").apply { isDaemon = true; start() }
         }
     }
 
@@ -122,7 +123,10 @@ internal class PhoneConsole(
                         override fun source() = limited
                     }).build()
                 }.connectionPool(ConnectionPool(1, 30, TimeUnit.SECONDS)).build()
-            val created = Session(http, ContentRepository(http), active)
+            val coverHttp = httpProvider().newBuilder().cookieJar(okhttp3.CookieJar.NO_COOKIES)
+                .connectTimeout(3, TimeUnit.SECONDS).readTimeout(4, TimeUnit.SECONDS)
+                .callTimeout(6, TimeUnit.SECONDS).connectionPool(ConnectionPool(1, 30, TimeUnit.SECONDS)).build()
+            val created = Session(http, ContentRepository(http), active, PhoneCoverLoader(coverHttp))
             try {
                 created.server = PhoneControlServer(selected) { body -> request(created, body) }
                 main.post {
@@ -156,6 +160,20 @@ internal class PhoneConsole(
     private fun request(current: Session, body: JSONObject): JSONObject {
         val action = body.getString("action")
         if (action != "status" && !current.allowCommand()) return JSONObject().put("error", "操作过快，请稍候再试")
+        if (action == "cover") {
+            require(!body.has("url"))
+            if (!current.readingCover.compareAndSet(false, true)) return JSONObject().put("error", "封面读取中，请稍后重试")
+            try {
+                val id = body.getString("id")
+                val scope = body.getInt("scope")
+                val url = onMain(current) { catalog.cover(id, scope) }
+                val image = current.covers.load(url)
+                return onMain(current) {
+                    check(catalog.cover(id, scope) == url)
+                    JSONObject().put("image", image)
+                }
+            } finally { current.readingCover.set(false) }
+        }
         if (action in setOf("loginQr", "loginSend", "loginVerify", "loginPoll")) return login(current, body)
         if (action in setOf("search", "related", "suggest", "discover")) {
             val reading = if (action == "suggest") current.suggesting else current.browsing

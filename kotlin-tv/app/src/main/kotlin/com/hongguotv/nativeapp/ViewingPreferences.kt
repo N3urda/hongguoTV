@@ -14,7 +14,7 @@ internal data class ViewingPreferences(
             fun number(key: String, range: IntRange, fallback: Int) =
                 (values[key] as? Int)?.takeIf { it in range } ?: fallback
             return ViewingPreferences(
-                number("startupTab", 0..7, if (values["startupPage"] == 1) 4 else 0),
+                number("startupTab", 0..8, if (values["startupPage"] == 1) 4 else 0),
                 values["homeAutoplay"] as? Boolean ?: true, number("clockMode", 0..2, 1),
                 values["seasonAutoplay"] as? Boolean ?: false,
             )

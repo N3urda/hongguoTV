@@ -3,6 +3,7 @@ package com.hongguotv.nativeapp
 
 import android.content.Context
 import android.graphics.Typeface
+import android.graphics.Rect
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.KeyEvent
@@ -126,7 +127,27 @@ class HomeScreen(
         }
 
     private val scroll =
-        ScrollView(context).apply {
+        object : ScrollView(context) {
+            override fun requestChildFocus(child: View, focused: View) {
+                super.requestChildFocus(child, focused)
+                if (focused.tag?.toString()?.startsWith("home:spotlight:") == true) {
+                    // Arrow navigation can calculate its scroll before the new child owns focus.
+                    // Run after that native scroll and replace any in-flight shelf animation.
+                    post {
+                        if (focused.hasFocus()) leading?.let { smoothScrollTo(0, it.top) }
+                    }
+                }
+            }
+
+            override fun computeScrollDeltaToGetChildRectOnScreen(rect: Rect): Int {
+                val section = leading?.takeIf { it.hasFocus() }
+                // The action buttons sit at the bottom of the banner. Reveal its title and
+                // artwork too, including native focus scrolls after layout/restoration.
+                val visible = if (section != null)
+                    Rect(rect.left, section.top, rect.right, section.bottom) else rect
+                return super.computeScrollDeltaToGetChildRectOnScreen(visible)
+            }
+        }.apply {
             isVerticalScrollBarEnabled = false
             clipToPadding = false
         }
@@ -137,23 +158,21 @@ class HomeScreen(
     private var footerMore: (() -> Unit)? = null
     private var moreButton: View? = null
     private var lastFocus = ""
+    private var sideEntry: View? = null
+    private var leading: HomeSpotlight? = null
+
+    internal fun setLeadingSection(view: HomeSpotlight?) { leading = view }
+
+    fun setSideEntry(view: View) { sideEntry = view }
     private var lastRow: String? = null
     private var restoring = false
     private var revision = 0
-    val refresh =
-        label("正在更新热门…", 13f).apply {
-            id = View.generateViewId()
-            tag = "home:refresh"
-            isFocusable = true
-            isFocusableInTouchMode = true
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            background = shape(false)
-            setOnFocusChangeListener { _, f ->
-                background = shape(f)
-                if (f) lastFocus = tag.toString()
-            }
-        }
+    private val notice = label("", 13f).apply { visibility = GONE }
+
+    fun showStatus(message: String) {
+        notice.text = message
+        notice.visibility = if (message.isBlank()) GONE else VISIBLE
+    }
 
     init {
         orientation = VERTICAL
@@ -164,7 +183,7 @@ class HomeScreen(
     fun capturePosition(): Position {
         val key =
             findFocus()?.tag?.toString()?.takeIf {
-                it in cards || it == "home:refresh" || it == "home:more"
+                it.startsWith("home:spotlight:") || it in cards || it == "home:more"
             } ?: lastFocus
         val row = rows.indexOfFirst { item -> item.cards.any { it.key == key } }
         val column = rows.getOrNull(row)?.cards?.indexOfFirst { it.key == key } ?: 0
@@ -239,6 +258,7 @@ class HomeScreen(
         val ticket = revision
         restoring = true
         contents.removeAllViews()
+        leading?.let { contents.addView(it, LayoutParams(-1, -2).apply { bottomMargin = dp(16) }) }
         rows.clear()
         cards.clear()
         moreButton = null
@@ -279,7 +299,7 @@ class HomeScreen(
                 val rowCards = mutableListOf<Card>()
                 fun addCard(entry: Entry?, moreAction: (() -> Unit)? = null) {
                     val width =
-                        ((resources.displayMetrics.widthPixels * .9f - dp(70)) / 6)
+                        ((resources.displayMetrics.widthPixels - dp(160) - dp(56)) / 5)
                             .toInt()
                             .coerceAtLeast(dp(100))
                     val key =
@@ -388,8 +408,8 @@ class HomeScreen(
             contents.addView(
                 label("还没有本机记录，热门剧加载后可选择观看。", 15f).apply { setPadding(0, dp(16), 0, dp(16)) }
             )
-        contents.addView(refresh, LayoutParams(-1, -2).apply { topMargin = dp(10) })
-        val footer = mutableListOf<View>(refresh)
+        contents.addView(notice, LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        val footer = mutableListOf<View>()
         if (more != null) {
             val next =
                 label("更多热门  ›", 15f).apply {
@@ -411,14 +431,14 @@ class HomeScreen(
         }
         rows.forEachIndexed { i, row ->
             row.cards.forEachIndexed { j, card ->
-                card.view.nextFocusLeftId = row.cards[(j - 1).coerceAtLeast(0)].view.id
+                card.view.nextFocusLeftId = if (j == 0) sideEntry?.id ?: card.view.id else row.cards[j - 1].view.id
                 card.view.nextFocusRightId =
                     row.cards[(j + 1).coerceAtMost(row.cards.lastIndex)].view.id
                 card.view.nextFocusUpId =
-                    if (i == 0) top.id
+                    if (i == 0) leading?.play?.id ?: top.id
                     else rows[i - 1].cards[j.coerceAtMost(rows[i - 1].cards.lastIndex)].view.id
                 card.view.nextFocusDownId =
-                    if (i == rows.lastIndex) refresh.id
+                    if (i == rows.lastIndex) moreButton?.id ?: card.view.id
                     else rows[i + 1].cards[j.coerceAtMost(rows[i + 1].cards.lastIndex)].view.id
             }
         }
@@ -427,6 +447,14 @@ class HomeScreen(
                 if (i == 0) rows.lastOrNull()?.cards?.firstOrNull()?.view?.id ?: top.id
                 else footer[i - 1].id
             v.nextFocusDownId = footer.getOrNull(i + 1)?.id ?: v.id
+        }
+        leading?.let { section ->
+            val below = rows.firstOrNull()?.cards?.firstOrNull()?.view?.id ?: moreButton?.id ?: top.id
+            for (action in listOf(section.play, section.detail)) {
+                action.nextFocusUpId = top.id
+                action.nextFocusDownId = below
+            }
+            section.play.nextFocusLeftId = sideEntry?.id ?: section.play.id
         }
         top.nextFocusDownId = firstId()
         val preferred = focus.ifBlank { previous?.focus.orEmpty() }
@@ -459,7 +487,10 @@ class HomeScreen(
     }
 
     private fun target(key: String, position: Position?): View {
-        if (key == "home:refresh") return refresh
+        leading?.let {
+            if (key == "home:spotlight:detail") return it.detail
+            if (key == "home:spotlight:play" || key.isBlank() && position == null) return it.play
+        }
         if (key == "home:more")
             moreButton?.let {
                 return it
@@ -475,12 +506,13 @@ class HomeScreen(
                 return it.view
             }
         }
-        return cards.values.firstOrNull()?.view ?: refresh
+        return cards.values.firstOrNull()?.view ?: moreButton ?: top
     }
 
     private fun restoreOffsets(position: Position) {
         rows.forEach { row -> row.horizontal.scrollTo(position.horizontal[row.key] ?: 0, 0) }
         scroll.scrollTo(0, position.vertical)
+        leading?.takeIf { it.hasFocus() }?.let { reveal(it, false) }
         // A removed row can leave the nearest surviving card outside the old viewport.
         rows.firstOrNull { row -> row.cards.any { it.view.hasFocus() } }?.let(::revealSelection)
     }
@@ -604,5 +636,5 @@ class HomeScreen(
         }
     }
 
-    fun firstId() = rows.firstOrNull()?.cards?.firstOrNull()?.view?.id ?: refresh.id
+    fun firstId() = leading?.play?.id ?: rows.firstOrNull()?.cards?.firstOrNull()?.view?.id ?: moreButton?.id ?: top.id
 }

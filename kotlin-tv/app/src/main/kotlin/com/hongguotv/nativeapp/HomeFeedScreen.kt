@@ -70,6 +70,11 @@ internal class HomeFeedScreen(
     private var prefetchReadyAt = 0L
     private var clip: TrialClip? = null
     private var playbackReady = false
+    private var buffering = false
+    private var bufferingSince = 0L
+    private var bufferingPosition = 0L
+    private var bufferRecoveryKey: String? = null
+    private var bufferRecoveryAttempts = 0
     private var restoredSeries: String? = null
     private var lastCheckpoint = 0L
     private var lastSaved: Triple<String, Long, Boolean>? = null
@@ -86,16 +91,9 @@ internal class HomeFeedScreen(
     private var lastPlaybackError: androidx.media3.common.PlaybackException? = null
     private var healTarget: String? = null
     private var healAttempts = 0
-    private val stage = FrameLayout(activity)
+    private val stage = object : FrameLayout(activity), HandlesHorizontalKeys {}
     private val hero = FrameLayout(activity)
-    private val cover = ImageView(activity).apply { scaleType = ImageView.ScaleType.CENTER_CROP; alpha = .25f }
     private val poster = ImageView(activity).apply { scaleType = ImageView.ScaleType.FIT_CENTER; setBackgroundColor(Color.BLACK) }
-    private val previousCover = ImageView(activity).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-    private val nextCover = ImageView(activity).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-    private val previousTitle = label("", 14f)
-    private val nextTitle = label("", 14f)
-    private lateinit var previousCard: View
-    private lateinit var nextCard: View
     private var slideDirection = 1
     private val positionLabel = label("正在发现好剧", 12f, TvVisual.accent)
     private lateinit var relatedButton: TextView
@@ -214,43 +212,17 @@ internal class HomeFeedScreen(
                     rightMargin = dp(8)
                 },
             )
-            b.nextFocusUpId = nav.first().id
+            b.nextFocusUpId = b.id
             b.nextFocusDownId = stage.id
             b.nextFocusLeftId = typeChoices.getOrNull(i - 1)?.id ?: b.id
             b.nextFocusRightId = typeChoices.getOrNull(i + 1)?.id ?: b.id
         }
         addView(types, lp(-1, dp(48)))
         val carousel = FrameLayout(activity).apply { clipChildren = false; clipToPadding = false }
-        fun side(image: ImageView, caption: TextView, delta: Int): View = FrameLayout(activity).apply {
-            background = TvVisual.panel(activity)
-            clipToOutline = true
-            alpha = .85f
-            scaleY = .94f
-            addView(image, FrameLayout.LayoutParams(-1, -1))
-            addView(View(activity).apply {
-                background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                    intArrayOf(0x44101828, 0xee0b101a.toInt()))
-            }, FrameLayout.LayoutParams(-1, -1))
-            caption.maxLines = 3
-            caption.ellipsize = TextUtils.TruncateAt.END
-            caption.setPadding(dp(10), dp(10), dp(10), dp(16))
-            addView(caption, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
-            addView(label(if (delta < 0) "‹" else "›", 30f).apply { gravity = Gravity.CENTER },
-                FrameLayout.LayoutParams(-1, -1))
-            isClickable = true
-            isFocusable = false
-            contentDescription = if (delta < 0) "上一部" else "下一部"
-            setOnClickListener { move(delta) }
-        }
-        previousCard = side(previousCover, previousTitle, -1)
-        nextCard = side(nextCover, nextTitle, 1)
-        carousel.addView(previousCard, FrameLayout.LayoutParams(dp(112), -1, Gravity.START))
-        carousel.addView(nextCard, FrameLayout.LayoutParams(dp(112), -1, Gravity.END))
         hero.background = TvVisual.panel(activity)
         hero.clipToOutline = true
         hero.elevation = dp(8).toFloat()
         hero.setPadding(dp(2), dp(2), dp(2), dp(2))
-        hero.addView(cover, FrameLayout.LayoutParams(-1, -1))
         hero.addView(View(activity).apply {
             background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
                 intArrayOf(0x3310192a, 0xbb0b101a.toInt()))
@@ -269,13 +241,12 @@ internal class HomeFeedScreen(
         stage.clipToOutline = true
         stage.addView(playback.view, FrameLayout.LayoutParams(-1, -1))
         stage.addView(poster, FrameLayout.LayoutParams(-1, -1))
-        stage.addView(tag, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
+        info.addView(tag)
         status.gravity = Gravity.CENTER
         status.textSize = 12f
         status.setPadding(dp(8), dp(6), dp(8), dp(6))
         status.background = TvStyle.shape(activity, Color.argb(215, 11, 15, 21))
-        stage.addView(status, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
-        content.addView(stage, lp(-1, -1))
+        content.addView(stage, lp(0, -1).apply { weight = 1f })
         title.typeface = Typeface.DEFAULT_BOLD
         title.textSize = 19f
         title.maxLines = 2
@@ -292,12 +263,11 @@ internal class HomeFeedScreen(
         info.setPadding(dp(12), dp(10), dp(12), dp(10))
         info.background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
             intArrayOf(0xbb0b101a.toInt(), 0x000b101a))
-        stage.addView(info, FrameLayout.LayoutParams(dp(220), -2, Gravity.START or Gravity.BOTTOM).apply {
-            setMargins(dp(12), dp(8), dp(12), dp(32))
-        })
+        info.addView(status)
+        content.addView(info, lp(dp(220), -1))
         body.addView(content, lp(-1, 0).apply { weight = 1f })
         carousel.addView(hero, FrameLayout.LayoutParams(-1, -1).apply {
-            setMargins(dp(76), dp(8), dp(76), dp(8))
+            setMargins(0, dp(8), 0, dp(8))
         })
         addView(carousel, lp(-1, 0).apply { weight = 1f })
         watchButton =
@@ -388,10 +358,20 @@ internal class HomeFeedScreen(
             if (!closed && clip != null)
                 when (value) {
                     TrialStatus.BUFFERING -> {
+                        if (!buffering) {
+                            bufferingSince = android.os.SystemClock.elapsedRealtime()
+                            bufferingPosition = playback.position()
+                        }
+                        buffering = true
+                        // Give the current episode both the connection and decoder budgets.
+                        cancelPrefetch()
+                        playback.suspendPrefetch()
                         status.visibility = View.VISIBLE
                         status.text = "正在加载当前集…"
                     }
                     TrialStatus.READY -> {
+                        buffering = false
+                        bufferingSince = 0L
                         playbackReady = true
                         poster.visibility = View.GONE
                         status.visibility = if (state.userPaused) View.VISIBLE else View.GONE
@@ -402,6 +382,7 @@ internal class HomeFeedScreen(
                     }
                     TrialStatus.ENDED -> finishEpisode()
                     TrialStatus.ERROR -> {
+                        buffering = false
                         poster.visibility = View.VISIBLE
                         playback.pause()
                         if (!selfHealTrial()) {
@@ -427,13 +408,55 @@ internal class HomeFeedScreen(
         object : Runnable {
             override fun run() {
                 if (!active || closed) return
+                val now = android.os.SystemClock.elapsedRealtime()
+                checkBuffering(now)
                 ensureNextWorks()
                 prefetchUpcoming()
-                val now = android.os.SystemClock.elapsedRealtime()
                 if (now - lastCheckpoint >= 5000) { remember(); lastCheckpoint = now }
                 main.postDelayed(this, 250)
             }
         }
+
+    /** A buffering event has no built-in terminal callback when the loader stops making progress. */
+    private fun checkBuffering(now: Long) {
+        val current = clip ?: return
+        if (!buffering || !active || closed || loading || failed || state.ended || state.userPaused) {
+            bufferingSince = 0L
+            return
+        }
+        val position = playback.position().coerceAtLeast(0)
+        if (bufferingSince == 0L || position != bufferingPosition) {
+            bufferingSince = now
+            bufferingPosition = position
+            return
+        }
+        if (now - bufferingSince < 15_000) return
+        val key = current.detail.series.id + ":" + current.episodeId
+        if (bufferRecoveryKey != key) {
+            bufferRecoveryKey = key
+            bufferRecoveryAttempts = 0
+        }
+        buffering = false
+        cancelPrefetch()
+        playback.suspendPrefetch()
+        if (bufferRecoveryAttempts >= 2) {
+            clearCurrent()
+            clearCache()
+            failed = true
+            poster.visibility = View.VISIBLE
+            status.visibility = View.VISIBLE
+            status.text = "加载超时 · 按确定重试，或左右换剧"
+            paintActions()
+            return
+        }
+        bufferRecoveryAttempts++
+        // Refresh the URL and reader, keeping the episode and its last playback position.
+        // Do not reuse a preloaded source which may share the stalled request.
+        state.position = position
+        state.episodeIndex = current.trialEpisodeIndex - 1
+        clearCache()
+        loadCurrent("加载停滞，正在恢复播放 · $bufferRecoveryAttempts/2")
+    }
 
     fun resume() {
         if (closed || active) return
@@ -457,6 +480,8 @@ internal class HomeFeedScreen(
         if (closed) return
         remember(force = true)
         active = false
+        bufferingSince = 0L
+        playback.suspendPrefetch()
         cancelCatalog()
         main.removeCallbacks(prefetchPoll)
         relatedProbe?.let(main::removeCallbacks)
@@ -518,7 +543,7 @@ internal class HomeFeedScreen(
         paintButton(recommendButton)
         paintButton(comicButton)
         paintButton(realButton)
-        info.visibility = if (playbackReady && active && !state.userPaused && !state.ended && !failed) View.GONE else View.VISIBLE
+        info.visibility = View.VISIBLE
         tag.visibility = info.visibility
         stage.keepScreenOn = active && clip != null && !state.userPaused && !state.ended && !failed
     }
@@ -528,27 +553,14 @@ internal class HomeFeedScreen(
         if (describedId != series?.id) {
             describedId = series?.id
             probeRelated(series)
-            cover.setImageDrawable(null)
             poster.setImageDrawable(null)
             poster.visibility = View.VISIBLE
-            series?.cover?.takeIf(String::isNotBlank)?.let { loadCover(cover, it); loadCover(poster, it) }
+            series?.cover?.takeIf(String::isNotBlank)?.let { loadCover(poster, it) }
             hero.animate().cancel()
             hero.alpha = .75f
             hero.translationX = dp(24).toFloat() * slideDirection
             hero.animate().alpha(1f).translationX(0f).setDuration(240).start()
         }
-        fun bindSide(image: ImageView, caption: TextView, card: View, item: Series?) {
-            card.visibility = if (item == null && card === previousCard) View.INVISIBLE else View.VISIBLE
-            caption.text = item?.title ?: if (catalogFailed) "继续发现\n按右键重试" else "下一部\n正在加载…"
-            val url = item?.cover.orEmpty()
-            if (image.tag != url) {
-                image.tag = url
-                image.setImageDrawable(null)
-                if (url.isNotBlank()) loadCover(image, url)
-            }
-        }
-        bindSide(previousCover, previousTitle, previousCard, state.items.getOrNull(state.index - 1))
-        bindSide(nextCover, nextTitle, nextCard, state.next)
         ensureNextWorks()
         positionLabel.text = if (series == null) "正在发现好剧" else "第 ${state.index + 1} 部 · 左右换剧 · ${if (autoNext) "自动连播下一集" else "播完本集停止"}"
         title.text = series?.title ?: "发现下一部好剧"
@@ -625,6 +637,8 @@ internal class HomeFeedScreen(
         keepPrefetch: Boolean = false,
     ) {
         remember(force = true)
+        buffering = false
+        bufferingSince = 0L
         cancelRequest()
         if (!keepPrefetch) cancelPrefetch()
         if (!keepPlayer) {
@@ -808,7 +822,7 @@ internal class HomeFeedScreen(
         if (!active || closed) return
         if (!recovering) {
             trialRecoveryAttempts = 0
-            trialPreparationUntil = android.os.SystemClock.elapsedRealtime() + 15_000
+            trialPreparationUntil = android.os.SystemClock.elapsedRealtime() + 20_000
         }
         // 记下展示过的作品：冷启动时用它跳过重复内容，而不是每次都从同一部开始。
         noteDisplayed(series)
@@ -839,6 +853,11 @@ internal class HomeFeedScreen(
     }
 
     private fun attach(next: TrialClip) {
+        val key = next.detail.series.id + ":" + next.episodeId
+        if (bufferRecoveryKey != key) {
+            bufferRecoveryKey = key
+            bufferRecoveryAttempts = 0
+        }
         if (!autoPreview && manuallyStarted != next.detail.series.id) state.userPaused = true
         playbackReady = false
         clip = next
@@ -919,15 +938,16 @@ internal class HomeFeedScreen(
         stale.forEach { cachedTrials.remove(it)?.let(::closeCached) }
     }
 
-    fun canWarmCatalog() = active && playbackReady && !loading && !failed &&
+    fun canWarmCatalog() = active && playbackReady && !buffering && !loading && !failed &&
         prefetchJob == null && (state.userPaused || playback.canPrefetch())
 
-    /** 保留前一部与后三部缓存；当前稳定两秒后准备下一部，八秒、十六秒后再扩展。 */
+    /** 保留前一部与后三部缓存；当前稳定半秒后准备下一部，三秒、六秒后再扩展。 */
     private fun prefetchUpcoming() {
         if (
             closed ||
                 !active ||
                 clip == null ||
+                buffering ||
                 failed ||
                 loading ||
                 prefetchJob != null || backgroundBusy()
@@ -943,17 +963,17 @@ internal class HomeFeedScreen(
             prefetchSeries = state.current?.id
             prefetchReadyAt = now
         }
-        if (now - prefetchReadyAt < 2000) return
+        if (now - prefetchReadyAt < 500) return
         val current = clip ?: return
         if (autoNext && current.trialEpisodeIndex < current.episodeCount && nextEpisode == null &&
-            playback.duration() > 0 && playback.duration() - playback.position() <= 45_000 &&
+            playback.duration() > 0 && playback.duration() - playback.position() <= 8_000 &&
             nextEpisodeAttempts < 2 && now >= nextEpisodeRetryAt) {
             prefetchNextEpisode(current)
             return
         }
         val depth = when {
-            now - prefetchReadyAt >= 16000 -> 3
-            now - prefetchReadyAt >= 8000 -> 2
+            now - prefetchReadyAt >= 6000 -> 3
+            now - prefetchReadyAt >= 3000 -> 2
             else -> 1
         }
         val upcoming = state.items.drop(state.index + 1).take(3)
@@ -1002,7 +1022,7 @@ internal class HomeFeedScreen(
         val request = RequestScope()
         prefetchScope = request
         nextEpisodeAttempts++
-        nextEpisodeRetryAt = android.os.SystemClock.elapsedRealtime() + 15_000
+        nextEpisodeRetryAt = android.os.SystemClock.elapsedRealtime() + 20_000
         prefetchJob = worker.submit {
             val prepared = runCatching { request.run {
                 RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)) {
@@ -1063,7 +1083,7 @@ internal class HomeFeedScreen(
                 val added = batch?.items?.any { it.id !in before } == true
                 if (!added) {
                     catalogFailed = true
-                    catalogRetryAt = android.os.SystemClock.elapsedRealtime() + 15_000
+                    catalogRetryAt = android.os.SystemClock.elapsedRealtime() + 20_000
                     if (result.exceptionOrNull() is NoNewRecommendationsException) state.continueBatch()
                 }
                 val advanceNow = advanceWhenReady && state.next != null
@@ -1085,8 +1105,8 @@ internal class HomeFeedScreen(
         }
         if (delta > 0 && state.next == null) {
             ensureNextWorks(advance = true)
-            nextTitle.text = "下一部\n正在加载…"
-            nextCard.visibility = View.VISIBLE
+            status.text = "下一部正在加载…"
+            status.visibility = View.VISIBLE
             return
         }
         val target = state.items.getOrNull(state.index + delta) ?: return
@@ -1116,6 +1136,7 @@ internal class HomeFeedScreen(
         if (trialRecovery != null) cancelRequest()
         manuallyStarted = state.current?.id
         if (failed || state.current == null || clip == null) {
+            bufferRecoveryAttempts = 0
             if (state.current == null) state.refresh()
             state.userPaused = false
             state.ended = false
@@ -1128,6 +1149,7 @@ internal class HomeFeedScreen(
             playback.restart()
         } else {
             state.userPaused = !state.userPaused
+            bufferingSince = 0L
             if (state.userPaused) {
                 remember(force = true)
                 playback.pause()
@@ -1159,7 +1181,7 @@ internal class HomeFeedScreen(
         clearCurrent()
         clearCache()
         active = false
-        info.visibility = if (playbackReady && active && !state.userPaused && !state.ended && !failed) View.GONE else View.VISIBLE
+        info.visibility = View.VISIBLE
         tag.visibility = info.visibility
         stage.keepScreenOn = false
         playback.release()

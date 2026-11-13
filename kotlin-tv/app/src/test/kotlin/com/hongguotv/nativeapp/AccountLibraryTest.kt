@@ -149,7 +149,7 @@ class AccountLibraryTest {
             assertTrue(texts(root).any { it.text.toString() == "账户收藏测试" })
             assertEquals(listOf("111"), library.favorites().map { it.id })
             @Suppress("UNCHECKED_CAST") val nav = get(activity, "nav") as List<View>
-            assertEquals(8, nav.size)
+            assertEquals(9, nav.size)
         } finally {
             controller.destroy()
         }

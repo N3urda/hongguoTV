@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.core
 
-/** All rendering stays on the phone. Artwork loads directly on the phone; no bitmap cache, web fonts or video on the TV. */
+/** All rendering stays on the phone. Artwork thumbnails arrive through the TV session; no remote image requests or video on the phone. */
 internal object PhoneControlPage {
     fun html(nonce: String) = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>红果 TV · 手机控制台</title>
 <style>
@@ -102,18 +102,44 @@ function renderFilters(){
  });
 }
 
+var coverQueue=[],coverActive=false,coverObserver=null,coverEpoch=0;
+function nextCover(){
+ if(coverActive||!coverQueue.length||stopped)return;
+ if(busy||commandBusy){setTimeout(nextCover,150);return}
+ var job=coverQueue.shift();
+ if(job.epoch!==coverEpoch||!document.documentElement.contains(job.poster)){nextCover();return}
+ coverActive=true;
+ api({action:'cover',id:job.item.id,scope:job.item.scope}).then(function(v){
+  if(job.epoch!==coverEpoch||!document.documentElement.contains(job.poster))return;
+  job.poster.textContent='';
+  if(!v.image){job.poster.textContent='暂无封面';return}
+  if(!/^data:image\/jpeg;base64,/.test(v.image))throw Error('封面格式异常');
+  var image=document.createElement('img');image.alt=job.item.title+' 封面';image.decoding='async';
+  image.onerror=function(){coverRetry(job)};image.src=v.image;job.poster.appendChild(image);
+ }).catch(function(){if(job.epoch===coverEpoch)coverRetry(job)}).then(function(){coverActive=false;setTimeout(nextCover,120)});
+}
+function coverRetry(job){
+ job.poster.textContent='';var retry=document.createElement('button');retry.textContent='重试封面';
+ retry.onclick=function(){job.poster.textContent='加载封面…';coverQueue.push(job);nextCover()};job.poster.appendChild(retry);
+}
+function queueCover(item,poster){
+ var job={item:item,poster:poster,epoch:coverEpoch};poster.textContent='加载封面…';
+ if(coverObserver){poster._coverJob=job;coverObserver.observe(poster)}else coverQueue.push(job);
+}
 function favoriteLabel(item){return item.favoritePending?'收藏待同步':item.favorite?'取消账户收藏':'加入账户收藏'}
 function render(data){
+  coverEpoch++;coverQueue=[];if(coverObserver)coverObserver.disconnect();
+  coverObserver=typeof IntersectionObserver==='undefined'?null:new IntersectionObserver(function(entries){
+   entries.forEach(function(entry){if(entry.isIntersecting){coverObserver.unobserve(entry.target);coverQueue.push(entry.target._coverJob)}});nextCover();
+  },{rootMargin:'120px'});
   lastData=data;by('rows').textContent='';by('rows').className='';by('pagination').hidden=false;by('refresh').hidden=false;
   var source=related?'related':mode;
   (data.items||[]).forEach(function(item){
     var card=document.createElement('article');card.className='card';
     var head=document.createElement('div');head.className='series-head';
     var poster=document.createElement('div');poster.className='poster';poster.textContent='暂无封面';
-    if(typeof item.cover==='string'&&/^https:\/\//i.test(item.cover)){
-      var image=document.createElement('img');image.alt=item.title+' 封面';image.loading='lazy';image.decoding='async';image.referrerPolicy='no-referrer';
-      image.onerror=function(){poster.textContent='暂无封面'};image.src=item.cover;poster.textContent='';poster.appendChild(image);
-    }
+    queueCover(item,poster);
+    setTimeout(nextCover,0);
     head.appendChild(poster);var info=document.createElement('div');info.className='series-info';
     var h=document.createElement('h3');h.textContent=item.title;info.appendChild(h);
     var p=document.createElement('p');p.className='muted';p.textContent=item.badge||'';info.appendChild(p);head.appendChild(info);card.appendChild(head);

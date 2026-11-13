@@ -551,6 +551,8 @@ class ContentRepositoryTest {
             calls++
             assertEquals("hongguoduanju.com", request.url.host)
             assertEquals("/api/search/result", request.url.encodedPath)
+            assertEquals(VendorConstants.VIDEO_UA, request.header("User-Agent"))
+            assertEquals("https://hongguoduanju.com/", request.header("Referer"))
             assertEquals("大佬", request.url.queryParameter("query"))
             assertEquals("2", request.url.queryParameter("page"))
             assertNull(request.url.queryParameter("tab_type"))
