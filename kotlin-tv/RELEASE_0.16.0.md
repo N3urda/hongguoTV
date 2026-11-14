@@ -1,4 +1,4 @@
-# 红果 TV 0.15.2
+# 红果 TV 0.16.0
 
 versionCode 21，Android 5.0+，沿用原发布证书。
 

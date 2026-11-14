@@ -23,7 +23,7 @@ android {
         minSdk = 21
         targetSdk = 36
         versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 21
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.15.2"
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.0"
     }
     // Formal publishing always requests all three installable APKs.
     splits {
