@@ -22,8 +22,8 @@ android {
         manifestPlaceholders["appLabel"] = "hongguoTV"
         minSdk = 21
         targetSdk = 36
-        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 22
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.1"
+        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 23
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.2"
     }
     // Formal publishing always requests all three installable APKs.
     splits {
