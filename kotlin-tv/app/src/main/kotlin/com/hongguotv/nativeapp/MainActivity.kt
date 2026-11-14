@@ -2698,39 +2698,53 @@ class MainActivity : Activity() {
                 scroll.post { scroll.scrollTo(0, previousScroll) }
             }
         content.addView(hero)
+        content.addView(text("选集分组 · 共 ${data.episodes.size} 集", 12f, muted).apply {
+            setPadding(0, dp(12), 0, dp(6))
+        })
         val groupRow = row()
-        groupRow.setPadding(0, dp(3), 0, dp(5))
+        groupRow.gravity = Gravity.CENTER_VERTICAL
+        groupRow.setPadding(0, dp(3), 0, dp(10))
         val maxGroup = data.episodes.lastIndex / 20
         group = group.coerceIn(0, maxGroup)
-        val previous =
-            addButton(groupRow, "‹ 上一组") {
-                    if (group > 0) {
-                        group--
-                        showDetail(true)
-                    }
-                }
-                .apply {
-                    isEnabled = group > 0
-                    isFocusable = group > 0
-                    alpha = if (group > 0) 1f else .4f
-                }
-        groupRow.addView(
-            text("第 ${group*20+1}—${minOf((group+1)*20,data.episodes.size)} 集", 16f).apply {
-                gravity = Gravity.CENTER
-            },
-            lp(dp(190), dp(42)),
-        )
-        addButton(groupRow, "下一组 ›") {
-                if (group < maxGroup) {
-                    group++
+        val groupStrip = row()
+        val groupScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            isFocusable = false
+            addView(groupStrip)
+        }
+        groupRow.addView(groupScroll, lp(0, dp(44)).apply { weight = 1f; rightMargin = dp(12) })
+        val groupButtons = (0..maxGroup).map { index ->
+            val start = index * 20 + 1
+            val end = minOf((index + 1) * 20, data.episodes.size)
+            button("$start–$end", index == group) {
+                if (group != index) {
+                    group = index
                     showDetail(true)
+                    root.findViewWithTag<View>("episode-group-$index")?.requestFocus()
                 }
+            }.apply {
+                tag = "episode-group-$index"
+                contentDescription = "第 $start 至 $end 集分组"
+                textSize = 13f
+                minWidth = dp(88)
+                setPadding(dp(14), 0, dp(14), 0)
+                fun paintGroup() {
+                    setTextColor(if (isSelected) accent else if (hasFocus()) white else muted)
+                    setTypeface(null, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
+                    background = TvStyle.shape(this@MainActivity,
+                        if (isSelected || hasFocus()) TvStyle.raised else Color.TRANSPARENT,
+                        if (hasFocus()) white else Color.TRANSPARENT, radius = 20)
+                }
+                setOnFocusChangeListener { _, _ -> paintGroup() }
+                paintGroup()
+                groupStrip.addView(this, lp(-2, dp(40)).apply { rightMargin = dp(6) })
             }
-            .apply {
-                isEnabled = group < maxGroup
-                isFocusable = group < maxGroup
-                alpha = if (group < maxGroup) 1f else .4f
-            }
+        }
+        val selectedGroupButton = groupButtons[group]
+        groupScroll.post {
+            groupScroll.scrollTo((selectedGroupButton.left - groupScroll.width / 2 +
+                selectedGroupButton.width / 2).coerceAtLeast(0), 0)
+        }
         lateinit var jump: TextView
         jump =
             addButton(groupRow, "跳转集数") {
@@ -2817,9 +2831,18 @@ class MainActivity : Activity() {
             v.nextFocusUpId = primary[minOf(i, primary.lastIndex)].id
             v.nextFocusLeftId = secondaryActions.getOrNull(i - 1)?.id ?: v.id
             v.nextFocusRightId = secondaryActions.getOrNull(i + 1)?.id ?: v.id
-            v.nextFocusDownId = jump.id
+            v.nextFocusDownId = groupButtons[group].id
         }
-        episodes.take(10).forEach { it.nextFocusUpId = jump.id }
+        groupButtons.forEachIndexed { index, item ->
+            item.nextFocusLeftId = groupButtons.getOrNull(index - 1)?.id ?: item.id
+            item.nextFocusRightId = groupButtons.getOrNull(index + 1)?.id ?: jump.id
+            item.nextFocusUpId = secondaryActions.first().id
+            item.nextFocusDownId = episodes.firstOrNull()?.id ?: item.id
+        }
+        jump.nextFocusLeftId = groupButtons.last().id
+        jump.nextFocusUpId = secondaryActions.last().id
+        jump.nextFocusDownId = episodes.firstOrNull()?.id ?: jump.id
+        episodes.take(10).forEach { it.nextFocusUpId = groupButtons[group].id }
         lateinit var section: RelatedWorksView
         fun loadRelated(force: Boolean = false) {
             section.loading()
