@@ -104,6 +104,10 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo) : Closea
         require(start in 0 until total && length in 1..1024 * 1024)
         val end = minOf(total - 1, start + length - 1)
         val call = newCall(start, end)
+        // The player may stop consuming a range while paused or sufficiently buffered.
+        // A wall-clock call timeout would cancel healthy streams during that idle time.
+        // Keep the client's connect/read timeouts and explicit close() cancellation.
+        call.timeout().clearTimeout()
         var response: Response? = null
         try {
             val opened = call.execute()

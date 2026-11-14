@@ -22,8 +22,8 @@ android {
         manifestPlaceholders["appLabel"] = "红果 TV 原生版"
         minSdk = 21
         targetSdk = 36
-        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 19
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.15.0"
+        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 20
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.15.1"
     }
     // Formal publishing always requests all three installable APKs.
     splits {
@@ -55,7 +55,7 @@ android {
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug.20261113.final"
+            versionNameSuffix = "-debug.20261114"
             manifestPlaceholders["appLabel"] = "红果 TV 测试版"
         }
         getByName("release") {

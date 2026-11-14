@@ -10,6 +10,30 @@ import org.junit.Test
 
 class RemoteVideoStreamingTest {
     @Test
+    fun streamingDisablesWallClockDeadlineButKeepsProbeDeadline() {
+        val file = fixture()
+        val deadlines = mutableListOf<Long>()
+        val http = OkHttpClient.Builder()
+            .callTimeout(35, java.util.concurrent.TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                deadlines += chain.call().timeout().timeoutNanos()
+                val limits = chain.request().header("Range")!!.removePrefix("bytes=").split('-').map(String::toInt)
+                val end = minOf(file.lastIndex, limits[1])
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                    .code(206).message("partial")
+                    .header("Content-Range", "bytes ${limits[0]}-$end/${file.size}")
+                    .body(file.copyOfRange(limits[0], end + 1).toResponseBody()).build()
+            }.build()
+        RemoteVideo(http, StreamInfo("https://example.test/video", null, "测试")).use { video ->
+            video.prepare()
+            video.openRead(300 * 1024L, 32).use { input ->
+                assertArrayEquals(file.copyOfRange(300 * 1024, 300 * 1024 + 32), input.readBytes())
+            }
+        }
+        assertEquals(listOf(java.util.concurrent.TimeUnit.SECONDS.toNanos(35), 0L), deadlines)
+    }
+
+    @Test
     fun smallStartupProbeFetchesOnlyTheCompleteIndexBeforeHandOff() {
         val file = fixture(48 * 1024)
         val ranges = mutableListOf<String>()

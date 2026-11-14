@@ -2577,7 +2577,11 @@ class MainActivity : Activity() {
         val hero = row()
         hero.gravity = Gravity.TOP
         hero.setPadding(0, dp(12), 0, dp(12))
-        val image = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+        val image = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = TvStyle.shape(this@MainActivity, TvStyle.surface, radius = 7)
+            clipToOutline = true
+        }
         hero.addView(
             image,
             lp(dp(123), (dp(123) / TvStyle.POSTER_ASPECT).roundToInt()).apply {
@@ -2595,7 +2599,7 @@ class MainActivity : Activity() {
             }
         )
         info.addView(
-            text("${data.episodes.size} 集  ·  ${data.series.tags}", 13f, muted).apply {
+            text("${data.episodes.size} 集  ·  ${data.series.tags}", 13f, TvStyle.muted).apply {
                 maxLines = 1
                 setPadding(0, dp(8), 0, dp(8))
             }
@@ -2733,7 +2737,7 @@ class MainActivity : Activity() {
             }
         content.addView(groupRow)
         content.addView(
-            text("橙色为当前集 · 上次为续播位置 · 方向键选择，确定播放", 12f, muted).apply { setPadding(0, 0, 0, dp(6)) }
+            text("高亮为当前集 · 上次为续播位置 · 方向键选择，确定播放", 12f, muted).apply { setPadding(0, 0, 0, dp(6)) }
         )
         val episodes = mutableListOf<View>()
         (group * 20 until minOf((group + 1) * 20, data.episodes.size))
@@ -2762,11 +2766,12 @@ class MainActivity : Activity() {
                             )
                         }
                     item.textSize = 12f
+                    item.includeFontPadding = false
                     item.setPadding(dp(2), dp(3), dp(2), dp(3))
                     item.contentDescription = "第 ${index+1} 集"
                     line.addView(
                         item,
-                        lp(0, dp(42)).apply {
+                        lp(0, dp(52)).apply {
                             weight = 1f
                             rightMargin = dp(6)
                         },
@@ -2776,13 +2781,13 @@ class MainActivity : Activity() {
                 repeat(10 - numbers.size) {
                     line.addView(
                         Space(this),
-                        lp(0, dp(42)).apply {
+                        lp(0, dp(52)).apply {
                             weight = 1f
                             rightMargin = dp(6)
                         },
                     )
                 }
-                content.addView(line, lp(-1, dp(49)))
+                content.addView(line, lp(-1, dp(60)))
             }
         episodes.forEachIndexed { i, v ->
             v.nextFocusLeftId = if (i % 10 == 0) v.id else episodes[i - 1].id
