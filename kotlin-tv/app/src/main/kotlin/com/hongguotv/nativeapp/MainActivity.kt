@@ -614,7 +614,7 @@ class MainActivity : Activity() {
             homeFeed?.refreshAccountLabel()
             relatedSection?.refreshLabels()
             detail?.series?.let {
-                accountFavoriteButton?.text = cloudAccount.favoriteActionLabel(it.id)
+                accountFavoriteButton?.text = detailFavoriteLabel(it.id)
             }
             if (
                 screen == "detail" &&
@@ -2180,6 +2180,10 @@ class MainActivity : Activity() {
         )
     }
 
+    private fun detailFavoriteLabel(id: String): String =
+        if (cloudAccount.signedIn) cloudAccount.favoriteActionLabel(id)
+        else if (library.favorite(id)) "取消本机收藏" else "加入本机收藏"
+
     private fun accountFavoriteAction(series: Series, anchor: View?) {
         if (!cloudAccount.signedIn) {
             cloudAccount.show()
@@ -2668,22 +2672,21 @@ class MainActivity : Activity() {
         val secondary = row().apply { setPadding(0, dp(8), 0, 0) }
         info.addView(secondary)
         accountFavoriteButton =
-            addButton(secondary, cloudAccount.favoriteActionLabel(data.series.id)) {
-                accountFavoriteAction(data.series, accountFavoriteButton)
-            }
-        lateinit var favorite: TextView
-        favorite =
-            addButton(secondary, if (library.favorite(data.series.id)) "已在本机收藏" else "加入本机收藏") {
-                favoriteMonitor.stop()
-                val saved = library.toggle(data.series)
-                if (saved)
-                    library.observeFavorite(
-                        data.series.id,
-                        data.episodes.size,
-                        System.currentTimeMillis(),
-                        acknowledge = true,
-                    )
-                favorite.text = if (saved) "已在本机收藏" else "加入本机收藏"
+            addButton(secondary, detailFavoriteLabel(data.series.id)) {
+                if (cloudAccount.signedIn) {
+                    accountFavoriteAction(data.series, accountFavoriteButton)
+                } else {
+                    favoriteMonitor.stop()
+                    val saved = library.toggle(data.series)
+                    if (saved)
+                        library.observeFavorite(
+                            data.series.id,
+                            data.episodes.size,
+                            System.currentTimeMillis(),
+                            acknowledge = true,
+                        )
+                    accountFavoriteButton?.text = detailFavoriteLabel(data.series.id)
+                }
             }
         lateinit var synopsisButton: TextView
         synopsisButton =
@@ -2798,7 +2801,7 @@ class MainActivity : Activity() {
         }
         val primary = listOf(play, detailComments)
         play.setTextColor(accent)
-        val secondaryActions = listOf(accountFavoriteButton!!, favorite, synopsisButton)
+        val secondaryActions = listOf(accountFavoriteButton!!, synopsisButton)
         secondaryActions.forEach {
             it.textSize = 13f
             it.setTextColor(muted)

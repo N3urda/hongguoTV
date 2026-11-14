@@ -162,6 +162,32 @@ class TvUsabilityTest {
             assertTrue(selected.isSelected)
             assertTrue(rows.any { it.text == "跳转集数" })
             assertEquals("detail", get(activity, "screen"))
+            val favorite = rows.single { it.text.toString().contains("收藏") }
+            val synopsis = rows.single { it.text == "完整简介" }
+            assertEquals(synopsis.id, favorite.nextFocusRightId)
+            assertEquals(favorite.id, synopsis.nextFocusLeftId)
+            favorite.performClick()
+            assertTrue(library.favorite(series.id))
+            assertEquals("取消本机收藏", favorite.text.toString())
+            favorite.performClick()
+            assertFalse(library.favorite(series.id))
+
+            // Switch the existing button in place; account actions must not write local favorites.
+            set(account, "credentials", AccountCredentials("test-only"))
+            set(account, "favorites", FavoriteState(listOf(CloudFavorite(series, 1000)), loaded = true))
+            account.onHistoryChanged?.invoke()
+            assertEquals("取消账户收藏", favorite.text.toString())
+            assertEquals(1, texts(root).count { it.text.toString().contains("收藏") })
+            set(account, "favorites", FavoriteState(loading = true))
+            account.onHistoryChanged?.invoke()
+            favorite.performClick()
+            assertFalse(library.favorite(series.id))
+            set(account, "credentials", null)
+            account.onHistoryChanged?.invoke()
+            assertEquals("加入本机收藏", favorite.text.toString())
+            favorite.performClick()
+            assertTrue(library.favorite(series.id))
+
         } finally {
             controller.destroy()
         }
