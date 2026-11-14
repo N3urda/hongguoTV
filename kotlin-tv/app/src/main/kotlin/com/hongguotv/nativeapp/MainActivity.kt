@@ -2392,8 +2392,8 @@ class MainActivity : Activity() {
                     lateinit var updates: TextView
                     updates = setting("版本与更新  ·  ${BuildConfig.VERSION_NAME}") { updater.show(updates) }
                     lateinit var about: TextView
-                    about = setting("关于红果 TV") {
-                        tvTools.info("关于红果 TV", "hongguoTV · 非官方客户端\n基于 N3urda/hongguoTV\n功能同步：tsukiyo-zero/hongguoTV\n版本：${BuildConfig.VERSION_NAME}\n项目：https://github.com/N3urda/hongguoTV\n\n本应用与红果官方无隶属关系。", about)
+                    about = setting("关于hongguoTV") {
+                        tvTools.info("关于hongguoTV", "hongguoTV · 非官方客户端\n基于 N3urda/hongguoTV\n功能同步：tsukiyo-zero/hongguoTV\n版本：${BuildConfig.VERSION_NAME}\n项目：https://github.com/N3urda/hongguoTV\n\n本应用与红果官方无隶属关系。", about)
                     }
                     lateinit var license: TextView
                     license = setting("开源许可") {
@@ -4843,7 +4843,7 @@ class MainActivity : Activity() {
         }
         // Navigation is the outermost level on every page, including the scan action.
         if (screen == "catalog" && catalogShell?.hasNavigationFocus == true) {
-            tvTools.confirm("退出红果 TV", "确定退出？", currentFocus) { finish() }
+            tvTools.confirm("退出hongguoTV", "确定退出？", currentFocus) { finish() }
             return
         }
         if (screen == "catalog" && tab == 6) {

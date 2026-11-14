@@ -36,7 +36,7 @@ internal class CatalogShell(context: Context, private val phone: (View) -> Unit 
         rail.addView(ImageView(context).apply {
             setImageResource(R.drawable.brand_mark)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            contentDescription = "红果 TV"
+            contentDescription = "hongguoTV"
             isFocusable = false
             (drawable as? android.graphics.drawable.BitmapDrawable)?.isFilterBitmap = false
         }, LayoutParams(-1, dp(if (compact) 40 else 56)).apply { bottomMargin = dp(if (compact) 12 else 24) })
