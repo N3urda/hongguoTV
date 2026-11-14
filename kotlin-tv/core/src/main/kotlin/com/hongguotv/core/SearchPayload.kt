@@ -70,6 +70,8 @@ internal object SearchPayload {
     fun prioritize(items: List<Series>, keyword: String): List<Series> {
         val query = normalized(keyword)
         if (query.isEmpty()) return items
+        // The server resolves pinyin/initials; Chinese titles cannot contain the Latin query.
+        if (query.any { it in 'a'..'z' } && query.all { it in 'a'..'z' || it.isDigit() }) return items
         // Keep the requested title and its other seasons, not unrelated upstream recommendations.
         val seriesQuery = query.replace(Regex("第[零〇一二三四五六七八九十百千万两0-9]+[季部集]"), "")
         return items.filter { item ->

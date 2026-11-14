@@ -24,7 +24,8 @@ internal class SearchSuggestionsView(
     private val search: (String) -> Unit,
     private val vertical: Boolean = false,
     private val exitHorizontalEdges: Boolean = false,
-) : HorizontalScrollView(context) {
+    private val grid: Boolean = false,
+) : LinearLayout(context) {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val line = LinearLayout(context)
@@ -38,6 +39,12 @@ internal class SearchSuggestionsView(
     var afterWords: () -> View? = destination
 
     fun entry(): View? = chips.firstOrNull()
+    fun values(): List<String> = chips.map { it.text.toString() }
+    fun restore(values: List<String>) = render(values)
+    fun viewAt(index: Int): View? = chips.getOrNull(index)
+    fun selectedIndex(): Int = chips.indexOfFirst { it.hasFocus() }
+    fun focusAt(index: Int) { chips.getOrNull(index)?.requestFocus() }
+    var keyboardEntry: () -> View = { peers.lastOrNull() ?: input }
 
     private val watcher =
         object : TextWatcher {
@@ -52,10 +59,10 @@ internal class SearchSuggestionsView(
         }
 
     init {
-        isHorizontalScrollBarEnabled = false
         isFocusable = false
-        line.orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-        addView(line)
+        line.orientation = if (vertical || grid) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+        if (grid) addView(line, LayoutParams(-1, -2))
+        else addView(HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled = false; addView(line) }, LayoutParams(-1, -2))
         visibility = GONE
         input.addTextChangedListener(watcher)
     }
@@ -87,40 +94,38 @@ internal class SearchSuggestionsView(
 
     private fun render(values: List<String>, failed: Boolean = false) {
         // Replacing suggestions must never leave focus on a detached chip.
-        if (chips.any { it.hasFocus() }) input.requestFocus()
+        val focusedValue = chips.firstOrNull { it.hasFocus() }?.text?.toString()
         line.removeAllViews()
         chips.clear()
-        values.distinct().take(8).forEach { value ->
+        values.distinct().take(8).forEachIndexed { index, value ->
             val chip =
                 TextView(context).apply {
                     id = View.generateViewId()
                     text = value
-                    textSize = 13f
-                    maxLines = if (vertical) 2 else 1
+                    textSize = if (grid) 18f else 13f
+                    maxLines = if (vertical || grid) 2 else 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
-                    maxWidth = dp(300)
+                    if (!grid) maxWidth = dp(300)
+                    gravity = android.view.Gravity.CENTER_VERTICAL
+                    includeFontPadding = true
                     isFocusable = true
                     isClickable = true
                     setTextColor(TvStyle.text)
                     setPadding(dp(12), dp(8), dp(12), dp(8))
-                    minHeight = dp(36)
-                    background = TvStyle.card(context, false)
+                    minHeight = if (grid) maxOf(dp(76), (paint.fontSpacing * 2).toInt() + paddingTop + paddingBottom + dp(4)) else dp(36)
+                    background = if (grid) TvStyle.shape(context, TvStyle.surface, TvStyle.outline) else TvStyle.card(context, false)
                     setOnFocusChangeListener { _, focus ->
-                        background = TvStyle.card(context, focus)
+                        background = if (grid) TvStyle.shape(context, if (focus) TvStyle.text else TvStyle.surface, if (focus) TvStyle.text else TvStyle.outline) else TvStyle.card(context, focus)
+                        setTextColor(if (grid && focus) TvStyle.background else TvStyle.text)
                     }
                     setOnClickListener { search(value) }
                 }
             chips += chip
-            line.addView(
-                chip,
-                LinearLayout.LayoutParams(
-                        if (vertical)
-                            dp(if (resources.configuration.screenWidthDp < 800) 116 else 148)
-                        else -2,
-                        -2,
-                    )
-                    .apply { if (vertical) bottomMargin = dp(6) else rightMargin = dp(8) },
-            )
+            if (grid) {
+                if (index % 2 == 0) line.addView(LinearLayout(context).apply { isBaselineAligned = false }, LinearLayout.LayoutParams(-1, -2))
+                (line.getChildAt(line.childCount - 1) as LinearLayout).addView(chip,
+                    LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(10); bottomMargin = dp(10) })
+            } else line.addView(chip, LinearLayout.LayoutParams(if (vertical) dp(148) else -2, -2))
         }
         if (failed)
             line.addView(
@@ -134,10 +139,23 @@ internal class SearchSuggestionsView(
         visibility = if (chips.isNotEmpty() || failed) VISIBLE else GONE
         scrollTo(0, 0)
         updateNavigation()
+        if (focusedValue != null) {
+            (chips.firstOrNull { it.text.toString() == focusedValue } ?: chips.firstOrNull() ?: keyboardEntry()).requestFocus()
+        }
     }
 
     fun updateNavigation() {
         val target = destination()?.id ?: input.id
+        if (grid) {
+            chips.forEachIndexed { i, chip ->
+                chip.nextFocusLeftId = if (i % 2 == 0) keyboardEntry().id else chips[i - 1].id
+                chip.nextFocusRightId = if (i % 2 == 0) chips.getOrNull(i + 1)?.id ?: chip.id else chip.id
+                chip.nextFocusUpId = chips.getOrNull(i - 2)?.id ?: chip.id
+                chip.nextFocusDownId = chips.getOrNull(i + 2)?.id ?: chip.id
+            }
+            navigationChanged?.invoke()
+            return
+        }
         if (vertical) {
             chips.forEachIndexed { i, chip ->
                 chip.nextFocusUpId = chips.getOrNull(i - 1)?.id ?: input.id

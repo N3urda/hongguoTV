@@ -23,7 +23,7 @@ internal class TvSearchPanel(
         EditText(context).apply {
             id = View.generateViewId()
             hint = "剧名 / 拼音首字母"
-            textSize = 15f
+            textSize = 20f
             setTextColor(TvStyle.text)
             setHintTextColor(TvStyle.muted)
             isSingleLine = true
@@ -35,6 +35,43 @@ internal class TvSearchPanel(
             background = TvStyle.shape(context, TvStyle.surface, TvStyle.outline)
             setPadding(dp(14), 0, dp(12), 0)
         }
+    data class EditState(val draft: String, val words: List<String>, val word: Int, val recent: Int, val key: Int)
+    private var lastKey = 0
+    private var editingFocus: View? = null
+    private val editor = LinearLayout(context)
+    private val resultStage = LinearLayout(context).apply { orientation = VERTICAL; visibility = GONE }
+    private lateinit var backButton: TextView
+    var showingResults = false
+        private set
+    fun capture() = EditState(input.text.toString(), suggestions.values(), suggestions.selectedIndex(), recents.indexOfFirst { it.hasFocus() }, lastKey)
+    fun restore(state: EditState) {
+        input.setText(state.draft)
+        suggestions.cancel()
+        suggestions.restore(state.words)
+        lastKey = state.key.coerceIn(0, 35)
+        editingFocus = if (state.word >= 0) { suggestions.viewAt(state.word) }
+            else recents.getOrNull(state.recent) ?: keys[lastKey]
+        updateNavigation()
+    }
+    fun showResults() {
+        if (!showingResults) editingFocus = findFocus() ?: editingFocus
+        showingResults = true
+        editor.visibility = GONE
+        resultStage.visibility = VISIBLE
+        backButton.requestFocus()
+    }
+    fun back(): Boolean {
+        if (!showingResults) return false
+        showingResults = false
+        resultStage.visibility = GONE
+        editor.visibility = VISIBLE
+        if (editingFocus?.requestFocus() != true) entry().requestFocus()
+        updateNavigation()
+        return true
+    }
+    fun resultTitle(query: String) { resultHeading.text = "搜索 · $query" }
+    private val resultHeading = label("搜索结果", 24f).apply { setTextColor(TvStyle.text); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+    fun resultBackEntry(): View = backButton
     val results = LinearLayout(context).apply { orientation = VERTICAL }
     private val keys = mutableListOf<TextView>()
     private val actions = mutableListOf<TextView>()
@@ -45,7 +82,7 @@ internal class TvSearchPanel(
 
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
 
-    private fun label(value: String, size: Float = 14f) =
+    private fun label(value: String, size: Float = 18f) =
         TextView(context).apply {
             text = value
             textSize = size
@@ -57,7 +94,7 @@ internal class TvSearchPanel(
         TextView(context).apply {
             id = View.generateViewId()
             text = value
-            textSize = 13f
+            textSize = 18f
             gravity = Gravity.CENTER
             isFocusable = true
             isClickable = true
@@ -108,7 +145,15 @@ internal class TvSearchPanel(
 
     // 组装左侧键盘、中间联想历史和右侧结果容器，并建立遥控器焦点关系。
     init {
-        orientation = HORIZONTAL
+        orientation = VERTICAL
+        addView(editor, LayoutParams(-1, -1))
+        addView(resultStage, LayoutParams(-1, -1))
+        backButton = action("← 返回选词") { back() }
+        val resultHeader = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, dp(12)) }
+        resultHeader.addView(backButton, LayoutParams(-2, dp(46)).apply { rightMargin = dp(20) })
+        resultHeader.addView(resultHeading, LayoutParams(0, -2, 1f))
+        resultStage.addView(resultHeader)
+        resultStage.addView(results, LayoutParams(-1, 0, 1f))
         val compact = resources.configuration.screenWidthDp < 800
         val left = LinearLayout(context).apply { orientation = VERTICAL }
         val leftScroll =
@@ -116,13 +161,13 @@ internal class TvSearchPanel(
                 isVerticalScrollBarEnabled = false
                 addView(left)
             }
-        addView(
+        editor.addView(
             leftScroll,
             LayoutParams(dp(if (compact) 206 else 248), -1).apply { rightMargin = dp(36) },
         )
         left.addView(label("搜索", 30f).apply { setTextColor(TvStyle.text); typeface = android.graphics.Typeface.DEFAULT_BOLD })
-        left.addView(label("下一部想看的，从这里开始", 12f).apply { setPadding(0, 0, 0, dp(18)) })
-        left.addView(input, LayoutParams(-1, dp(42)))
+
+        left.addView(input, LayoutParams(-1, dp(48)))
         val keyboard =
             LinearLayout(context).apply {
                 orientation = VERTICAL
@@ -132,10 +177,16 @@ internal class TvSearchPanel(
             val line = LinearLayout(context)
             row.forEach { char ->
                 val key = action(char.toString()) { insert(char.lowercaseChar().toString()) }
+                val keyIndex = keys.size
+                val styleFocus = key.onFocusChangeListener
+                key.setOnFocusChangeListener { view, focused ->
+                    styleFocus?.onFocusChange(view, focused)
+                    if (focused) { lastKey = keyIndex; suggestionsNavigation() }
+                }
                 keys += key
                 line.addView(
                     key,
-                    LayoutParams(0, dp(34), 1f).apply {
+                    LayoutParams(0, dp(40), 1f).apply {
                         rightMargin = dp(5)
                         bottomMargin = dp(5)
                     },
@@ -162,7 +213,7 @@ internal class TvSearchPanel(
             row.forEach {
                 line.addView(
                     it,
-                    LayoutParams(0, dp(38), 1f).apply {
+                    LayoutParams(0, dp(40), 1f).apply {
                         rightMargin = dp(5)
                         bottomMargin = dp(5)
                     },
@@ -170,16 +221,19 @@ internal class TvSearchPanel(
             }
             left.addView(line)
         }
-        left.addView(label("方向键选字，确认键输入", 11f))
+        left.addView(label("→ 选词   ·   确认输入", 15f))
         val resultColumn = LinearLayout(context).apply {
             orientation = VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(16))
-            background = TvStyle.shape(context, TvStyle.surface, radius = 16)
+            background = TvStyle.shape(context, TvStyle.background, radius = 16)
         }
-        addView(resultColumn, LayoutParams(0, -1, 1f))
+        editor.addView(resultColumn, LayoutParams(0, -1, 1f))
         val words = LinearLayout(context).apply { orientation = VERTICAL }
-        resultColumn.addView(words, LayoutParams(-1, -2))
-        val suggestionLabel = label("联想词", 13f).apply { visibility = GONE }
+        resultColumn.addView(ScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(words)
+        }, LayoutParams(-1, -1))
+        val suggestionLabel = label("猜你想搜", 22f).apply { visibility = GONE }
         words.addView(suggestionLabel)
         suggestions =
             SearchSuggestionsView(
@@ -191,42 +245,58 @@ internal class TvSearchPanel(
                 { submit(it) },
                 vertical = false,
                 exitHorizontalEdges = true,
+                grid = true,
             )
         words.addView(suggestions, LayoutParams(-1, -2))
-        if (history.isNotEmpty()) words.addView(label("最近搜索", 13f))
-        val historyLine = LinearLayout(context)
-        val historyScroll = HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled = false; addView(historyLine) }
-        words.addView(historyScroll)
-        history.distinct().take(8).forEach { value ->
+        if (history.isNotEmpty()) words.addView(label("最近搜索", 22f))
+        val historyLine = LinearLayout(context).apply { orientation = VERTICAL }
+        val historyTitle = words.getChildAt(words.childCount - 1)
+        val emptyHistory = label("输入剧名或拼音首字母，联想词会显示在这里", 16f).apply {
+            visibility = if (history.isEmpty()) VISIBLE else GONE
+        }
+        words.addView(emptyHistory)
+        words.addView(historyLine)
+        history.distinct().take(8).forEachIndexed { index, value ->
             val recent =
                 action(value) { submit(value) }
                     .apply {
                         maxLines = 2
+                        ellipsize = android.text.TextUtils.TruncateAt.END
                         gravity = Gravity.CENTER_VERTICAL
                         setPadding(dp(10), dp(8), dp(10), dp(8))
+                        minHeight = maxOf(dp(76), (paint.fontSpacing * 2).toInt() + paddingTop + paddingBottom + dp(4))
                     }
             recents += recent
-            historyLine.addView(recent, LayoutParams(-2, -2).apply { rightMargin = dp(8) })
+            if (index % 2 == 0) historyLine.addView(LinearLayout(context).apply { isBaselineAligned = false }, LayoutParams(-1, -2))
+            (historyLine.getChildAt(historyLine.childCount - 1) as LinearLayout).addView(recent, LayoutParams(0, -2, 1f).apply { rightMargin = dp(10); bottomMargin = dp(10) })
         }
         suggestions.afterWords = { recents.firstOrNull() ?: resultEntry() ?: input }
-        resultColumn.addView(label("搜索结果", 16f).apply { setTextColor(TvStyle.text); setPadding(0, dp(12), 0, dp(12)) })
-        resultColumn.addView(results, LayoutParams(-1, 0, 1f))
         input.nextFocusUpId = input.id
         input.nextFocusDownId = keys.first().id
         input.setOnEditorActionListener { _, _, _ ->
             submit()
             true
         }
-        suggestions.navigationChanged = { suggestionLabel.visibility = suggestions.visibility; updateNavigation() }
+        suggestions.keyboardEntry = { keys[lastKey] }
+        suggestions.navigationChanged = {
+            suggestionLabel.visibility = if (input.text.isNotBlank()) VISIBLE else GONE
+            emptyHistory.visibility = if (history.isEmpty() && input.text.isBlank()) VISIBLE else GONE
+            historyLine.visibility = if (input.text.isBlank()) VISIBLE else GONE
+            if (history.isNotEmpty()) historyTitle.visibility = historyLine.visibility
+            updateNavigation()
+        }
         updateNavigation()
     }
 
-    fun middleEntry(): View? = suggestions.entry() ?: recents.firstOrNull()
+    private fun suggestionsNavigation() { suggestions.updateNavigation() }
 
-    fun entry(): View = keys.first()
+    fun middleEntry(): View? = suggestions.entry() ?: recents.firstOrNull()?.takeIf { input.text.isBlank() }
+
+    fun entry(): View = if (showingResults) backButton else keys[lastKey]
 
     fun updateNavigation() {
-        val right = middleEntry()?.id ?: resultEntry()?.id ?: input.id
+        backButton.nextFocusDownId = resultEntry()?.id ?: backButton.id
+        val right = middleEntry()?.id ?: input.id
         keys.forEachIndexed { i, key ->
             key.nextFocusLeftId = if (i % 6 == 0) upper.id else keys[i - 1].id
             key.nextFocusRightId = if (i % 6 == 5) right else keys[i + 1].id
@@ -240,10 +310,10 @@ internal class TvSearchPanel(
             view.nextFocusDownId = actions.getOrNull(i + 3)?.id ?: view.id
         }
         recents.forEachIndexed { i, view ->
-            view.nextFocusUpId = recents.getOrNull(i - 1)?.id ?: suggestions.entry()?.id ?: input.id
-            view.nextFocusDownId = recents.getOrNull(i + 1)?.id ?: view.id
-            view.nextFocusLeftId = recents.getOrNull(i - 1)?.id ?: keys[5].id
-            view.nextFocusRightId = recents.getOrNull(i + 1)?.id ?: resultEntry()?.id ?: input.id
+            view.nextFocusUpId = recents.getOrNull(i - 2)?.id ?: view.id
+            view.nextFocusDownId = recents.getOrNull(i + 2)?.id ?: view.id
+            view.nextFocusLeftId = if (i % 2 == 0) keys[lastKey].id else recents[i - 1].id
+            view.nextFocusRightId = if (i % 2 == 0) recents.getOrNull(i + 1)?.id ?: view.id else view.id
         }
         input.nextFocusRightId = right
         input.nextFocusUpId = input.id

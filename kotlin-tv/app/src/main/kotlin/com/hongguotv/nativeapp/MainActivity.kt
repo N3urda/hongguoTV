@@ -269,6 +269,7 @@ class MainActivity : Activity() {
     private lateinit var library: Library
     private var searchDraft: String? = null
     private var searchSuggestions: SearchSuggestionsView? = null
+    private var searchEditState: TvSearchPanel.EditState? = null
     private var tvSearchPanel: TvSearchPanel? = null
     private var submittedSearch: String? = null
     private val discoveryBrowser = DiscoveryBrowserState()
@@ -1182,6 +1183,8 @@ class MainActivity : Activity() {
 
                 )
             tvSearchPanel = panel
+            searchEditState?.let { panel.restore(it) }
+            if (query.isNotBlank()) { panel.resultTitle(query); panel.showResults() }
             searchInput = panel.input
             searchButton = panel.searchButton
             searchSuggestions = panel.suggestions
@@ -1350,7 +1353,7 @@ class MainActivity : Activity() {
                         rankSubtitle?.text =
                             ranking?.updatedText?.ifBlank { "来源：红果漫剧热播榜" } ?: "来源：红果漫剧热播榜"
                         val focusResults = submittedSearch == requestQuery &&
-                            (searchInput as? TextView)?.text?.toString()?.trim() == requestQuery && !keepNav &&
+                            !keepNav &&
                             tvSearchPanel?.entry()?.hasFocus() == true
                         homeScreen?.capturePosition()?.let { homePosition = it; catalogFocus = it.focus }
                         body.removeAllViews()
@@ -1589,7 +1592,7 @@ class MainActivity : Activity() {
                         else -> item.badge
                     }
                 val badge =
-                    text(summary, 12f, if (tab == 2 || isFavorites()) accent else muted)
+                    text(summary, 12f, if (tab == 2) accent else muted)
                         .apply {
                             maxLines = if (tab == 5) 3 else if (tab == 3 || tab == 4) 2 else 1
                             minLines = maxLines
@@ -1807,7 +1810,7 @@ class MainActivity : Activity() {
     ) {
         val requestQuery = query
         continuousKey = requestQuery
-        val upper = searchInput ?: nav[tab]
+        val upper = tvSearchPanel?.resultBackEntry() ?: searchInput ?: nav[tab]
         lateinit var browser: ContinuousCatalogView
         browser =
             ContinuousCatalogView(
@@ -1817,10 +1820,17 @@ class MainActivity : Activity() {
                 } else 6,
                 upper,
                 { item, recycled ->
-                    val card = recycled as? CatalogPosterCard ?: CatalogPosterCard(this)
-                    card.show(item)
-                    loadCover(card.image, item.cover)
-                    card
+                    if (tvSearchPanel != null) {
+                        val card = recycled as? SearchResultCard ?: SearchResultCard(this)
+                        card.show(item)
+                        loadCover(card.image, item.cover)
+                        card
+                    } else {
+                        val card = recycled as? CatalogPosterCard ?: CatalogPosterCard(this)
+                        card.show(item)
+                        loadCover(card.image, item.cover)
+                        card
+                    }
                 },
                 { item -> catalogFocus = item.id },
                 { item ->
@@ -1846,6 +1856,8 @@ class MainActivity : Activity() {
                                     page = nextPage
                                     hasMore = result.hasMore && page < 100
                                     browser.append(result.items, hasMore)
+                                    if (tvSearchPanel?.showingResults == true && catalog.size < 12 && hasMore && page < 5)
+                                        browser.post { if (continuousCatalog === browser) browser.requestMore(false) }
                                 }
                             },
                             { problem ->
@@ -1864,6 +1876,7 @@ class MainActivity : Activity() {
                         )
                 },
             )
+        if (tvSearchPanel != null) browser.useSearchPresentation()
         continuousCatalog = browser
         body.addView(browser, lp(-1, 0).apply { weight = 1f })
         val position =
@@ -1874,6 +1887,8 @@ class MainActivity : Activity() {
                         ?: ContinuousCatalogView.Position(id, 0)
                 }
         browser.show(catalog, hasMore && page < 100, position)
+        if (tvSearchPanel?.showingResults == true && catalog.size < 12 && hasMore && page < 5)
+            browser.post { if (continuousCatalog === browser) browser.requestMore(false) }
         nav.forEach { it.nextFocusDownId = searchInput?.id ?: upper.id }
         searchInput?.nextFocusDownId = browser.grid.id
         searchButton?.nextFocusDownId = browser.grid.id
@@ -1881,7 +1896,7 @@ class MainActivity : Activity() {
         searchSuggestions?.updateNavigation()
         tvSearchPanel?.let { panel ->
             panel.updateNavigation()
-            browser.setSideEntry(panel.middleEntry() ?: panel.entry())
+            browser.setSideEntry(if (panel.showingResults) panel.resultBackEntry() else panel.middleEntry() ?: panel.entry())
             nav.forEach { it.nextFocusDownId = panel.entry().id }
         }
         if (focusNav) nav[tab].requestFocus()
@@ -2129,8 +2144,7 @@ class MainActivity : Activity() {
             catalog
                 .firstOrNull { it.id == changedId }
                 ?.let { selectionPreview?.show(collectionPreviewSeries(it), selectionStatus(it)) }
-            library
-                .favorites()
+            catalog
                 .firstOrNull { it.id == changedId }
                 ?.let { favoriteBadges[changedId]?.text = collectionEpisodeLabel(it) }
         }
@@ -2210,8 +2224,8 @@ class MainActivity : Activity() {
         if (screen != "catalog" || !library.isLoaded) return
         favoriteBadges.forEach { (id, label) ->
             val value =
-                library.favorites().firstOrNull { it.id == id }?.let(::collectionEpisodeLabel)
-                    ?: library.favoriteLabel(id)
+                catalog.firstOrNull { it.id == id }?.let(::collectionEpisodeLabel)
+                    ?: return@forEach
             if (label.text.toString() != value) label.text = value
         }
         favoriteStatus?.text = favoriteMonitor.status
@@ -2441,6 +2455,7 @@ class MainActivity : Activity() {
                 .hideSoftInputFromWindow(it.windowToken, 0)
         }
         library.rememberSearch(clean, ContentType.SHORT)
+        searchEditState = tvSearchPanel?.capture()
         searchDraft = clean
         query = clean
         submittedSearch = clean
@@ -4841,6 +4856,7 @@ class MainActivity : Activity() {
             return
         }
         if (screen == "catalog" && tab == 7 && tvSearchPanel != null && !nav[7].hasFocus()) {
+            if (tvSearchPanel?.back() == true) return
             nav[7].requestFocus()
             return
         }

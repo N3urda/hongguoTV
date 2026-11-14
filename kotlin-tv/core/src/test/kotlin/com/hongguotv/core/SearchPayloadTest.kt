@@ -79,6 +79,12 @@ class SearchPayloadTest {
     }
 
 
+    @Test fun pinyinSearchKeepsServerMatchesWithChineseTitles() {
+        val items = listOf(Series("1", "重生之路"), Series("2", "重生归来"))
+        assertEquals(items, SearchPayload.prioritize(items, "cs"))
+        assertEquals(items, SearchPayload.prioritize(items, "chongsheng"))
+    }
+
     @Test fun websiteSearchFiltersGenresAndKeepsPagination() {
         val repo=ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
             assertEquals("/api/search/result",chain.request().url.encodedPath)

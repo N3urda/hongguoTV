@@ -261,6 +261,17 @@ internal class ContinuousCatalogView(
             } else if (available) next.id else top.id
     }
 
+    fun useSearchPresentation() {
+        fullTitle.textSize = 18f
+        fullTitle.maxLines = 1
+        fullTitle.ellipsize = android.text.TextUtils.TruncateAt.END
+        fullTitle.setPadding(dp(6), dp(2), dp(6), dp(6))
+        status.textSize = 16f
+        next.textSize = 16f
+        top.textSize = 16f
+        useRemoteNavigation()
+    }
+
     fun useRemoteNavigation() {
         remoteNavigation = true
         paintStatus()
@@ -448,5 +459,40 @@ internal class CatalogPosterCard(context: Context) : LinearLayout(context) {
                 )
                 .filter { it.isNotBlank() }
                 .joinToString("，")
+    }
+}
+
+/** Landscape search rows keep the title readable without oversized posters. */
+internal class SearchResultCard(context: Context) : LinearLayout(context) {
+    private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
+    val image = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+    private val title = TextView(context).apply {
+        textSize = 18f
+        setTextColor(TvStyle.text)
+        minLines = 2
+        maxLines = 2
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        includeFontPadding = false
+    }
+    private val badge = TextView(context).apply {
+        textSize = 14f
+        setTextColor(TvStyle.muted)
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END
+    }
+    init {
+        orientation = HORIZONTAL
+        gravity = android.view.Gravity.CENTER_VERTICAL
+        setPadding(dp(8), dp(8), dp(8), dp(8))
+        addView(image, LayoutParams(dp(63), dp(90)).apply { rightMargin = dp(12) })
+        val copy = LinearLayout(context).apply { orientation = VERTICAL }
+        copy.addView(title, LayoutParams(-1, -2))
+        copy.addView(badge, LayoutParams(-1, -2))
+        addView(copy, LayoutParams(0, -2, 1f))
+    }
+    fun show(item: Series) {
+        title.text = item.title
+        badge.text = item.badge
+        contentDescription = item.title + "，" + item.badge
     }
 }
