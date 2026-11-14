@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory() as directory:
     for name, box, w, h in [('tv-banner.svg','0 0 320 180',320,180),('readme-banner.svg','0 28 320 124',960,372)]:
         write(BRAND / name, f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{w}" height="{h}" viewBox="{box}" role="img" aria-label="hongguoTV">{content.replace("href=", "xlink:href=")}</svg>')
     for qualifier, w, h in [('mdpi',160,90),('hdpi',240,135),('xhdpi',320,180),('xxhdpi',480,270),('xxxhdpi',640,360)]:
-        target = RES / ('drawable-' + qualifier) / 'tv_banner.png'
+        target = RES / ('mipmap-' + qualifier) / 'tv_banner.png'
         target.parent.mkdir(parents=True, exist_ok=True)
         magick('-background','none', BRAND / 'tv-banner.svg', '-resize', f'{w}x{h}', target)
     magick('-background','none', BRAND / 'readme-banner.svg', BRAND / 'readme-banner.png')
@@ -70,4 +70,4 @@ legacy = ROOT / 'android/app/src/main/res'
 for qualifier in ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi']:
     for name in ['ic_launcher.png', 'ic_launcher_round.png']:
         shutil.copyfile(RES / f'mipmap-{qualifier}/ic_launcher.png', legacy / f'mipmap-{qualifier}' / name)
-shutil.copyfile(RES / 'drawable-xhdpi/tv_banner.png', legacy / 'drawable/tv_banner.png')
+shutil.copyfile(RES / 'mipmap-xhdpi/tv_banner.png', legacy / 'drawable/tv_banner.png')

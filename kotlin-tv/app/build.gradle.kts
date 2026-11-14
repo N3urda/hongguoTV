@@ -55,8 +55,8 @@ android {
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug.20261114"
-            manifestPlaceholders["appLabel"] = "hongguoTV"
+            versionNameSuffix = "-debug.tcl-banner"
+            manifestPlaceholders["appLabel"] = "hongguoTV 横幅测试"
         }
         getByName("release") {
             signingConfig = signingConfigs.getByName("delivery")
