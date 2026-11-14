@@ -1,0 +1,47 @@
+name: Issue 55 audio isolation (no publishing)
+on:
+  push:
+    branches: [fix/issue-55-platform-audio]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: python3 -m unittest discover -s kotlin-tv/tools -p 'test_*.py'
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: platform-tools
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006'
+      - name: Test and inspect both APKs with the same debug signing key
+        run: |
+          mkdir -p audio-comparison
+          for audio in default platform; do
+            args=()
+            verify_args=()
+            if [ "$audio" = platform ]; then
+              args+=(-PplatformAudioOnly=true)
+              verify_args+=(--platform-only)
+            fi
+            ./kotlin-tv/gradlew -p kotlin-tv clean :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --console=plain "${args[@]}"
+            python3 kotlin-tv/tools/verify_audio_apk.py kotlin-tv/app/build/outputs/apk/debug/app-debug.apk "${verify_args[@]}"
+            mkdir -p "audio-comparison/$audio"
+            cp kotlin-tv/app/build/outputs/apk/debug/app-debug.apk "audio-comparison/$audio/"
+            cp -r kotlin-tv/app/build/reports "audio-comparison/$audio/app-reports"
+            cp -r kotlin-tv/core/build/reports "audio-comparison/$audio/core-reports"
+          done
+          sha256sum audio-comparison/*/*.apk
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: issue-55-audio-comparison
+          path: |
+            audio-comparison/
+            kotlin-tv/app/build/reports/
+            kotlin-tv/core/build/reports/

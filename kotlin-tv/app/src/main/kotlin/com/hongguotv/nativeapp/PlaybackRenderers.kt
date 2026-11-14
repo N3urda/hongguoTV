@@ -11,6 +11,11 @@ internal fun playbackRenderers(context: Context): DefaultRenderersFactory =
     DefaultRenderersFactory(context)
         .setEnableDecoderFallback(true)
         .setExtensionRendererMode(
-            if (Build.VERSION.SDK_INT <= 22) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
-            else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
+            audioExtensionRendererMode(Build.VERSION.SDK_INT, BuildConfig.PLATFORM_AUDIO_ONLY)
         )
+
+/** Keep legacy AAC support unless explicitly building the issue #55 isolation APK. */
+@androidx.media3.common.util.UnstableApi
+internal fun audioExtensionRendererMode(sdk: Int, platformAudioOnly: Boolean): Int =
+    if (!platformAudioOnly && sdk <= 22) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+    else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF

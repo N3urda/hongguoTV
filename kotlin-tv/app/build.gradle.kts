@@ -5,6 +5,10 @@ plugins {
     kotlin("android")
 }
 
+// Opt-in diagnostic build for issue #55; normal builds keep Android 5 AAC support.
+val platformAudioOnly = providers.gradleProperty("platformAudioOnly")
+    .map { it.toBooleanStrict() }.getOrElse(false)
+
 val signingProperties =
     Properties().apply {
         val config = rootProject.file("keystore.properties")
@@ -22,6 +26,7 @@ android {
         manifestPlaceholders["appLabel"] = "hongguoTV"
         minSdk = 21
         targetSdk = 36
+        buildConfigField("boolean", "PLATFORM_AUDIO_ONLY", platformAudioOnly.toString())
         versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 23
         versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.2"
     }
@@ -55,7 +60,7 @@ android {
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug.20261114"
+            versionNameSuffix = "-debug.20261114" + if (platformAudioOnly) "-platform-audio" else ""
             manifestPlaceholders["appLabel"] = "hongguoTV"
         }
         getByName("release") {
@@ -87,7 +92,7 @@ dependencies {
     implementation("com.google.zxing:core:3.5.3")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation(project(":decoder-ffmpeg"))
+    if (!platformAudioOnly) implementation(project(":decoder-ffmpeg"))
     implementation(project(":core")) { exclude(group = "org.json") }
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-exoplayer-hls:1.8.0")
