@@ -283,11 +283,32 @@ internal class PublicFeedBackend(
                     }
                     verified
                 }
-        val openedTrial = openTrialEpisode(series, hint, speculative)
+        val openedTrial = try {
+            openTrialEpisode(series, hint, speculative)
+        } catch (problem: EmptyPlaybackResponseException) {
+            // Recommended/persisted first-episode hints are not authoritative. Repeating an
+            // obsolete id cannot recover; use the same detail lookup as full-screen playback.
+            if (speculative) throw problem
+            val full = detail(series)
+            val first = full.episodes.firstOrNull() ?: throw problem
+            if (first == hint.episodeId) throw problem
+            val verified = TrialHint(first, full.episodes.size)
+            val updates = synchronized(trialHints) {
+                trialHints[series.id] = verified
+                startupPages.filterValues { page -> page.items.any { it.id == series.id } }
+                    .map { (source, page) ->
+                        val updated = page.copy(trialHints = page.trialHints + (series.id to verified))
+                        startupPages[source] = updated
+                        source to updated
+                    }
+            }
+            updates.forEach { (source, page) -> startupCache?.save(cacheIdentity, source, page) }
+            openTrialEpisode(series, verified, false)
+        }
         return TrialClip(
             Detail(series, listOf(openedTrial.episodeId)),
             openedTrial.opened.video,
-            hint.episodeCount,
+            synchronized(trialHints) { trialHints[series.id] }?.episodeCount ?: hint.episodeCount,
             openedTrial.opened.track,
             openedTrial.displayIndex,
         )
@@ -428,7 +449,9 @@ internal class Media3TrialPlayback(context: Context, private val speed: Float = 
                 DefaultLoadControl.Builder()
                     .setBufferDurationsMs(2500, 10000, 500, 1000)
                     .setTargetBufferBytes(6 * 1024 * 1024)
-                    .setPrioritizeTimeOverSizeThresholds(false)
+                    // High-bitrate clips can fill the byte budget before enough playback time
+                    // is buffered. Keep loading to the minimum duration to avoid a stall.
+                    .setPrioritizeTimeOverSizeThresholds(true)
                     .build()
             )
     private val preloadManager = preloadBuilder.build()

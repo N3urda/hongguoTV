@@ -15,7 +15,7 @@ object TvStyle {
     val accent = Color.rgb(255, 112, 95)
     val text = Color.rgb(243, 244, 246)
     val muted = Color.rgb(164, 172, 185)
-    val outline = Color.rgb(73, 91, 115)
+    val outline = Color.rgb(64, 69, 78)
     const val POSTER_ASPECT = .7f
 
     fun shape(context: Context, color: Int, border: Int = Color.TRANSPARENT, radius: Int = 10) =
@@ -27,7 +27,7 @@ object TvStyle {
 
     fun card(context: Context, focused: Boolean, selected: Boolean = false) =
         GradientDrawable().apply {
-            setColor(if (focused) raised else if (selected) Color.rgb(40, 43, 53) else surface)
+            setColor(if (focused) raised else if (selected) raised else surface)
             cornerRadius = 7 * context.resources.displayMetrics.density
             setStroke(maxOf(1, (2 * context.resources.displayMetrics.density).toInt()),
                 if (focused) text else Color.TRANSPARENT)
