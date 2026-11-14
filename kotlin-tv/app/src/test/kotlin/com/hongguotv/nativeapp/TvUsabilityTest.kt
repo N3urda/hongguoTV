@@ -24,7 +24,7 @@ class TvUsabilityTest {
     private fun get(target: Any, name: String) =
         target.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(target)
 
-    private fun set(target: Any, name: String, value: Any) {
+    private fun set(target: Any, name: String, value: Any?) {
         target.javaClass.getDeclaredField(name).apply { isAccessible = true }.set(target, value)
     }
 
@@ -137,7 +137,7 @@ class TvUsabilityTest {
                 ),
             )
             val series = Series("1", "详情测试剧", description = "很长的简介。".repeat(50))
-            val data = Detail(series, (1..40).map { "$it" })
+            val data = Detail(series, (1..65).map { "$it" })
             library.save(WatchProgress(series, "25", 24, 12000, 90000, false, 1000))
             set(activity, "detail", data)
             set(activity, "episodeIndex", 24)
@@ -162,6 +162,49 @@ class TvUsabilityTest {
             assertTrue(selected.isSelected)
             assertTrue(rows.any { it.text == "跳转集数" })
             assertEquals("detail", get(activity, "screen"))
+            val favorite = rows.single { it.text.toString().contains("收藏") }
+            val synopsis = rows.single { it.text == "完整简介" }
+            assertEquals(synopsis.id, favorite.nextFocusRightId)
+            assertEquals(favorite.id, synopsis.nextFocusLeftId)
+            favorite.performClick()
+            assertTrue(library.favorite(series.id))
+            assertEquals("取消本机收藏", favorite.text.toString())
+            favorite.performClick()
+            assertFalse(library.favorite(series.id))
+
+            // Switch the existing button in place; account actions must not write local favorites.
+            set(account, "credentials", AccountCredentials("test-only"))
+            set(account, "favorites", FavoriteState(listOf(CloudFavorite(series, 1000)), loaded = true))
+            account.onHistoryChanged?.invoke()
+            assertEquals("取消账户收藏", favorite.text.toString())
+            assertEquals(1, texts(root).count { it.text.toString().contains("收藏") })
+            set(account, "favorites", FavoriteState(loading = true))
+            account.onHistoryChanged?.invoke()
+            favorite.performClick()
+            assertFalse(library.favorite(series.id))
+            set(account, "credentials", null)
+            account.onHistoryChanged?.invoke()
+            assertEquals("加入本机收藏", favorite.text.toString())
+            favorite.performClick()
+            assertTrue(library.favorite(series.id))
+
+            val ranges = texts(root).filter { it.tag?.toString()?.startsWith("episode-group-") == true }
+            assertEquals(listOf("1–20", "21–40", "41–60", "61–65"), ranges.map { it.text.toString() })
+            assertTrue(ranges[1].isSelected)
+            assertFalse(rows.any { it.text == "下一组 ›" || it.text == "‹ 上一组" })
+            ranges.last().performClick()
+            assertEquals(3, get(activity, "group"))
+            val lastRange = root.findViewWithTag<TextView>("episode-group-3")
+            assertTrue(lastRange.isSelected)
+            assertTrue(lastRange.hasFocus())
+            val lastEpisodes = texts(root).filter { it.contentDescription?.toString()?.matches(Regex("第 [0-9]+ 集")) == true }
+            assertEquals(listOf("61", "62", "63", "64", "65"), lastEpisodes.map { it.text.toString() })
+            assertEquals(lastEpisodes.first().id, lastRange.nextFocusDownId)
+            assertEquals(lastRange.id, lastEpisodes.first().nextFocusUpId)
+            root.findViewWithTag<View>("episode-group-0").performClick()
+            assertEquals(0, get(activity, "group"))
+            assertEquals(20, texts(root).count { it.contentDescription?.toString()?.matches(Regex("第 [0-9]+ 集")) == true })
+
         } finally {
             controller.destroy()
         }
