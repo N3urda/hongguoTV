@@ -32,7 +32,7 @@ class LeftRailNavigationTest {
     private fun views(view: View): List<View> = listOf(view) +
         if (view is ViewGroup) (0 until view.childCount).flatMap { views(view.getChildAt(it)) } else emptyList()
 
-    @Test fun repeatedUpKeepsSecondaryMenuReachableAndLeftStillOpensRail() {
+    @Test fun upReachesSecondaryMenuThenRailAndLeftStillOpensRail() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()
         val shell = CatalogShell(activity) {}.apply { select(1) }
@@ -72,9 +72,8 @@ class LeftRailNavigationTest {
             card.requestFocus()
             key(KeyEvent.KEYCODE_DPAD_UP)
             assertTrue(first.hasFocus() || second.hasFocus())
-            val selectedFilter = shell.findFocus()
-            repeat(6) { key(KeyEvent.KEYCODE_DPAD_UP) }
-            assertSame(selectedFilter, shell.findFocus())
+            key(KeyEvent.KEYCODE_DPAD_UP)
+            assertTrue(shell.navigation[1].hasFocus())
             first.requestFocus()
             key(KeyEvent.KEYCODE_DPAD_RIGHT)
             assertTrue(second.hasFocus())

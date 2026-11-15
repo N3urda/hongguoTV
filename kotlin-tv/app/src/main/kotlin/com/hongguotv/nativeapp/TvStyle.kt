@@ -9,13 +9,38 @@ import android.graphics.drawable.GradientDrawable
 
 /** Shared native colors and shapes; no live blur or focus animation. */
 object TvStyle {
-    val background = Color.rgb(17, 19, 23)
-    val surface = Color.rgb(29, 32, 38)
-    val raised = Color.rgb(43, 47, 54)
-    val accent = Color.rgb(255, 112, 95)
-    val text = Color.rgb(243, 244, 246)
-    val muted = Color.rgb(164, 172, 185)
-    val outline = Color.rgb(64, 69, 78)
+    data class Palette(
+        val id: String, val label: String, val background: Int, val surface: Int,
+        val raised: Int, val accent: Int, val text: Int, val muted: Int, val outline: Int,
+    )
+    private fun palette(id: String, label: String, vararg colors: String) =
+        colors.map { Color.parseColor(it) }.let {
+            Palette(id, label, it[0], it[1], it[2], it[3], it[4], it[5], it[6])
+        }
+    val themes = listOf(
+        palette("dark", "经典黑", "#111317", "#1D2026", "#2B2F36", "#FF705F", "#F3F4F6", "#A4ACB9", "#40454E"),
+        palette("light", "纯净白", "#F3F5F8", "#FFFFFF", "#E1E7F0", "#B83226", "#172033", "#526078", "#BCC6D5"),
+        palette("sand", "暖米色", "#F4EFE5", "#FFFBF2", "#E8DDC9", "#984020", "#332A20", "#6D604E", "#C7B89D"),
+        palette("forest", "森林绿", "#101E1A", "#192D26", "#2A4539", "#88D5A7", "#EFF8F1", "#AAC1B2", "#4B6858"),
+        palette("ocean", "深海蓝", "#101B2D", "#192B43", "#2A405E", "#87C7FF", "#F0F6FF", "#ADBDD3", "#49617F"),
+    )
+    var current: Palette = themes.first()
+        private set
+    fun load(context: Context) {
+        val id = context.getSharedPreferences("appearance", Context.MODE_PRIVATE).getString("theme", "dark")
+        current = themes.firstOrNull { it.id == id } ?: themes.first()
+    }
+    fun select(context: Context, palette: Palette) {
+        current = palette
+        context.getSharedPreferences("appearance", Context.MODE_PRIVATE).edit().putString("theme", palette.id).apply()
+    }
+    val background get() = current.background
+    val surface get() = current.surface
+    val raised get() = current.raised
+    val accent get() = current.accent
+    val text get() = current.text
+    val muted get() = current.muted
+    val outline get() = current.outline
     const val POSTER_ASPECT = .7f
 
     fun shape(context: Context, color: Int, border: Int = Color.TRANSPARENT, radius: Int = 10) =

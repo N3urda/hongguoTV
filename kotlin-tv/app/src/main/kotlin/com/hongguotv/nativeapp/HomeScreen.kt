@@ -112,7 +112,7 @@ class HomeScreen(
         val cards: List<Card>,
     )
 
-    private val accent = TvStyle.accent
+    private val accent get() = TvStyle.accent
 
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
 

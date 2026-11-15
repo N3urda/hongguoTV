@@ -65,6 +65,13 @@ internal fun diagnosticDetail(problem: Throwable): String? =
         .take(8)
         .mapNotNull { cause ->
             when {
+                cause is java.net.SocketTimeoutException -> when (cause.message) {
+                    "播放准备超时" -> "timeout=preparation"
+                    "预加载等待超时" -> "timeout=prefetch_wait"
+                    else -> "timeout=transport"
+                }
+                cause is java.io.InterruptedIOException &&
+                    cause.message in setOf("timeout", "deadline reached") -> "timeout=deadline"
                 cause is EmptyPlaybackResponseException -> cause.detail?.takeIf { it.isNotBlank() }
                 cause is ContentHttpException -> "http=${cause.statusCode}"
                 cause is androidx.media3.common.PlaybackException ->

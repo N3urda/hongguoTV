@@ -242,7 +242,7 @@ class TvUsabilityTest {
             appearance.requestFocus()
             appearance.performClick()
             val startup = texts(root).first { it.text.toString().startsWith("启动页面") }
-            assertTrue(startup.hasFocus())
+            assertTrue(texts(root).first { it.text.toString().startsWith("界面主题") }.hasFocus())
             assertEquals(appearance.id, startup.nextFocusLeftId)
             val clock = texts(root).first { it.text.toString().startsWith("播放时钟") }
             clock.requestFocus()

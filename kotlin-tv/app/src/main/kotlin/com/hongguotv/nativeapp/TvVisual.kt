@@ -10,10 +10,10 @@ import android.widget.TextView
 
 /** Shared visual language for browsing pages, modal panels and playback controls. */
 internal object TvVisual {
-    val accent = TvStyle.accent
-    val value = TvStyle.muted
-    val primary = TvStyle.text
-    val focusedValue = TvStyle.text
+    val accent get() = TvStyle.accent
+    val value get() = TvStyle.muted
+    val primary get() = TvStyle.text
+    val focusedValue get() = TvStyle.text
 
     fun panel(context: Context, modal: Boolean = false) = TvStyle.shape(
         context, TvStyle.surface,
@@ -52,7 +52,7 @@ internal class SettingsValueView(context: Context) : TextView(context) {
         val title = TextUtils.ellipsize(parts[0], android.text.TextPaint(ink),
             (available - valueWidth - gap).coerceAtLeast(0f), TextUtils.TruncateAt.END).toString()
         val baseline = height / 2f - (ink.fontMetrics.ascent + ink.fontMetrics.descent) / 2
-        ink.color = if (hasFocus()) Color.WHITE else TvVisual.primary
+        ink.color = TvVisual.primary
         canvas.drawText(title, paddingLeft.toFloat(), baseline, ink)
         ink.color = if (hasFocus()) TvVisual.focusedValue else TvVisual.value
         canvas.drawText(valueText, width - paddingRight - valueWidth, baseline, ink)
@@ -74,7 +74,7 @@ internal class SettingsSwitch(context: Context) : Switch(context) {
         val top = (height - h) / 2
         val inset = 2 * d
         val rect = RectF(inset, top + inset, width - inset, top + h - inset)
-        ink.color = if (isChecked) TvVisual.accent else Color.argb(50, 255, 255, 255)
+        ink.color = if (isChecked) TvVisual.accent else TvStyle.outline
         canvas.drawRoundRect(rect, h / 2, h / 2, ink)
         if (rowFocused) {
             ink.style = Paint.Style.STROKE

@@ -5,6 +5,14 @@ import org.junit.Test
 
 class PlaybackSourcesTest {
     @Test
+    fun timeoutDiagnosticsSeparatePreparationAndTransportWithoutLeakingMessages() {
+        assertEquals("timeout=preparation", diagnosticDetail(java.net.SocketTimeoutException("播放准备超时")))
+        assertEquals("timeout=prefetch_wait", diagnosticDetail(java.net.SocketTimeoutException("预加载等待超时")))
+        assertEquals("timeout=transport", diagnosticDetail(java.net.SocketTimeoutException("https://private.example/?token=secret")))
+        assertEquals("timeout=deadline", diagnosticDetail(java.io.InterruptedIOException("deadline reached")))
+    }
+
+    @Test
     fun diagnosticDetailRetainsLastCandidateAndRegistrationResult() {
         val detail = "G:b=200/0B/h2 P:b=200/0B/h2 P:hl=200/0B/h2 P:lf=200/0B/h2 rotated=1 reg=failed"
         assertEquals(detail, diagnosticDetail(com.hongguotv.core.EmptyPlaybackResponseException(detail)))
