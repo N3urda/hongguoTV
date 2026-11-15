@@ -17,4 +17,6 @@ mkdir -p "$repo_dir/outputs"
 native_version="${HONGGUOTV_VERSION_NAME:-$(sed -n 's/.*versionName = .*?: "\([^"]*\)".*/\1/p' "$repo_dir/kotlin-tv/app/build.gradle.kts")}"
 [[ "$native_version" =~ ^[0-9][0-9A-Za-z.+-]*$ ]] || { echo "Invalid version" >&2; exit 1; }
 cp "$repo_dir/kotlin-tv/app/build/outputs/apk/release/app-release.apk" "$repo_dir/outputs/hongguotv-kotlin-$native_version-android5.apk"
-cp "$repo_dir/kotlin-tv/app/build/platform/outputs/apk/release/app-release.apk" "$repo_dir/outputs/hongguotv-kotlin-$native_version-android6.apk"
+cp "$repo_dir/kotlin-tv/app/build/platform/outputs/apk/release/app-universal-release.apk" "$repo_dir/outputs/hongguotv-kotlin-$native_version-android6.apk"
+cp "$repo_dir/kotlin-tv/app/build/platform/outputs/apk/release/app-armeabi-v7a-release.apk" "$repo_dir/outputs/hongguotv-kotlin-$native_version-android6-arm32-v7a.apk"
+cp "$repo_dir/kotlin-tv/app/build/platform/outputs/apk/release/app-arm64-v8a-release.apk" "$repo_dir/outputs/hongguotv-kotlin-$native_version-android6-arm64-v8a.apk"

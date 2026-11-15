@@ -27,10 +27,18 @@ android {
         if (!legacyAudio) minSdk = 23
         buildConfigField("boolean", "LEGACY_AUDIO", legacyAudio.toString())
         targetSdk = 36
-        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 24
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.3"
+        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 25
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.4"
     }
-    // Both audio variants are universal APKs; platform audio has no ABI-specific code.
+    // Publish explicit ARM installer choices plus a universal updater fallback.
+    splits {
+        abi {
+            isEnable = !legacyAudio
+            reset()
+            include("armeabi-v7a", "arm64-v8a")
+            isUniversalApk = true
+        }
+    }
     buildFeatures { buildConfig = true }
     testOptions {
         unitTests.isIncludeAndroidResources = true

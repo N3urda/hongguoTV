@@ -32,4 +32,4 @@ Kotlin + Android 原生 View + Media3，单 APK，默认 Android 6.0 / API 23；
 
 [第三方声明](NOTICE.md) · [GPL-3.0](LICENSE) · [原功能分支验证](UPSTREAM_SYNC.md)
 
-默认构建不带 FFmpeg；添加 `-PlegacyAudio=true` 构建 Android 5 兼容版。两种正式 APK 与更新迁移见 [发布说明](AUTO_UPDATES.md)。
+默认构建不带 FFmpeg；添加 `-PlegacyAudio=true` 构建 Android 5 兼容版。四种正式 APK（Android 5 通用、Android 6+ ARM32、ARM64 和通用） 与更新迁移见 [发布说明](AUTO_UPDATES.md)。

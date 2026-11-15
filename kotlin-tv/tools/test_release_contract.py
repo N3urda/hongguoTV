@@ -22,7 +22,7 @@ class ReleaseContractTest(unittest.TestCase):
 
     def test_current_source_version(self):
         build = (ROOT / 'kotlin-tv/app/build.gradle.kts').read_text()
-        self.assertEqual(('0.16.3', 24, 21), r.source_version(build, 'kotlin-v0.16.3'))
+        self.assertEqual(('0.16.4', 25, 21), r.source_version(build, 'kotlin-v0.16.4'))
 
     def test_source_version(self):
         self.assertEqual(('0.10.0', 10, 21), r.source_version(self.build, self.tag))
@@ -83,14 +83,16 @@ class ReleaseContractTest(unittest.TestCase):
 
     def make_apks(self, root):
         directory = root / 'kotlin-tv/app/build'
-        for variant, _, abis in r.APK_VARIANTS:
+        for variant, suffix, abis in r.APK_VARIANTS:
             target = directory / variant / 'outputs/apk/release'
-            target.mkdir(parents=True)
-            with zipfile.ZipFile(target / 'app-release.apk', 'w') as package:
+            target.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(target / r.apk_filename(suffix), 'w') as package:
                 for abi in abis:
                     package.writestr(f'lib/{abi}/libffmpegJNI.so', b'native')
-            (target / 'output-metadata.json').write_text(json.dumps(dict(elements=[
-                dict(outputFile='app-release.apk', versionCode=10, versionName='0.10.0', filters=[])])))
+            listing = target / 'output-metadata.json'
+            elements = json.loads(listing.read_text())['elements'] if listing.exists() else []
+            elements.append(dict(outputFile=r.apk_filename(suffix), versionCode=10, versionName='0.10.0', filters=r.apk_filters(suffix)))
+            listing.write_text(json.dumps(dict(elements=elements)))
         out = root / 'outputs'
         out.mkdir()
         return directory, out
@@ -99,19 +101,19 @@ class ReleaseContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _, out = self.make_apks(root)
-            with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run', side_effect=[self.badging, self.signature, self.badging.replace("'21'", "'23'"), self.signature]) as run:
+            with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run', side_effect=[self.badging, self.signature] + [self.badging.replace("'21'", "'23'"), self.signature] * 3) as run:
                 paths = r.prepare_apks('0.10.0', 10, 21, out)
-            self.assertEqual(['hongguotv-kotlin-0.10.0-' + suffix + '.apk' for suffix in ['android5', 'android6']], [p.name for p in paths])
-            self.assertEqual(4, run.call_count)
+            self.assertEqual(['hongguotv-kotlin-0.10.0-' + suffix + '.apk' for suffix in ['android5', 'android6', 'android6-arm32-v7a', 'android6-arm64-v8a']], [p.name for p in paths])
+            self.assertEqual(8, run.call_count)
             for path, (_, _, abis) in zip(paths, r.APK_VARIANTS):
                 r.validate_apk_abis(path, abis)
 
     def test_each_missing_apk_blocks_preparation(self):
-        for variant, _, _ in r.APK_VARIANTS:
+        for variant, suffix, _ in r.APK_VARIANTS:
             with self.subTest(variant=variant), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 directory, out = self.make_apks(root)
-                (directory / variant / 'outputs/apk/release/app-release.apk').unlink()
+                (directory / variant / 'outputs/apk/release' / r.apk_filename(suffix)).unlink()
                 with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run') as run, self.assertRaisesRegex(ValueError, 'requires Android 5 and Android 6'):
                     r.prepare_apks('0.10.0', 10, 21, out)
                 run.assert_not_called()
@@ -126,6 +128,22 @@ class ReleaseContractTest(unittest.TestCase):
             with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run') as run, self.assertRaisesRegex(ValueError, 'current build output'):
                 r.prepare_apks('0.10.0', 10, 21, out)
             run.assert_not_called()
+
+    def test_mislabeled_arm_split_blocks_publication(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory, out = self.make_apks(root)
+            listing = directory / 'platform/outputs/apk/release/output-metadata.json'
+            data = json.loads(listing.read_text())
+            for item in data['elements']:
+                if item['outputFile'] == r.apk_filename('android6-arm32-v7a'):
+                    item['filters'] = r.apk_filters('android6-arm64-v8a')
+            listing.write_text(json.dumps(data))
+            with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run') as run:
+                with self.assertRaisesRegex(ValueError, 'current build output'):
+                    r.prepare_apks('0.10.0', 10, 21, out)
+                run.assert_not_called()
+            self.assertEqual([], list(out.iterdir()))
 
     def test_wrong_architecture_or_missing_decoder_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

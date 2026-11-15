@@ -1,4 +1,4 @@
-"""Inspect real built APKs for the two audio variants (no publishing)."""
+"""Inspect real built APKs for all required release variants (no publishing)."""
 import importlib.util
 import os
 from pathlib import Path
@@ -15,7 +15,7 @@ if __name__ == '__main__':
     release = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(release)
     for directory, suffix, abis in release.APK_VARIANTS:
-        apk = ROOT / 'kotlin-tv/app/build' / directory / f'outputs/apk/{kind}/app-{kind}.apk'
+        apk = ROOT / 'kotlin-tv/app/build' / directory / f'outputs/apk/{kind}' / release.apk_filename(suffix, kind)
         release.validate_apk_abis(apk, abis)
         if not abis:
             with zipfile.ZipFile(apk) as archive:
