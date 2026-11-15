@@ -9,3 +9,9 @@
 生成提示见 `generation-prompt.txt`。生成方式：内置 imagegen；原稿身份与像素风格由用户确认。
 
 安装名称统一为 `hongguoTV`。安装图标、TV 横幅与应用内标识均从同一透明 RGBA 原稿导出；安装图标仅保留透明背景的小电视本体（占画布宽 81%，兼容圆形与方形图标槽位不裁切），横幅使用 hongguoTV 字标。
+
+## Android / TV 资源接入
+
+两套工程的 Manifest 均使用 `@mipmap/ic_launcher` 和 `@mipmap/tv_banner`。透明小电视用于方形图标；TV 首页横幅独立提供带 hongguoTV 字标的 16:9 图片，不将方形图标拉伸成横幅。横幅按 mdpi 到 xxxhdpi 导出 160×90、240×135、320×180、480×270、640×360，保存在 mipmap 密度目录。运行生成脚本时同步到旧 Android 工程。
+
+参考 Android TV 官方规范：https://developer.android.com/design/ui/tv/guides/system/tv-app-icon-guidelines ，以及 Jellyfin TV 的 Manifest：https://github.com/jellyfin/jellyfin-androidtv/blob/master/app/src/main/AndroidManifest.xml 。官方推荐自适应图标；本项目按透明小电视的设计选择继续使用位图，第三方启动器仍可能自行添加底板。
