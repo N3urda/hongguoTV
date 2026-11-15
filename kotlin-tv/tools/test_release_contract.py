@@ -82,28 +82,27 @@ class ReleaseContractTest(unittest.TestCase):
                 r.verify_assets([asset, asset], [path])
 
     def make_apks(self, root):
-        directory = root / 'kotlin-tv/app/build/outputs/apk/release'
-        directory.mkdir(parents=True)
+        directory = root / 'kotlin-tv/app/build'
         for variant, _, abis in r.APK_VARIANTS:
-            with zipfile.ZipFile(directory / f'app-{variant}-release.apk', 'w') as package:
+            target = directory / variant / 'outputs/apk/release'
+            target.mkdir(parents=True)
+            with zipfile.ZipFile(target / 'app-release.apk', 'w') as package:
                 for abi in abis:
                     package.writestr(f'lib/{abi}/libffmpegJNI.so', b'native')
-        (directory / 'output-metadata.json').write_text(json.dumps(dict(elements=[
-            dict(outputFile=f'app-{variant}-release.apk', versionCode=10, versionName='0.10.0',
-                 filters=[] if len(abis) > 1 else [dict(filterType='ABI', value=next(iter(abis)))])
-            for variant, _, abis in r.APK_VARIANTS])))
+            (target / 'output-metadata.json').write_text(json.dumps(dict(elements=[
+                dict(outputFile='app-release.apk', versionCode=10, versionName='0.10.0', filters=[])])))
         out = root / 'outputs'
         out.mkdir()
         return directory, out
 
-    def test_three_signed_apks_required_and_copied(self):
+    def test_both_signed_apks_required_and_copied(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _, out = self.make_apks(root)
-            with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run', side_effect=[self.badging, self.signature] * 3) as run:
+            with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run', side_effect=[self.badging, self.signature, self.badging.replace("'21'", "'23'"), self.signature]) as run:
                 paths = r.prepare_apks('0.10.0', 10, 21, out)
-            self.assertEqual(['hongguotv-kotlin-0.10.0-' + suffix + '.apk' for suffix in ['android5', 'arm32-v7a', 'arm64-v8a']], [p.name for p in paths])
-            self.assertEqual(6, run.call_count)
+            self.assertEqual(['hongguotv-kotlin-0.10.0-' + suffix + '.apk' for suffix in ['android5', 'android6']], [p.name for p in paths])
+            self.assertEqual(4, run.call_count)
             for path, (_, _, abis) in zip(paths, r.APK_VARIANTS):
                 r.validate_apk_abis(path, abis)
 
@@ -112,8 +111,8 @@ class ReleaseContractTest(unittest.TestCase):
             with self.subTest(variant=variant), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 directory, out = self.make_apks(root)
-                (directory / f'app-{variant}-release.apk').unlink()
-                with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run') as run, self.assertRaisesRegex(ValueError, 'requires universal, ARM32 and ARM64'):
+                (directory / variant / 'outputs/apk/release/app-release.apk').unlink()
+                with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run') as run, self.assertRaisesRegex(ValueError, 'requires Android 5 and Android 6'):
                     r.prepare_apks('0.10.0', 10, 21, out)
                 run.assert_not_called()
                 self.assertEqual([], list(out.iterdir()))
@@ -122,8 +121,8 @@ class ReleaseContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             directory, out = self.make_apks(root)
-            (directory / 'output-metadata.json').write_text(json.dumps(dict(elements=[
-                dict(outputFile='app-release.apk', versionCode=10, versionName='0.10.0', filters=[])])))
+            (directory / 'outputs/apk/release/output-metadata.json').write_text(json.dumps(dict(elements=[
+                dict(outputFile='app-stale.apk', versionCode=10, versionName='0.10.0', filters=[])])))
             with patch.object(r, 'ROOT', root), patch.dict(r.os.environ, ANDROID_HOME=tmp), patch.object(r, 'run') as run, self.assertRaisesRegex(ValueError, 'current build output'):
                 r.prepare_apks('0.10.0', 10, 21, out)
             run.assert_not_called()
@@ -137,6 +136,14 @@ class ReleaseContractTest(unittest.TestCase):
                         package.writestr(name, b'native')
                 with self.assertRaises(ValueError):
                     r.validate_apk_abis(path, {'armeabi-v7a'})
+
+    def test_platform_package_rejects_any_native_library(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            apk = Path(tmp) / 'platform.apk'
+            with zipfile.ZipFile(apk, 'w') as package:
+                package.writestr('lib/armeabi-v7a/libffmpegJNI.so', b'native')
+            with self.assertRaises(ValueError):
+                r.validate_apk_abis(apk, set())
 
     def test_invalid_split_signature_blocks_all_asset_copying(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -153,9 +160,9 @@ class ReleaseContractTest(unittest.TestCase):
         self.assertNotIn('branches:', workflow)
         self.assertNotIn('workflow_dispatch:', workflow)
         self.assertIn("github.repository == 'N3urda/hongguoTV'", workflow)
-        self.assertIn(':core:test :app:testDebugUnitTest :app:lintRelease :app:assembleRelease', workflow)
-        self.assertIn('-PreleaseAbis=true', workflow)
-        self.assertIn('-PreleaseAbis=true', (ROOT / 'scripts/build-kotlin.sh').read_text())
+        self.assertIn('bash scripts/build-kotlin.sh', workflow)
+        self.assertIn('for legacy in true false', (ROOT / 'scripts/build-kotlin.sh').read_text())
+        self.assertIn('-PlegacyAudio=', (ROOT / 'scripts/build-kotlin.sh').read_text())
         self.assertIn('cancel-in-progress: false', workflow)
         for name in ['KEYSTORE_B64', 'STORE_PASSWORD', 'KEY_ALIAS', 'KEY_PASSWORD']:
             self.assertIn('secrets.HONGGUOTV_' + name, workflow)

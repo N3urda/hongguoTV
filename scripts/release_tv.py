@@ -15,7 +15,7 @@ REPOSITORY = 'N3urda/hongguoTV'
 PACKAGE = 'com.hongguotv.nativeapp'
 CERTIFICATE = '3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98'
 ROOT = Path(__file__).resolve().parents[1]
-NOTES = '软件名称统一为 hongguoTV；安装图标和 Android TV 横幅沿用应用内透明 Logo，放大方形图标主体并更新横幅字标。保留原包名、原签名及 Android 5.0+ 兼容性。'
+NOTES = 'Android 6+ 主版本移除 FFmpeg，使用系统音频解码；Android 5 兼容版保留 AAC 软件解码。保留包名与原签名，新版更新器按系统版本选择安装包。issue #55 的设备闪退仍待用户回测。'
 
 
 def require(condition, message):
@@ -109,9 +109,8 @@ def release_including_draft(tag):
 
 # Explicit filenames prevent an old single-APK build from being published by accident.
 APK_VARIANTS = (
-    ('universal', 'android5', {'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'}),
-    ('armeabi-v7a', 'arm32-v7a', {'armeabi-v7a'}),
-    ('arm64-v8a', 'arm64-v8a', {'arm64-v8a'}),
+    ('', 'android5', {'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'}),
+    ('platform/', 'android6', set()),
 )
 
 
@@ -125,26 +124,22 @@ def validate_apk_abis(path, expected):
 
 
 def prepare_apks(version, code, sdk, out):
-    directory = ROOT / 'kotlin-tv/app/build/outputs/apk/release'
     buildtools = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
-    sources = [(directory / f'app-{variant}-release.apk', suffix, abis)
+    sources = [(ROOT / 'kotlin-tv/app/build' / variant / 'outputs/apk/release/app-release.apk', suffix, abis)
                for variant, suffix, abis in APK_VARIANTS]
-    listing = directory / 'output-metadata.json'
-    require(listing.is_file(), 'Missing APK build output metadata')
-    elements = json.loads(listing.read_text()).get('elements', [])
-    for path, _, abis in sources:
-        matches = [item for item in elements if item.get('outputFile') == path.name]
-        filters = [] if len(abis) > 1 else [{'filterType': 'ABI', 'value': next(iter(abis))}]
-        require(len(matches) == 1 and matches[0].get('filters') == filters
-                and matches[0].get('versionCode') == code and matches[0].get('versionName') == version,
-                f'{path.name}: missing or mismatched current build output; use -PreleaseAbis=true')
-    require(all(path.is_file() for path, _, _ in sources),
-            'Release requires universal, ARM32 and ARM64 APKs; build with -PreleaseAbis=true')
+    require(all(path.is_file() for path, _, _ in sources), 'Release requires Android 5 and Android 6 APKs')
+    for path, _, _ in sources:
+        listing = path.parent / 'output-metadata.json'
+        require(listing.is_file(), 'Missing APK build output metadata')
+        elements = json.loads(listing.read_text()).get('elements', [])
+        require(len(elements) == 1 and elements[0].get('outputFile') == path.name
+                and elements[0].get('filters') == [] and elements[0].get('versionCode') == code
+                and elements[0].get('versionName') == version, 'Mismatched current build output')
     # Check every package before copying any release assets or creating a draft.
     for path, _, abis in sources:
         validate_apk(run(str(buildtools / 'aapt'), 'dump', 'badging', str(path)),
                      run(str(buildtools / 'apksigner'), 'verify', '--verbose', '--min-sdk-version',
-                         '21', '--print-certs', str(path)), version, code, sdk)
+                         str(21 if abis else 23), '--print-certs', str(path)), version, code, 21 if abis else 23)
         validate_apk_abis(path, abis)
     apks = []
     for path, suffix, _ in sources:
@@ -165,6 +160,8 @@ def prepare(tag):
     apks = prepare_apks(version, code, sdk, out)
     apk = apks[0]  # Existing updater clients continue to receive the universal APK.
     data = metadata(tag, version, code, sdk, commit, apk.name, apk.stat().st_size, sha256(apk))
+    platform = apks[1]
+    data['platformApk'] = dict(name=platform.name, size=platform.stat().st_size, sha256=sha256(platform))
     manifest = out / 'update.json'
     manifest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
     source = out / f'hongguotv-{tag}-source.zip'
@@ -178,7 +175,7 @@ def prepare(tag):
         bundle.write(archive, f'hongguotv-{tag}/third-party/{archive.name}')
     checks = out / 'SHA256SUMS'
     checks.write_text(''.join(f'{sha256(p)}  {p.name}\n' for p in (*apks, source, manifest)))
-    (out / 'release-notes.md').write_text(f'''hongguoTV {version}（versionCode {code}），Android 5.0+。\n\n{NOTES}\n\n原发布证书签名，可同签名覆盖安装并保留本机记录。旧 0.9 更新器不识别 API21 元数据，首次需手动安装，请勿先卸载。\n\n源码提交：{commit}。附通用版（android5）、ARM32（arm32-v7a）、ARM64（arm64-v8a）三个 APK；不确定架构请用通用版，自动更新也使用通用版。附对应完整源码 ZIP（含 GPL-3.0 和第三方许可）、update.json、SHA256SUMS。已通过自动化测试、Release 静态检查和正式签名构建；电视真机兼容性由设备测试继续验证。\n\n构建要求与步骤见源码 kotlin-tv/AUTO_UPDATES.md；版本取自该标签的 Gradle 配置，不使用运行次数改写版本。\n''')
+    (out / 'release-notes.md').write_text(f'''hongguoTV {version}（versionCode {code}），Android 5.0+。\n\n{NOTES}\n\n原发布证书签名，可同签名覆盖安装并保留本机记录。旧 0.9 更新器不识别 API21 元数据，首次需手动安装，请勿先卸载。\n\n源码提交：{commit}。附 Android 6+ 主版本（android6，无 FFmpeg）与 Android 5 兼容版（android5，含 FFmpeg），均为通用包。新版客户端按系统版本更新，旧客户端先经兼容包升级。附对应完整源码 ZIP（含 GPL-3.0 和第三方许可）、update.json、SHA256SUMS。已通过自动化测试、Release 静态检查和正式签名构建；电视真机兼容性由设备测试继续验证。\n\n构建要求与步骤见源码 kotlin-tv/AUTO_UPDATES.md；版本取自该标签的 Gradle 配置，不使用运行次数改写版本。\n''')
     return data, [*apks, source, manifest, checks]
 
 

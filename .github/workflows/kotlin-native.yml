@@ -9,7 +9,7 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Check release metadata contract without publishing
@@ -23,7 +23,11 @@ jobs:
           packages: platform-tools
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006'
       - name: Unit tests, Android lint, and installable development APK
-        run: ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --console=plain
+        run: |
+          for legacy in true false; do
+            ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug -PlegacyAudio="$legacy" --console=plain
+          done
+          python3 kotlin-tv/tools/verify_audio_packages.py debug
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -33,3 +37,5 @@ jobs:
             kotlin-tv/app/build/reports/tests/testDebugUnitTest/
             kotlin-tv/app/build/reports/lint-results-debug.*
             kotlin-tv/app/build/outputs/apk/debug/*.apk
+            kotlin-tv/app/build/platform/reports/
+            kotlin-tv/app/build/platform/outputs/apk/debug/*.apk
