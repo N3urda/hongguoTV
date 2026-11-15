@@ -387,6 +387,9 @@ int decodePacket(AVCodecContext *context, AVPacket *packet,
         av_frame_free(&frame);
         return AUDIO_DECODER_ERROR_OTHER;
       }
+      // growOutputBuffer returns the allocation base, not the append position.
+      // Preserve PCM already decoded from earlier frames in this packet.
+      outputBuffer += outSize;
     }
     result = swr_convert(resampleContext, &outputBuffer, bufferOutSize,
                          (const uint8_t **)frame->data, frame->nb_samples);

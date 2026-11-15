@@ -11,6 +11,10 @@ internal fun playbackRenderers(context: Context): DefaultRenderersFactory =
     DefaultRenderersFactory(context)
         .setEnableDecoderFallback(true)
         .setExtensionRendererMode(
-            if (Build.VERSION.SDK_INT <= 22) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
-            else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
+            audioExtensionRendererMode(Build.VERSION.SDK_INT, BuildConfig.LEGACY_AUDIO)
         )
+
+@androidx.media3.common.util.UnstableApi
+internal fun audioExtensionRendererMode(sdk: Int, legacyAudio: Boolean): Int =
+    if (legacyAudio && sdk <= 22) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+    else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF

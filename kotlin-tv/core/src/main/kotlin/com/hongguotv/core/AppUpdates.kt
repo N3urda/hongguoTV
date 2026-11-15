@@ -19,16 +19,18 @@ data class AppUpdate(val versionCode: Long, val versionName: String, val minSdk:
         const val REPOSITORY = "N3urda/hongguoTV"
         const val RELEASES = "https://github.com/$REPOSITORY/releases"
         const val MAX_APK_BYTES = 80L * 1024 * 1024
-        fun parse(json: String): AppUpdate {
+        fun parse(json: String, sdk: Int = 21): AppUpdate {
             val o = JSONObject(json)
             require(o.getInt("schema") == 1 && o.getString("packageName") == "com.hongguotv.nativeapp") { "更新信息不匹配" }
-            val apk = o.getJSONObject("apk")
-            val update = AppUpdate(o.getLong("versionCode"), o.getString("versionName"), o.getInt("minSdk"),
+            val platform = if (sdk >= 23) o.optJSONObject("platformApk") else null
+            val apk = platform ?: o.getJSONObject("apk")
+            val update = AppUpdate(o.getLong("versionCode"), o.getString("versionName"), if (platform != null) 23 else o.getInt("minSdk"),
                 o.getString("tag"), apk.getString("name"), apk.getLong("size"), apk.getString("sha256").lowercase(), o.optString("notes").take(1500))
             require(update.versionCode in 1..Int.MAX_VALUE.toLong() && update.minSdk in 21..100)
             require(update.versionName.matches(Regex("[0-9][0-9A-Za-z.+-]{0,63}")))
             require(update.tag.matches(Regex("kotlin-v[0-9][0-9A-Za-z.+-]{0,80}")))
-            require(update.fileName.matches(Regex("hongguotv-kotlin-[0-9][0-9A-Za-z.+-]{0,80}-android[58]\\.apk")))
+            require(update.fileName.matches(Regex("hongguotv-kotlin-[0-9][0-9A-Za-z.+-]{0,80}-android[568]\\.apk")))
+            if (platform != null) require(update.fileName.endsWith("-android6.apk"))
             require(update.size in 1..MAX_APK_BYTES && update.sha256.matches(Regex("[0-9a-f]{64}")))
             return update
         }
@@ -79,15 +81,15 @@ internal object UpdateDownloadSources {
     val hosts = setOf("ghfast.top", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com")
 }
 
-class AppUpdateRepository internal constructor(private val http: OkHttpClient) : AppUpdateSource {
-    constructor() : this(OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
+class AppUpdateRepository internal constructor(private val http: OkHttpClient, private val sdk: Int = 21) : AppUpdateSource {
+    constructor(sdk: Int = 21) : this(OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
         .callTimeout(5, TimeUnit.MINUTES).addNetworkInterceptor { chain ->
             val url = chain.request().url
             // Restrict redirects as well as initial requests to known HTTPS download hosts.
             if (url.scheme != "https" || url.host !in UpdateDownloadSources.hosts)
                 throw IOException("更新下载地址不受支持")
             chain.proceed(chain.request())
-        }.build())
+        }.build(), sdk)
 
     private val cancellation = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val activeCalls = java.util.concurrent.ConcurrentHashMap.newKeySet<okhttp3.Call>()
@@ -126,7 +128,7 @@ class AppUpdateRepository internal constructor(private val http: OkHttpClient) :
             while (true) { val n = input.read(buffer); if (n < 0) break; if (out.size() + n > 65536) throw IOException("更新信息过大"); out.write(buffer, 0, n) }
             out.toByteArray()
         } ?: throw IOException("更新信息为空")
-        try { AppUpdate.parse(bytes.toString(Charsets.UTF_8)) } catch (_: Exception) { throw IOException("更新信息格式不正确") }
+        try { AppUpdate.parse(bytes.toString(Charsets.UTF_8), sdk) } catch (_: Exception) { throw IOException("更新信息格式不正确") }
     }
 
     override fun download(update: AppUpdate, file: File, progress: (Int) -> Unit) {

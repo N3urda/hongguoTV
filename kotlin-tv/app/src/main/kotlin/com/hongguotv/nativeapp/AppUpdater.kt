@@ -32,7 +32,7 @@ import java.util.concurrent.Future
 /** Foreground-only updater: no background service, and no networking or prompts during playback. */
 class AppUpdater(
     private val activity: Activity,
-    private val repository: AppUpdateSource = AppUpdateRepository(),
+    private val repository: AppUpdateSource = AppUpdateRepository(android.os.Build.VERSION.SDK_INT),
     private val idle: () -> Boolean,
 ) {
     private val main = Handler(Looper.getMainLooper())

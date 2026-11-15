@@ -52,12 +52,12 @@ jobs:
         with:
           packages: platform-tools
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006'
-      - name: Core tests, Release lint, and signed universal / ARM32 / ARM64 APKs
+      - name: Test and build Android 5 compatibility and Android 6 platform APKs
         env:
           HONGGUOTV_STORE_PASSWORD: ${{ secrets.HONGGUOTV_STORE_PASSWORD }}
           HONGGUOTV_KEY_ALIAS: ${{ secrets.HONGGUOTV_KEY_ALIAS }}
           HONGGUOTV_KEY_PASSWORD: ${{ secrets.HONGGUOTV_KEY_PASSWORD }}
-        run: ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:testDebugUnitTest :app:lintRelease :app:assembleRelease -PreleaseAbis=true --console=plain
+        run: bash scripts/build-kotlin.sh
       - name: Validate signer and publish verified assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,6 +70,7 @@ jobs:
           path: |
             kotlin-tv/core/build/reports/tests/test/
             kotlin-tv/app/build/reports/lint-results-release.*
+            kotlin-tv/app/build/platform/reports/
             outputs/update.json
             outputs/SHA256SUMS
       - name: Remove temporary signing material

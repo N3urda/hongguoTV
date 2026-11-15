@@ -30,6 +30,34 @@ class AppUpdatesTest {
                 .code(200).message("OK").body(reply(chain.request().url.toString()).toResponseBody()).build()
         }.build()
     )
+    @Test fun audioPackageIsSelectedByAndroidVersion() {
+        val metadata = json().put("minSdk", 21)
+        metadata.getJSONObject("apk").put("name", "hongguotv-kotlin-0.16.2-android5.apk")
+        metadata.put("platformApk", JSONObject(metadata.getJSONObject("apk").toString())
+            .put("name", "hongguotv-kotlin-0.16.2-android6.apk"))
+        for (sdk in listOf(21, 22)) {
+            val result = AppUpdate.parse(metadata.toString(), sdk)
+            assertTrue(result.fileName.endsWith("android5.apk"))
+            assertEquals(21, result.minSdk)
+        }
+        for (sdk in listOf(23, 30, 36)) {
+            val result = AppUpdate.parse(metadata.toString(), sdk)
+            assertTrue(result.fileName.endsWith("android6.apk"))
+            assertEquals(23, result.minSdk)
+        }
+        metadata.remove("platformApk")
+        assertTrue(AppUpdate.parse(metadata.toString(), 30).fileName.endsWith("android5.apk"))
+    }
+
+    @Test fun invalidPlatformPackageIsRejected() {
+        for (changes in listOf("name" to "../evil.apk", "name" to "hongguotv-kotlin-0.16.2-android5.apk",
+            "sha256" to "bad", "size" to 0)) {
+            val data = json().put("platformApk", JSONObject(json().getJSONObject("apk").toString())
+                .put("name", "hongguotv-kotlin-0.16.2-android6.apk").put(changes.first, changes.second))
+            assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(data.toString(), 30) }
+        }
+    }
+
     @Test fun metadataUsesAcceleratorFirst() {
         val urls = mutableListOf<String>()
         repository { url -> urls += url; json().toString().toByteArray() }.use {

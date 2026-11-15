@@ -1,9 +1,9 @@
 # Android 5 AAC compatibility decoder
 
 The official Android 5.0/5.1 ARM64 emulator's `OMX.google.aac.decoder` can spin in
-`libstagefright_soft_aacdec.so/dit_fft` with zero output. The app uses the Media3
+`libstagefright_soft_aacdec.so/dit_fft` with zero output. The Android 5 compatibility APK (`-PlegacyAudio=true`) uses the Media3
 FFmpeg audio renderer **only on API 21–22**, for both feed preview and episode
-playback. Newer Android versions retain the platform renderer. Only FFmpeg's AAC
+playback. The default Android 6+ APK does not include this module. Newer Android versions retain the platform renderer. Only FFmpeg's AAC
 decoder and PCM resampling are enabled; no network, demuxer, video decoder, or
 external codec library is compiled.
 
@@ -39,3 +39,5 @@ Do not silently package an APK without the four native libraries.
 `consumer-rules.pro` preserves the renderer constructor, JNI names and the Java
 buffer-growth callback called by JNI. Verify the **minified release** APK, since
 an unminified debug run would not catch a missing JNI keep rule.
+
+The JNI bridge preserves the append offset after growing output buffers. Host regression: `python3 kotlin-tv/tools/test_native_audio_growth.py` (macOS/Homebrew). This tests PCM preservation, not the ART crash from issue #55.
