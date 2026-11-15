@@ -7,6 +7,29 @@ on:
 permissions:
   contents: read
 jobs:
+  desktop-core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Verify shared business rules and JVM integration
+        shell: bash
+        run: ./kotlin-tv/gradlew -p kotlin-tv :shared-core:allTests :core:test --console=plain
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: desktop-core-${{ matrix.os }}
+          path: |
+            kotlin-tv/shared-core/build/reports/tests/
+            kotlin-tv/core/build/reports/tests/
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -33,6 +56,7 @@ jobs:
         with:
           name: kotlin-native-verification
           path: |
+            kotlin-tv/shared-core/build/reports/tests/
             kotlin-tv/core/build/reports/tests/test/
             kotlin-tv/app/build/reports/tests/testDebugUnitTest/
             kotlin-tv/app/build/reports/lint-results-debug.*

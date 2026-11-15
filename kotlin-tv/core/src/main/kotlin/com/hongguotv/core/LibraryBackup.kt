@@ -5,25 +5,15 @@ import java.net.URI
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class BackupProgress(
-    val series: Series,
-    val episodeId: String,
-    val episodeIndex: Int,
-    val position: Long,
-    val duration: Long,
-    val completed: Boolean,
-    val updatedAt: Long,
-) {
-    fun json() =
-        JSONObject()
-            .put("series", LibraryBackup.seriesJson(series))
-            .put("episodeId", episodeId)
-            .put("episodeIndex", episodeIndex)
-            .put("position", position)
-            .put("duration", duration)
-            .put("completed", completed)
-            .put("updatedAt", updatedAt)
-}
+fun BackupProgress.json(): JSONObject =
+    JSONObject()
+        .put("series", LibraryBackup.seriesJson(series))
+        .put("episodeId", episodeId)
+        .put("episodeIndex", episodeIndex)
+        .put("position", position)
+        .put("duration", duration)
+        .put("completed", completed)
+        .put("updatedAt", updatedAt)
 
 data class BackupSettings(
     val quality: Int = 1080,

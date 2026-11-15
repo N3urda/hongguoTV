@@ -1058,10 +1058,10 @@ class ContentRepositoryTest {
                 currentRank(payload)
         }
         val result = repo.comicRanking(2)
-        assertNotNull(result.ranking)
-        assertEquals(RankPosition(23, "5746万热度"), result.ranking!!.positions["123"])
-        assertEquals(5, result.ranking.totalPages)
-        assertEquals("9月22日已更新", result.ranking.updatedText)
+        val ranking = requireNotNull(result.ranking)
+        assertEquals(RankPosition(23, "5746万热度"), ranking.positions["123"])
+        assertEquals(5, ranking.totalPages)
+        assertEquals("9月22日已更新", ranking.updatedText)
         assertTrue(result.hasMore)
         assertFalse(result.items.single().toJson().has("rank"))
     }
@@ -1102,10 +1102,10 @@ class ContentRepositoryTest {
                 <nav aria-label="榜单分页"><a href="/rank/hot-comic-drama">1</a><span aria-current="page">2</span><a href="/rank/hot-comic-drama?page=5">5</a></nav>"""
         }
         val result = repo.comicRanking(2)
-        assertNotNull(result.ranking)
-        assertEquals(RankPosition(21, "5746万热度"), result.ranking!!.positions["123"])
-        assertEquals(5, result.ranking.totalPages)
-        assertEquals("今日已更新", result.ranking.updatedText)
+        val ranking = requireNotNull(result.ranking)
+        assertEquals(RankPosition(21, "5746万热度"), ranking.positions["123"])
+        assertEquals(5, ranking.totalPages)
+        assertEquals("今日已更新", ranking.updatedText)
     }
 
     @Test

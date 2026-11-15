@@ -58,16 +58,6 @@ data class CloudProfile(val id: String, val nickname: String)
 class AccountNotProvisionedException :
     IOException("该手机号还没有红果账号资料，请先用官方红果 App 登录一次再回来试（或改用扫码）")
 
-data class CloudProgress(
-    val series: Series,
-    val episodeId: String,
-    val episodeIndex: Int,
-    val position: Long,
-    val duration: Long,
-    val updatedAt: Long,
-    val episodeCount: Int = 0,
-)
-
 internal class EmptyAccountResponseException(val detail: String) :
     IOException("账号接口返回空响应，请稍后重试")
 
