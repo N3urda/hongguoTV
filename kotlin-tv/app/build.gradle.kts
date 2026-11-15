@@ -27,8 +27,8 @@ android {
         if (!legacyAudio) minSdk = 23
         buildConfigField("boolean", "LEGACY_AUDIO", legacyAudio.toString())
         targetSdk = 36
-        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 23
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.2"
+        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 24
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.3"
     }
     // Both audio variants are universal APKs; platform audio has no ABI-specific code.
     buildFeatures { buildConfig = true }
