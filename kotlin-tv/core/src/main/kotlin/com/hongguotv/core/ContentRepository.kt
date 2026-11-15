@@ -986,9 +986,20 @@ constructor(
             }
             // A fresh installation must register before the model request's own budget starts.
             // The enclosing playback deadline still bounds both phases and cancellation.
-            RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(8)) { devices.obtain() }
+            val device = RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(8)) { devices.obtain() }
             return RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(8)) {
-                try { playerLadder(id) } catch (fallback: IOException) {
+                try {
+                    try { playerLadder(id, device) } catch (rejected: DeviceRejectedException) {
+                        if (!rejected.identityExpired) throw rejected
+                        RequestScope.ensureActive()
+                        synchronized(upcomingPlaybackModels) { upcomingPlaybackModels.clear() }
+                        val replacement = devices.refreshRejected(device)
+                        try { playerLadder(id, replacement) } catch (again: DeviceRejectedException) {
+                            if (again.identityExpired) devices.rejectReplacement(replacement)
+                            throw again
+                        }
+                    }
+                } catch (fallback: IOException) {
                     RequestScope.ensureActive()
                     fallback.addSuppressed(error)
                     throw fallback
@@ -1379,6 +1390,7 @@ constructor(
     private fun playerLadder(id: String, device: PlayerDevice = devices.obtain()): StreamLadder {
         val rows = mutableListOf<Rendition>()
         var rejected = false
+        var identityExpired = false
         var sawResponse = false
         var transportFailure: Exception? = null
         val requests = listOf(
@@ -1390,7 +1402,7 @@ constructor(
                 val signed = PlayerSigner.headers(url.substringAfter('?', ""), body)
                 val data = playbackJson(fetch(url, headers + signed, body), "compatibility-model")
                 val code = data.optInt("code", data.optInt("Code", 0))
-                if (code == 10001 || code == 10002 || code == 110001) throw DeviceRejectedException("播放接口拒绝该设备")
+                if (code == 10001 || code == 10002 || code == 110001) throw DeviceRejectedException("播放接口拒绝该设备", identityExpired = true)
                 sawResponse = true
                 if(code!=0) throw IOException("播放接口拒绝请求（错误码 $code）")
                 val payload=data.optJSONObject("data") ?: JSONObject()
@@ -1404,11 +1416,11 @@ constructor(
                         if (info != null) rows += PlaybackModels.renditions(info)
                     }.onFailure { if (it is IOException) transportFailure = it }
                 }
-            } catch (e: DeviceRejectedException) { rejected = true }
+            } catch (e: DeviceRejectedException) { rejected = true; identityExpired = identityExpired || e.identityExpired }
             catch (e: Exception) { if(Thread.currentThread().isInterrupted) throw e; transportFailure = e }
         }
         if (rows.isEmpty()) {
-            if (rejected) throw DeviceRejectedException("播放设备已被上游拒绝")
+            if (rejected) throw DeviceRejectedException("播放设备已被上游拒绝", identityExpired)
             if (transportFailure is EmptyPlaybackResponseException) throw transportFailure
             if (!sawResponse) throw transportFailure ?: IOException("播放接口暂不可用")
             throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")

@@ -21,29 +21,52 @@ internal class PlayerDeviceSource(
 ) {
     @Volatile private var cached: PlayerDevice? = null
 
-    @Synchronized
-    fun existing(): PlayerDevice? {
-        cached?.let { return it }
-        return store()?.load()?.let(PlayerDevice::fromJson)?.also { cached = it }
+    private fun key(): Any = store() ?: this
+
+    fun existing(): PlayerDevice? = synchronized(identityLock) {
+        val persistent = store()
+        if (persistent != null) persistent.load()?.let(PlayerDevice::fromJson).also { cached = it }
+        else cached
     }
 
-    @Synchronized
-    fun obtain(): PlayerDevice {
-        existing()?.let { return it }
+    fun obtain(): PlayerDevice = synchronized(identityLock) {
+        RequestScope.ensureActive()
+        existing()?.let { return@synchronized it }
+        if (System.nanoTime() < (retryAfter[key()] ?: 0L))
+            throw IOException("播放连接恢复失败，请稍后重试")
         val fresh = registrar.register(http)
         RequestScope.ensureActive()
-        cached = fresh
         store()?.save(fresh.toJson())
-        return fresh
+        cached = fresh
+        fresh
     }
 
-    @Synchronized
-    fun invalidate() {
+    fun invalidate() = synchronized(identityLock) {
+        store()?.save(null)
         cached = null
-        runCatching { store()?.save(null) }
+    }
+
+    /** One foreground recovery, shared across repositories using the same persisted slot. */
+    fun refreshRejected(expected: PlayerDevice): PlayerDevice = synchronized(identityLock) {
+        RequestScope.ensureActive()
+        existing()?.let { if (it != expected) return@synchronized it }
+        invalidate()
+        try { obtain() } catch (error: IOException) {
+            retryAfter[key()] = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30)
+            throw IOException("播放连接恢复失败，请稍后重试", error)
+        }
+    }
+
+    fun rejectReplacement(expected: PlayerDevice) = synchronized(identityLock) {
+        if (existing() == expected) {
+            invalidate()
+            retryAfter[key()] = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30)
+        }
     }
 
     companion object {
+        private val identityLock = Any()
+        private val retryAfter = java.util.WeakHashMap<Any, Long>()
         // The shortplay video_model URL from fetchShortplayVideoModel.
         internal const val SHORTPLAY_URL = "https://api3-normal-sinfonlinea.fqnovel.com/novel/player/video_model/v1/?iid={install_id}&device_id={device_id}&aid=1967&app_name=novelapp&version_code=72132&version_name=7.2.1.32&device_platform=android&device_brand=Xiaomi&os_version=13&cdid={cdid}"
         // The phoenix multi_video_model URL from phoenix_player_url.
