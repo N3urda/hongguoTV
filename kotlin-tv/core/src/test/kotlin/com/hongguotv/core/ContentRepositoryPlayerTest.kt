@@ -42,6 +42,68 @@ class ContentRepositoryPlayerTest {
     private fun entry(height: Int, codec: String, url: String, width: Int = 0) = JSONObject()
         .put("vheight", height).put("vwidth", width).put("codec_type", codec).put("main_url", url)
 
+    @Test fun simultaneousRepositoriesShareOneRefresh() = recoveryCase("concurrent")
+    @Test fun expiredIdentityRefreshesOnceAndPersistsReplacement() = recoveryCase("success")
+    @Test fun rejectedReplacementStopsAndClearsPersistentIdentity() = recoveryCase("reject")
+    @Test fun failedRefreshDoesNotKeepRejectedIdentityOrLoop() = recoveryCase("registration-fails")
+    @Test fun genericForbiddenDoesNotRefreshIdentity() = recoveryCase("forbidden")
+    @Test fun speculativeRejectionDoesNotRegister() = recoveryCase("speculative")
+
+    private fun recoveryCase(mode: String) {
+        val store = FakeStore()
+        ContentRepository.deviceStore = store
+        var registrations = 0
+        val old = "7000000000001234567"
+        val fresh = "7000000000009999999"
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val did = request.url.queryParameter("device_id")
+            val compatible = did == old || did == fresh
+            var status = 200
+            val body = when {
+                request.url.encodedPath == "/service/2/device_register/" -> {
+                    registrations++
+                    if (mode == "registration-fails") "" else "{\"device_id\":\"$fresh\",\"install_id\":\"7000000000008888888\"}"
+                }
+                compatible -> {
+                    if (mode == "forbidden") { status = 403; "" }
+                    else if (did == old || mode == "reject") "{\"code\":110001}"
+                    else JSONObject().put("code", 0).put("data", JSONObject().put("video_model",
+                        JSONObject().put("video_list", list(entry(720, "h264", "https://example.com/recovered"))))).toString()
+                }
+                else -> { status = 403; "" }
+            }
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                .code(status).message("fixture").body(body.toResponseBody()).build()
+        }.build()
+        fun repo() = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        if (mode == "concurrent") {
+            val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
+            val gate = java.util.concurrent.CountDownLatch(1)
+            try {
+                val tasks = (1..2).map {
+                    executor.submit<PlayerDevice> {
+                        gate.await()
+                        PlayerDeviceSource(http).refreshRejected(PlayerDevice.fromJson(deviceJson)!!)
+                    }
+                }
+                gate.countDown()
+                tasks.forEach { assertEquals(fresh, it.get(5, java.util.concurrent.TimeUnit.SECONDS).deviceId) }
+                assertEquals(1, registrations)
+            } finally { executor.shutdownNow() }
+        } else if (mode == "success") {
+            assertEquals("https://example.com/recovered", repo().streamLadderWithCompatibility("123").select(720)!!.url)
+            assertEquals(fresh, PlayerDevice.fromJson(store.value!!)!!.deviceId)
+            assertEquals("https://example.com/recovered", repo().streamLadderWithCompatibility("456").select(720)!!.url)
+            assertEquals(1, registrations)
+        } else {
+            repeat(2) { assertThrows(IOException::class.java) { repo().streamLadderWithCompatibility("123", speculative = mode == "speculative") } }
+            val recovery = mode == "reject" || mode == "registration-fails"
+            assertEquals(if (recovery) 1 else 0, registrations)
+            if (recovery) assertNull(store.value) else assertEquals(deviceJson, store.value)
+        }
+    }
+
     @Test fun foregroundFallbackKeepsAllCodecAndDimensionChoicesForEmptyOrRejectedModelService() {
         for (status in listOf(200, 403)) {
             ContentRepository.deviceStore = FakeStore()

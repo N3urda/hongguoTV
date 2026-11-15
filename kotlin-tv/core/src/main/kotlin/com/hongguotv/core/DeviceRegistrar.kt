@@ -41,7 +41,7 @@ interface PlayerDeviceStore {
     fun save(value: String?)
 }
 
-internal class DeviceRejectedException(message: String) : java.io.IOException(message)
+internal class DeviceRejectedException(message: String, val identityExpired: Boolean = false) : java.io.IOException(message)
 
 internal class DeviceRegistrar(
     private val clock: () -> Long = System::currentTimeMillis,
