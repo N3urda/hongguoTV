@@ -15,7 +15,7 @@ REPOSITORY = 'N3urda/hongguoTV'
 PACKAGE = 'com.hongguotv.nativeapp'
 CERTIFICATE = '3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98'
 ROOT = Path(__file__).resolve().parents[1]
-NOTES = '补齐 Android 6+ ARM32、ARM64 安装包，保留通用包供现有更新器使用；Android 5 保留兼容通用包。Android 6+ 所有包均无 FFmpeg。沿用 0.16.3 的身份恢复修复，问题设备仍待真机回测。'
+NOTES = '修复播放接口返回空响应、旧版和新版均无法播放的问题。采用纯 Kotlin Android v5 签名，不依赖原生签名库；保留首页空响应自动恢复。Android TV 模拟器两轮实测通过 3 部剧、7 集，覆盖播放、拖动、暂停恢复、手动切集和自动下一集。提供 Android 5 兼容包、Android 6+ 通用包及 ARM32、ARM64 分包，沿用原正式签名，可覆盖安装。真机兼容性仍需用户回测。'
 
 
 def require(condition, message):
