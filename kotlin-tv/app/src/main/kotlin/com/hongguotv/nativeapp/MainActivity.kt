@@ -405,7 +405,7 @@ class MainActivity : Activity() {
     private var startupApplied = false
     private var settingsAccountStatus: TextView? = null
     private var settingsGroup = 0
-    private val settingsPositions = IntArray(4)
+    private val settingsPositions = IntArray(5)
     private var settingsSidebar = emptyList<View>()
     private var settingsRows = emptyList<View>()
     private var page = 1
@@ -884,6 +884,7 @@ class MainActivity : Activity() {
         leaveCollection()
         tabState[tab] = CatalogState(page, catalog, hasMore, ranking)
         tabFocus[tab] = catalogFocus
+        if (next == 6) { settingsGroup = 0; settingsPositions[0] = 0 }
         tab = next
         val saved = tabState[next]
         page = saved?.page ?: 1
@@ -891,7 +892,7 @@ class MainActivity : Activity() {
         hasMore = saved?.hasMore ?: false
         ranking = saved?.ranking
         catalogFocus = tabFocus[next].orEmpty()
-        showCatalog(load = ((next <= 2 || next == 7 && query.isNotBlank()) && catalog.isEmpty()), focusNav = keepNavigationFocus && next != 7)
+        showCatalog(load = ((next <= 2 || next == 7 && query.isNotBlank()) && catalog.isEmpty()), focusNav = keepNavigationFocus && next != 7 && next != 6)
         if (next == 7) tvSearchPanel?.entry()?.requestFocus()
         refreshAccountSection()
     }
@@ -1056,7 +1057,7 @@ class MainActivity : Activity() {
         invalidatePage()
         screen = "catalog"
         releaseCatalogViews()
-        val shell = catalogShell?.takeIf { it.parent === root } ?: CatalogShell(this, phone = { anchor -> phoneConsole.show(anchor) }, update = { anchor -> updater.show(anchor) }) { next -> switchTab(next) }.also {
+        val shell = catalogShell?.takeIf { it.parent === root } ?: CatalogShell(this, phone = { anchor -> phoneConsole.show(anchor) }) { next -> switchTab(next) }.also {
             root.removeAllViews()
             root.setBackgroundColor(TvStyle.background)
             root.addView(it, FrameLayout.LayoutParams(-1, -1))
@@ -2272,7 +2273,7 @@ class MainActivity : Activity() {
         }
         scroll.addView(content, android.widget.FrameLayout.LayoutParams(-1, -2))
         layout.addView(scroll, lp(0, -1).apply { weight = 1f })
-        val categories = listOf("播放", "外观与操作", "账户", "应用与更新")
+        val categories = listOf("检查更新", "播放", "外观与操作", "账户", "关于应用")
         val entries = mutableListOf<View>()
         fun setting(label: String, action: () -> Unit): TextView {
             val view = SettingsValueView(this).apply {
@@ -2350,6 +2351,16 @@ class MainActivity : Activity() {
             content.addView(View(this).apply { setBackgroundColor(TvStyle.outline) }, lp(-1, dp(1)).apply { topMargin = dp(12); bottomMargin = dp(10) })
             when (index) {
                 0 -> {
+                    content.addView(text("当前版本  ·  ${BuildConfig.VERSION_NAME}", 17f).apply {
+                        setPadding(0, dp(4), 0, dp(12))
+                    })
+                    content.addView(text("主动检查新版本，查看更新并下载安装。", 15f, muted).apply {
+                        setPadding(0, 0, 0, dp(16))
+                    })
+                    lateinit var updates: TextView
+                    updates = setting("检查更新") { updater.show(updates) }
+                }
+                1 -> {
                     lateinit var qualityButton: TextView
                     qualityButton = setting("默认清晰度  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton, false) }
                     lateinit var speed: TextView
@@ -2362,7 +2373,7 @@ class MainActivity : Activity() {
                     toggle("自动连播", library.autoNext) { library.autoNext = it }
                     toggle("跨季自动连播（需开启自动连播）", library.seasonAutoplay) { library.seasonAutoplay = it }
                 }
-                1 -> {
+                2 -> {
                     lateinit var theme: TextView
                     theme = setting("界面主题  ·  ${TvStyle.current.label}") {
                         tvTools.choose("界面主题", TvStyle.themes.map { it.label }, theme, { choice ->
@@ -2389,7 +2400,7 @@ class MainActivity : Activity() {
                         }, selected = library.clockMode)
                     }
                 }
-                2 -> {
+                3 -> {
                     content.addView(text(accountSettingsLabel(), 15f, muted).apply {
                         settingsAccountStatus = this
                         setPadding(0, 0, 0, dp(14))
@@ -2397,9 +2408,7 @@ class MainActivity : Activity() {
                     setting("登录与账户管理") { cloudAccount.show() }
                     setting("手机控制台 · 搜索 / 遥控 / 账户片单") { phoneConsole.show(null) }
                 }
-                3 -> {
-                    lateinit var updates: TextView
-                    updates = setting("版本与更新  ·  ${BuildConfig.VERSION_NAME}") { updater.show(updates) }
+                4 -> {
                     lateinit var about: TextView
                     about = setting("关于hongguoTV") {
                         tvTools.info("关于hongguoTV", "hongguoTV · 非官方客户端\n基于 N3urda/hongguoTV\n功能同步：tsukiyo-zero/hongguoTV\n版本：${BuildConfig.VERSION_NAME}\n项目：https://github.com/N3urda/hongguoTV\n\n本应用与红果官方无隶属关系。", about)

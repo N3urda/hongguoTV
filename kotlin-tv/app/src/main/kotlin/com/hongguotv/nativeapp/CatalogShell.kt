@@ -13,10 +13,10 @@ import android.widget.TextView
 internal interface HandlesHorizontalKeys
 
 /** Fixed navigation rail. Content geometry never changes when the rail gains focus. */
-internal class CatalogShell(context: Context, private val phone: (View) -> Unit = {}, private val update: (View) -> Unit = {}, private val navigate: (Int) -> Unit) : LinearLayout(context) {
+internal class CatalogShell(context: Context, private val phone: (View) -> Unit = {}, private val navigate: (Int) -> Unit) : LinearLayout(context) {
     val body = LinearLayout(context).apply { orientation = VERTICAL }
     private val rail = LinearLayout(context).apply { orientation = VERTICAL }
-    private val destinations = listOf(0 to "首页", 8 to "随心看", 1 to "找剧", 7 to "搜索", 2 to "排行榜", 3 to "我的", 10 to "检查更新", 9 to "扫码", 6 to "设置")
+    private val destinations = listOf(0 to "首页", 8 to "随心看", 1 to "找剧", 7 to "搜索", 2 to "排行榜", 3 to "我的", 9 to "扫码", 6 to "设置")
     private val buttons = mutableListOf<TextView>()
     private var remembered: View? = null
     private var selectedDestination = 0
@@ -41,7 +41,7 @@ internal class CatalogShell(context: Context, private val phone: (View) -> Unit 
             (drawable as? android.graphics.drawable.BitmapDrawable)?.isFilterBitmap = false
         }, LayoutParams(-1, dp(if (compact) 40 else 56)).apply { bottomMargin = dp(if (compact) 12 else 24) })
         destinations.forEach { (index, label) ->
-            if (index == 10) rail.addView(Space(context), LayoutParams(1, 0, 1f))
+            if (index == 9) rail.addView(Space(context), LayoutParams(1, 0, 1f))
             val button = TextView(context).apply {
                 id = View.generateViewId()
                 text = label
@@ -59,7 +59,7 @@ internal class CatalogShell(context: Context, private val phone: (View) -> Unit 
                     paintNavigation(this)
                 }
                 setOnFocusChangeListener { _, _ -> paint() }
-                setOnClickListener { if (index == 10) update(this) else if (index == 9) phone(this) else if (index != selectedDestination) navigate(index) else restoreContent() }
+                setOnClickListener { if (index == 9) phone(this) else if (index != selectedDestination) navigate(index) else restoreContent() }
                 paint()
             }
             buttons += button
