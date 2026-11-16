@@ -58,6 +58,7 @@ class MobilePlaybackTest {
             assertNull(request.header("Cookie"))
             assertEquals(MessageDigest.getInstance("MD5").digest(bytes).joinToString("") { "%02X".format(it) }, request.header("x-ss-stub"))
             val body = JSONObject(GZIPInputStream(bytes.inputStream()).reader().readText())
+            assertEquals("TV must not request the app-only bytevc2 capability tier", 1, body.getJSONObject("biz_param").getInt("device_level"))
             assertEquals("123", body.getJSONObject("mixed_video_id_map").getJSONArray("1004").getString(0))
         }, signing, 1000)
     }

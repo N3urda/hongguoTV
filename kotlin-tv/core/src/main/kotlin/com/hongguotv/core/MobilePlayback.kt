@@ -42,7 +42,9 @@ internal object MobilePlayback {
             "device_id" to device.getValue("device_id"), "_rticket" to now.toString())
         val url = "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1"
             .toHttpUrl().newBuilder().apply { query.forEach { (k,v) -> addQueryParameter(k,v) } }.build()
-        val payload = JSONObject("""{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]},"dr_scene":"player"}""")
+        // TV uses platform decoders, not the official app's bytevc2 decoder.
+        // Level 3 can return only bytevc2; level 1 negotiates compatible renditions.
+        val payload = JSONObject("""{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]},"dr_scene":"player"}""")
         val output = ByteArrayOutputStream()
         GZIPOutputStream(output).use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
         val bytes = output.toByteArray()

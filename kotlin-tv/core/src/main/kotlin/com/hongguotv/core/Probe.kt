@@ -7,6 +7,35 @@ import okhttp3.OkHttpClient
 fun main(args: Array<String>) {
     val repository = if (args.contains("--http1")) ContentRepository(http = OkHttpClient.Builder()
         .protocols(listOf(okhttp3.Protocol.HTTP_1_1)).build()) else ContentRepository()
+    if (args.contains("--issue61")) {
+        try {
+            for (keyword in listOf("无限白粥", "朕可是忠臣", "无限白粥")) {
+                val found = repository.searchAll(keyword)
+                println("keyword=$keyword; matches=${found.items.map { it.title to it.id }}")
+                for (series in found.items.take(1)) {
+                    val detail = repository.detail(series.id)
+                    println("series=${series.title}; episodes=${detail.episodes.size}")
+                    for (id in detail.episodes.take(2)) {
+                        try {
+                            val ladder = repository.streamLadderWithCompatibility(id)
+                            println("episode=$id; renditions=${ladder.renditions.size}")
+                            val stream = ladder.renditions.first().toStreamInfo()
+                            RemoteVideo(repository.http, stream).use { video ->
+                                video.prepare()
+                                println("episode=$id; bytes=${video.read(0, 65536).size}")
+                            }
+                        } catch (e: Exception) {
+                            println("episode=$id; error=${e.javaClass.simpleName}; message=${e.message?.replace(Regex("https?://[^\\s]+"), "[url]")}")
+                        }
+                    }
+                }
+            }
+        } finally {
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
     if (args.contains("--verify-tv-playback")) {
         var failures = 0
         var verified = 0
