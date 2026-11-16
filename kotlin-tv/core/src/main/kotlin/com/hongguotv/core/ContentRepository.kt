@@ -871,6 +871,13 @@ constructor(
         else info
     }
 
+    /** Prepare the anonymous session separately from the model request's short deadline. */
+    fun preparePlaybackSession() {
+        RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(15)) {
+            playbackSession.profile(http)
+        }
+    }
+
     /** Preserve main's registered player path when the newer model service is unavailable. */
     fun streamLadderWithCompatibility(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
         try {

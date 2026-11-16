@@ -14,7 +14,7 @@ class DesktopStateTest {
         }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
-            val state = DesktopState(scope, source, source)
+            val state = DesktopState(scope, source, source, initialDemo = true)
             state.search("old")
             state.search("new")
             second.complete(CatalogPage(listOf(Series("new", "新的结果")), false))
@@ -32,7 +32,7 @@ class DesktopStateTest {
         }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
-            val state = DesktopState(scope, source, source)
+            val state = DesktopState(scope, source, source, initialDemo = true)
             state.toggleFavorite(series)
             state.navigate(Section.FAVORITES)
             assertEquals(listOf(series), state.items)

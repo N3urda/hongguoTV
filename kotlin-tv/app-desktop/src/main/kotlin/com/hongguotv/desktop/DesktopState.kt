@@ -5,7 +5,7 @@ import androidx.compose.runtime.*
 import com.hongguotv.core.*
 import kotlinx.coroutines.*
 
-enum class Section(val label: String) { DISCOVER("发现短剧"), RANKING("排行榜"), FAVORITES("本次收藏") }
+enum class Section(val label: String) { DISCOVER("发现短剧"), RANKING("排行榜"), FAVORITES("我的收藏"), HISTORY("最近观看") }
 
 interface CatalogSource {
     suspend fun list(section: Section, query: String, page: Int): CatalogPage
@@ -13,7 +13,7 @@ interface CatalogSource {
 }
 
 class LiveCatalogSource : CatalogSource {
-    private val repository = ContentRepository()
+    val repository = ContentRepository(DesktopNetwork.client())
     override suspend fun list(section: Section, query: String, page: Int) = runInterruptible(Dispatchers.IO) {
         when {
             query.isNotBlank() -> repository.searchAll(query, page)
@@ -39,8 +39,8 @@ object DemoCatalogSource : CatalogSource {
 }
 
 /** All observable state is confined to the UI dispatcher; stale network results are discarded. */
-class DesktopState(private val scope: CoroutineScope, private val live: CatalogSource, private val demoSource: CatalogSource = DemoCatalogSource) {
-    var demo by mutableStateOf(true); private set
+class DesktopState(private val scope: CoroutineScope, private val live: CatalogSource, private val demoSource: CatalogSource = DemoCatalogSource, private val library: DesktopLibrary? = null, val playback: DesktopPlayback? = null, initialDemo: Boolean = false) {
+    var demo by mutableStateOf(initialDemo); private set
     var section by mutableStateOf(Section.DISCOVER); private set
     var query by mutableStateOf(""); private set
     var items by mutableStateOf<List<Series>>(emptyList()); private set
@@ -51,7 +51,7 @@ class DesktopState(private val scope: CoroutineScope, private val live: CatalogS
     var episode by mutableStateOf<Int?>(null); private set
     var page by mutableStateOf(1); private set
     var hasMore by mutableStateOf(false); private set
-    private var favorites by mutableStateOf<Map<String, Series>>(emptyMap())
+    private var favorites by mutableStateOf<Map<String, Series>>(library?.favorites?.values?.associateBy { "false:${it.id}" } ?: emptyMap())
     private var job: Job? = null
     private var revision = 0
     private fun key(series: Series) = "${demo}:${series.id}"
@@ -59,19 +59,28 @@ class DesktopState(private val scope: CoroutineScope, private val live: CatalogS
     fun toggleFavorite(series: Series) {
         val key = key(series)
         favorites = if (favorite(series)) favorites - key else favorites + (key to series)
+        if (!demo) library?.toggle(series)
         if (section == Section.FAVORITES && selected == null) reload()
     }
     fun navigate(next: Section) { section = next; query = ""; items = emptyList(); selected = null; detail = null; episode = null; reload() }
     fun search(value: String) { query = value.trim().take(80); items = emptyList(); selected = null; detail = null; episode = null; reload() }
-    fun mode(value: Boolean) { demo = value; navigate(Section.DISCOVER) }
+    fun mode(value: Boolean) { playback?.stop(); demo = value; navigate(Section.DISCOVER) }
     fun back() { selected = null; detail = null; episode = null; reload() }
-    fun selectEpisode(index: Int) { if (index in (detail?.episodes?.indices ?: IntRange.EMPTY)) episode = index }
+    fun selectEpisode(index: Int) {
+        val current = detail ?: return
+        if (index !in current.episodes.indices) return
+        episode = index
+        if (!demo) playback?.play(current, index)
+    }
+    fun resume() { if (!demo) detail?.let { playback?.resume(it) } }
+    fun storageWarning() = library?.warning
     fun reload(nextPage: Int = 1) {
         val source = if (demo) demoSource else live
         val currentSection = section
         val currentQuery = query
         launch {
             val result = if (currentSection == Section.FAVORITES) CatalogPage(favorites.filterKeys { it.startsWith("$demo:") }.values.filter { currentQuery.isBlank() || it.title.contains(currentQuery) }, false)
+                else if (currentSection == Section.HISTORY) CatalogPage(if (demo) emptyList() else library?.history?.values?.toList()?.asReversed()?.map { it.series }?.filter { currentQuery.isBlank() || it.title.contains(currentQuery) }.orEmpty(), false)
                 else source.list(currentSection, currentQuery, nextPage)
             val apply: () -> Unit = { items = result.items; page = nextPage; hasMore = result.hasMore }
             apply

@@ -1,49 +1,71 @@
-# 红果桌面外壳原型
+# 红果桌面试用版
 
-Windows/macOS 共用 Compose Multiplatform Desktop 界面，直接依赖现有 JVM core 和 KMP shared-core。当前原型只做浏览与交互，不包含视频播放器、账户登录、云同步或持久化收藏。
+Windows/macOS 共用 Compose Desktop 外壳、KMP shared-core 和现有 JVM core。默认加载真实内容，可浏览、搜索、收藏、查看历史、选集并播放。视频显示在独立的 mpv 原生窗口，外壳控制暂停、跳转、倍速、清晰度、自动连播和续播。
 
-## 运行
+## 直接使用
 
-需要 JDK 17，在仓库根目录运行：
+macOS 本机已生成并启动：`build/compose/binaries/main/app/HongguoDesktop.app`。
+
+1. 打开应用，选择剧集。
+2. 点击“播放 / 继续观看”，或点击某个集数。
+3. 原生视频窗口开始播放；桌面底部提供控制条。
+4. “停止播放”释放播放器和本机视频服务；退出应用会保存进度并停止播放。
+
+本机使用已安装的 `/opt/homebrew/bin/mpv`。其他机器需要安装 mpv，或通过环境变量 `HONGGUO_MPV` 指定可执行文件。Windows 自动检查 PATH 和 `C:/Program Files/mpv/mpv.exe`。本包没有捆绑 mpv，也不是已签名正式发布。
+
+默认直连内容服务，与 Android 端行为一致。需要系统代理的网络可用 `HONGGUO_USE_SYSTEM_PROXY=1` 启动；应用不修改操作系统代理。实测本机代理会显著延长部分内容接口的握手时间，超过原核心的请求时限。
+
+## 本地数据
+
+收藏和最近 200 条观看进度保存在：
+
+- macOS：`~/Library/Application Support/HongguoDesktop/library.json`
+- Windows：`%LOCALAPPDATA%/HongguoDesktop/library.json`
+- Linux：`~/.local/share/hongguo-desktop/library.json`
+
+可用 JVM 属性 `hongguo.dataDir` 指定独立目录。写入先生成临时文件再替换；损坏文件不自动覆盖，界面会提示。播放中每约 5 秒保存进度，停止/切集/退出时再保存。演示内容和真实收藏隔离，演示集数不能播放。
+
+## 开发与验证
+
+JDK 17，在仓库根目录：
 
 ```sh
 ./kotlin-tv/gradlew -p kotlin-tv :app-desktop:run
-```
-
-Windows 使用 `kotlin-tv\gradlew.bat -p kotlin-tv :app-desktop:run`。桌面构建不需要 Android SDK。
-
-```sh
 ./kotlin-tv/gradlew -p kotlin-tv :app-desktop:test :core:test
 ./kotlin-tv/gradlew -p kotlin-tv :app-desktop:createDistributable
 ```
 
-本地应用目录：`build/compose/binaries/main/app/`。macOS 生成 `HongguoDesktop.app`；Windows 需在 Windows 主机生成对应应用或 MSI，不能把本机 macOS 构建当成 Windows 验收。
+Windows 使用 `kotlin-tv\gradlew.bat`。桌面构建不需要 Android SDK；Windows 安装器需在 Windows 主机生成。macOS 打包使用 Temurin JDK 17；未关闭 Compose 对不兼容 Homebrew JDK 的检查。
 
-打包需使用 Temurin 等受支持 JDK；Compose 会拒绝部分 Homebrew JDK 分发。本次使用机器已有 Temurin JDK 17 成功打包，未关闭检查。安装器版本 1.0.0 仅满足平台打包格式，应用本身仍是未签名原型，不是正式发布。
+显式在线验收（会访问上游并打开播放窗口，不在 CI 自动执行）：
 
-## 可以体验
+```sh
+./kotlin-tv/gradlew -p kotlin-tv :app-desktop:run --args=--smoke
+./kotlin-tv/gradlew -p kotlin-tv :app-desktop:run --args=--smoke-controller
+```
 
-- 固定侧栏、顶部搜索、适应窗口宽度的内容网格。
-- 发现、排行榜、会话收藏、剧集详情和选集。
-- 默认演示模式：虚构剧集和排版海报，所有页面明确标识。
-- 取消“演示内容”可使用 core 的真实分类、排行、搜索和详情接口；失败显示重试，不以演示数据替代。
-- 收藏仅保留在当前会话，演示与在线数据分开。
-- 实现 Tab/Shift+Tab 导航、Enter 搜索、Ctrl/Cmd+K 搜索焦点、Esc 返回；实际键盘验收状态见下文。
-- 点击集数显示播放区域占位，明确提示尚不支持视频播放。
+第一项验证真实片源、解码、暂停、seek 和倍速；第二项验证控制器、自动切到下一集、本地进度与续播。报告写在 `app-desktop/build/reports/`，不含片源地址或密钥。
 
-## 验证记录（2026-11-16）
+## 2026-11-16 验收结果
 
-- 桌面状态测试 3 项通过：迟到响应隔离、收藏模式隔离与选集边界、在线失败不回退演示。
-- 公共核心 10 项、JVM core 381 项回归通过。
-- macOS 原生应用包生成并实际启动，截图检查首页布局；鼠标验证排行切换、详情、收藏和收藏列表。
-- 关闭演示模式后真实分类接口返回了剧集和分页信息。截图时封面请求未成功，正确显示封面占位；图片加载质量仍需进一步验证。
-- 当前计算机自动化向 Java 窗口发送键盘输入未产生效果，未将键盘快捷键或真实搜索流程标为实机验收通过。
-- Windows/macOS CI 已增加桌面 test/assemble，但远程 CI 未运行；Windows 安装和键鼠实机体验尚未验收。
+- 7 项桌面测试、382 项 JVM core 测试通过；10 项公共核心测试随 core 验证执行通过。Android Kotlin 编译通过。
+- 本机真实剧集解码成功，取得 1080×1920 / 720×1280 视频参数和音轨，进度持续推进。
+- 暂停、跳转至 15 秒、1.25 倍速通过；控制器自动进入第二集，并从持久化进度恢复播放。
+- 真实封面成功解码；macOS 应用包重新生成并实际启动。
+- 最终从应用界面点击真实剧集“播放 / 继续观看”，进度推进至 27 秒，再用界面按钮暂停，显示“继续”。
+- Windows/macOS CI 包含桌面测试和 assemble，但未推送执行；Windows 安装、命名管道 IPC 及实机播放仍待验收。
+- Ctrl/Cmd+K、Enter、Esc 和空格快捷键已实现；此前自动化键盘注入没有生效，未将键盘实机体验标为完整验收。
 
-## 代码边界
+账户登录、云端同步、内嵌视频画面、自动更新和长时间压力测试尚未完成。本次交付是可真实观看的桌面试用版，不宣称完整四端发布。
 
-`DesktopState` 负责页面状态、请求代次与会话收藏；`CatalogSource` 隔离演示/真实数据；`DesktopShell` 负责桌面布局；`Main` 负责窗口生命周期。网络调用在 IO 线程执行，旧请求即使迟到也不能覆盖新页面。
+## 模块边界
 
-后续优先级：键盘实机验收与无障碍标签、图片缓存和加载、桌面播放器原型、收藏/进度持久化，再推进签名与发布。现有 Android TV/手机界面未替换。
+- `DesktopState`：浏览/搜索/收藏/历史页面状态及过期请求隔离。
+- `DesktopPlayback`：播放生命周期、连播、控制命令与进度保存。
+- `PlaybackBridge`：只绑定 127.0.0.1 的每会话 Range 服务，随机访问路径；复用 `RemoteVideo` 读取和处理视频数据。
+- `MpvPlayer`：独立进程和 JSON IPC；macOS 使用 Unix socket，Windows 使用命名管道。
+- `DesktopLibrary`：本地数据读写；`DesktopArtwork`：有界封面缓存；`DesktopNetwork`：桌面传输策略。
 
-工具链选择参考 [Compose 1.8.2 官方说明](https://kotlinlang.org/docs/multiplatform/whats-new-compose-180.html)，保持与当前 Kotlin 2.1.20 配套。
+首次匿名播放会话准备使用独立的有界时间预算，不再挤占片源模型请求的短时限。平台播放器和本地 HTTP 服务没有进入公共业务模块。
+
+参考：[mpv JSON IPC 官方手册](https://mpv.io/manual/stable/#json-ipc)、[Compose 1.8.2 官方说明](https://kotlinlang.org/docs/multiplatform/whats-new-compose-180.html)。

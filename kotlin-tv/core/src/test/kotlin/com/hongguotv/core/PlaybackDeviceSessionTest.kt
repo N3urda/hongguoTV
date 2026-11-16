@@ -13,6 +13,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PlaybackDeviceSessionTest {
+    @Test
+    fun preparingPlaybackReusesOneAnonymousRegistration() {
+        var count = 0
+        val session = PlaybackDeviceSession {
+            count++
+            DeviceRegister.Registered("333", "444")
+        }
+        val repository = ContentRepository(playbackSession = session)
+        repository.preparePlaybackSession()
+        repository.preparePlaybackSession()
+        assertEquals(1, count)
+    }
+
     private val model =
         """{"data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
 
