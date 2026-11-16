@@ -8,6 +8,13 @@ import org.junit.Test
 class PlaybackRecoveryUiTest {
     private val failure = "播放信息接口返回空响应"
 
+    @Test fun diagnosticDialogRetainsPrimaryAfterCompatibilityDetails() {
+        val details = "stage=compatibility-model CS:other=200/0B/h1 CM:b=200/0B/h1 · compat-reg=ok · " +
+            "stage=compatibility-model CS:other=200/0B/h1 CM:b=200/0B/h1 · S:b=200/0B/h2 P:b=200/0B/h2 rotated=1 reg=ok"
+        val line = diagnosticLine("F3", "6.0", "0.16.4", failure, 3, 8, details)
+        assertTrue(line.endsWith(details))
+    }
+
     @Test
     fun `fast phase keeps the countdown wording with dynamic totals`() {
         val text =
@@ -78,8 +85,8 @@ class PlaybackRecoveryUiTest {
     fun `diagnostic line caps oversized detail segments`() {
         // detail 的脱敏由 core 构造处保证（见 PlayRetryPlanTest）；app 层契约是限长展示。
         val line =
-            diagnosticLine("Box", "9", "0.1.12", failure, 2, 8, "x".repeat(200))
-        assertTrue(line.endsWith("x".repeat(180)))
-        assertTrue(line.length < 280)
+            diagnosticLine("Box", "9", "0.1.12", failure, 2, 8, "x".repeat(700))
+        assertTrue(line.endsWith("x".repeat(640)))
+        assertTrue(line.length < 740)
     }
 }

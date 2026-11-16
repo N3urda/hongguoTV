@@ -761,7 +761,7 @@ internal class HomeFeedScreen(
                             exhaustedCursors += requestedCursor
                             status.text = "推荐接口未返回新作品 · 最近已去重 ${error.rememberedCount} 部\n可稍后换一批，或切换漫剧、真人剧继续发现"
                         } else if (recoverTrial && trialRecoveryAttempts > 0) {
-                            diagnosticDetail(error)?.take(180)?.let {
+                            diagnosticDetail(error)?.take(640)?.let {
                                 android.util.Log.i("HongguoTV", "Home playback recovery exhausted: $it")
                             }
                             status.text = "播放恢复未成功 · 可按确定重试，或按 ← → 换一部"

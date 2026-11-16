@@ -60,9 +60,21 @@ internal fun playbackFailureSummary(problem: Throwable): String {
  * 错误页诊断行的结构化 detail（issue #38 后续）：从异常链提取紧凑键值对，让用户截图自带可定位的
  * 错误类别与关键参数。只含类别代号、状态码与既有脱敏元数据，不含 Cookie、地址与凭据。
  */
+private fun diagnosticProblems(problem: Throwable): Sequence<Throwable> = sequence {
+    val pending = java.util.ArrayDeque<Throwable>()
+    val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+    pending.add(problem)
+    while (pending.isNotEmpty() && seen.size < 16) {
+        val next = pending.removeFirst()
+        if (!seen.add(next)) continue
+        yield(next)
+        next.cause?.let { pending.add(it) }
+        next.suppressed.take(8).forEach { pending.add(it) }
+    }
+}
+
 internal fun diagnosticDetail(problem: Throwable): String? =
-    generateSequence(problem) { it.cause }
-        .take(8)
+    diagnosticProblems(problem)
         .mapNotNull { cause ->
             when {
                 cause is java.net.SocketTimeoutException -> when (cause.message) {
@@ -72,6 +84,7 @@ internal fun diagnosticDetail(problem: Throwable): String? =
                 }
                 cause is java.io.InterruptedIOException &&
                     cause.message in setOf("timeout", "deadline reached") -> "timeout=deadline"
+                cause is com.hongguotv.core.PlaybackDiagnosticException -> cause.detail
                 cause is EmptyPlaybackResponseException -> cause.detail?.takeIf { it.isNotBlank() }
                 cause is ContentHttpException -> "http=${cause.statusCode}"
                 cause is androidx.media3.common.PlaybackException ->
@@ -81,7 +94,7 @@ internal fun diagnosticDetail(problem: Throwable): String? =
         }
         .distinct()
         .joinToString(" · ")
-        .take(180)
+        .take(640)
         .ifEmpty { null }
 
 internal class OpenedStream(
