@@ -145,6 +145,8 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
             }
         }
     }
+    fun fullscreen() = command("cycle", "fullscreen")
+    fun mute() = command("cycle", "mute")
     fun togglePause() = command("cycle", "pause")
     fun seek(seconds: Double) = command("seek", seconds.coerceAtLeast(0.0), "absolute")
     fun setSpeed(value: Float) { speed = PlaybackSpeed.normalize(value).toDouble(); library.preference("speed", speed); command("set_property", "speed", speed) }

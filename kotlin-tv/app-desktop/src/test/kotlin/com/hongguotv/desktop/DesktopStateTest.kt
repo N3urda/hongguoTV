@@ -5,6 +5,66 @@ import kotlinx.coroutines.*
 import kotlin.test.*
 
 class DesktopStateTest {
+    @Test fun producerPagesKeepTheirSourceAfterOpeningDetails() = runBlocking {
+        val owner = Producer("123", "制作方")
+        val source = object : CatalogSource {
+            override suspend fun list(section: Section, query: String, page: Int): CatalogPage = error("Must not load discovery")
+            override suspend fun producerWorks(producer: Producer, page: Int): CatalogPage { assertEquals(owner, producer); return CatalogPage(listOf(Series("$page", "作品$page")), page < 3) }
+            override suspend fun detail(series: Series) = Detail(series, listOf("episode"))
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val state = DesktopState(scope, source)
+            state.browseProducer(owner); assertEquals("1", state.items.single().id)
+            state.reload(2); state.open(state.items.single()); state.back()
+            assertEquals(owner, state.browsingProducer); assertEquals(2, state.page)
+            state.reload(3); assertEquals("3", state.items.single().id); assertFalse(state.hasMore)
+        } finally { scope.cancel() }
+    }
+
+    @Test fun detailBackKeepsPageAndDoesNotReloadFeed() = runBlocking {
+        var calls = 0
+        val source = object : CatalogSource {
+            override suspend fun list(section: Section, query: String, page: Int): CatalogPage { calls++; return CatalogPage(listOf(Series("$page", "第 $page 页")), true) }
+            override suspend fun detail(series: Series) = Detail(series, listOf("episode"))
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val state = DesktopState(scope, source)
+            state.reload(3); val rows = state.items
+            state.open(rows.single()); state.back()
+            assertEquals(3, state.page); assertEquals(rows, state.items); assertEquals(1, calls)
+            assertNull(state.selected); assertFalse(state.loading)
+        } finally { scope.cancel() }
+    }
+    @Test fun searchFromLibraryUsesGlobalSearch() = runBlocking {
+        var searched = ""
+        val source = object : CatalogSource {
+            override suspend fun list(section: Section, query: String, page: Int): CatalogPage { searched = query; return CatalogPage(listOf(Series("match", query)), false) }
+            override suspend fun detail(series: Series) = Detail(series, emptyList())
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val state = DesktopState(scope, source)
+            state.navigate(Section.FAVORITES); assertTrue(state.items.isEmpty())
+            state.search("新剧"); assertEquals("新剧", searched); assertEquals("match", state.items.single().id)
+        } finally { scope.cancel() }
+    }
+    @Test fun backDiscardsLateDetailResponse() = runBlocking {
+        val response = CompletableDeferred<Detail>()
+        val series = Series("1", "剧集")
+        val source = object : CatalogSource {
+            override suspend fun list(section: Section, query: String, page: Int) = CatalogPage(listOf(series), false)
+            override suspend fun detail(series: Series) = withContext(NonCancellable) { response.await() }
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val state = DesktopState(scope, source)
+            state.reload(); state.open(series); state.back(); response.complete(Detail(series, listOf("episode")))
+            assertNull(state.detail); assertNull(state.selected); assertFalse(state.loading)
+        } finally { scope.cancel() }
+    }
+
     @Test fun lateResponseCannotOverwriteNewSearch() = runBlocking {
         val first = CompletableDeferred<CatalogPage>()
         val second = CompletableDeferred<CatalogPage>()

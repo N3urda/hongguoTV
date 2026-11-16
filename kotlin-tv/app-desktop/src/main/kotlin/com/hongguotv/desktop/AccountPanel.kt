@@ -2,6 +2,8 @@
 package com.hongguotv.desktop
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,7 +20,7 @@ fun AccountPanel(account: DesktopAccount, close: () -> Unit) {
     var code by remember { mutableStateOf("") }
     Dialog(onDismissRequest = { account.cancelLogin(); close() }) {
         Surface(shape = MaterialTheme.shapes.large) {
-            Column(Modifier.width(480.dp).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.width(480.dp).heightIn(max = 620.dp).verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(account.profile?.let { "你好，${it.nickname}" } ?: "登录红果账号", style = MaterialTheme.typography.headlineSmall)
                 Text(account.status)
                 if (account.profile == null) {

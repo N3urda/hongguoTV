@@ -54,6 +54,7 @@ class DesktopAccount(private val scope: CoroutineScope, private val client: Acco
     var favoritesLoaded by mutableStateOf(false); private set
     private var lastUpload = 0L
     private var uploadJob: Job? = null
+    private var pendingUpload: Pair<BackupProgress, Int>? = null
     var changed: () -> Unit = {}
     var rememberLogin by mutableStateOf(false)
     fun restore() { action { ticket ->
@@ -135,7 +136,7 @@ class DesktopAccount(private val scope: CoroutineScope, private val client: Acco
         generation++; job?.cancel(); web?.cancel(); web = null; qr = null; busy = false; codeSent = false; phone = PhoneLogin(http, gate)
     }
     fun logout(clearStored: Boolean = true) {
-        generation++; job?.cancel(); uploadJob?.cancel(); web?.cancel(); web = null
+        generation++; pendingUpload = null; job?.cancel(); uploadJob?.cancel(); web?.cancel(); web = null
         credentials = null; feed = null; profile = null; qr = null; busy = false; codeSent = false
         phone = PhoneLogin(http, gate); favorites = emptyList(); history = emptyList(); reservations = emptyList(); favoritesLoaded = false; lastUpload = 0
         status = "已退出登录，本机收藏和观看记录仍保留"; changed()
@@ -189,13 +190,19 @@ class DesktopAccount(private val scope: CoroutineScope, private val client: Acco
     fun upload(progress: BackupProgress, count: Int, force: Boolean = false) {
         val account = credentials ?: return
         val now = System.nanoTime() / 1_000_000
-        if (uploadJob?.isActive == true || (!force && now - lastUpload < 30_000)) return
+        if (uploadJob?.isActive == true) { pendingUpload = progress to count; return }
+        if (!force && now - lastUpload < 30_000) return
         val ticket = generation; lastUpload = now
+        pendingUpload = progress to count
         uploadJob = scope.launch {
-            try {
-                io { client.upload(account, CloudProgress(progress.series, progress.episodeId, progress.episodeIndex, progress.position, progress.duration, progress.updatedAt, count), count) }
-            } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { if (ticket == generation) status = "本机进度已保存，云端进度同步失败；播放期间会继续同步" }
+            while (ticket == generation) {
+                val (next, episodes) = pendingUpload ?: break
+                pendingUpload = null
+                try {
+                    io { client.upload(account, CloudProgress(next.series, next.episodeId, next.episodeIndex, next.position, next.duration, next.updatedAt, episodes), episodes) }
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { if (ticket == generation) status = "本机进度已保存，云端进度同步失败；播放期间会继续同步" }
+            }
         }
     }
 }

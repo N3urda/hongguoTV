@@ -32,6 +32,30 @@ class DesktopAccountTest {
     }
     private suspend fun awaitIdle(account: DesktopAccount) { withTimeout(5000) { while (account.busy) delay(10) } }
 
+    @Test fun progressWhileUploadingIsCoalescedAndFinalPositionIsSent() = runBlocking {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val uploaded = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val gateway = object : Gateway() {
+                override fun upload(account: AccountCredentials, progress: CloudProgress, count: Int) {
+                    uploaded.add(progress.position)
+                    if (uploaded.size == 1) { entered.countDown(); release.await(5, TimeUnit.SECONDS) }
+                }
+            }
+            val account = DesktopAccount(scope, gateway, MemoryStore())
+            account.accept(AccountCredentials("test-only"))
+            val progress = BackupProgress(series, "episode", 0, 1000, 30000, false, 1)
+            account.upload(progress, 10, true)
+            withContext(Dispatchers.IO) { assertTrue(entered.await(5, TimeUnit.SECONDS)) }
+            account.upload(progress.copy(position = 2000), 10, true)
+            account.upload(progress.copy(position = 3000), 10, true)
+            release.countDown()
+            withTimeout(5000) { while (uploaded.size < 2) delay(10) }
+            assertEquals(listOf(1000L, 3000L), uploaded.toList())
+        } finally { release.countDown(); scope.cancel() }
+    }
+
     @Test fun ambiguousFavoriteWriteIsReadBackWithoutResubmitting() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {

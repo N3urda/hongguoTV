@@ -22,7 +22,13 @@ private fun launchDesktop() = application {
         val account = remember { DesktopAccount(scope) }
         val playback = remember { DesktopPlayback(scope, source.repository, library) }
         val state = remember { DesktopState(scope, source, library = library, playback = playback, account = account) }
-        account.changed = { if (state.selected == null && state.section in listOf(Section.FAVORITES, Section.HISTORY, Section.RESERVATIONS, Section.RECOMMENDED)) state.reload() }
+        var lastAccount by remember { mutableStateOf<String?>(null) }
+        account.changed = {
+            val switched = lastAccount != account.profile?.id
+            lastAccount = account.profile?.id
+            if (state.selected == null && state.query.isBlank() && state.browsingProducer == null &&
+                (state.section in listOf(Section.FAVORITES, Section.HISTORY, Section.RESERVATIONS) || (switched && state.section == Section.RECOMMENDED))) state.reload()
+        }
         playback.progressSaved = { progress, count, force -> account.upload(progress, count, force) }
         DisposableEffect(Unit) { onDispose { playback.close(); account.logout(clearStored = false) } }
         LaunchedEffect(Unit) { state.reload(); account.restore() }

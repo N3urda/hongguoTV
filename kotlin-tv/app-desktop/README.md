@@ -73,3 +73,9 @@ Windows 使用 `kotlin-tv\gradlew.bat`。桌面构建不需要 Android SDK；Win
 首次匿名播放会话准备使用独立的有界时间预算，不再挤占片源模型请求的短时限。平台播放器和本地 HTTP 服务没有进入公共业务模块。
 
 参考：[mpv JSON IPC 官方手册](https://mpv.io/manual/stable/#json-ipc)、[Compose 1.8.2 官方说明](https://kotlinlang.org/docs/multiplatform/whats-new-compose-180.html)。
+
+## 导航与资料库
+
+详情返回保留当前列表和页码；制作方作品可以翻页。选集按 40 集分组，也可输入集数播放。侧栏可切换深色/浅色外观，并提供本机“稍后再看”。
+
+“本机资料备份”支持导入电视端备份中的收藏、历史和稍后看，以及导出相同格式；合并保留较新的本机进度。登录态和云端收藏不会随备份写入，播放设置不被导入覆盖。最新验证为 428 项自动测试通过，真实播放控制器回归通过。

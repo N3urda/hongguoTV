@@ -5,10 +5,11 @@ import androidx.compose.runtime.*
 import com.hongguotv.core.*
 import kotlinx.coroutines.*
 
-enum class Section(val label: String) { DISCOVER("发现短剧"), RANKING("排行榜"), FAVORITES("我的收藏"), HISTORY("最近观看"), RESERVATIONS("我的预约"), RECOMMENDED("为你推荐") }
+enum class Section(val label: String) { DISCOVER("发现短剧"), RANKING("排行榜"), FAVORITES("我的收藏"), HISTORY("最近观看"), RESERVATIONS("我的预约"), RECOMMENDED("为你推荐"), LATER("稍后再看") }
 
 interface CatalogSource {
     suspend fun list(section: Section, query: String, page: Int): CatalogPage
+    suspend fun producerWorks(producer: Producer, page: Int): CatalogPage = CatalogPage(emptyList(), false)
     suspend fun detail(series: Series): Detail
 }
 
@@ -24,6 +25,7 @@ class LiveCatalogSource : CatalogSource {
             else -> repository.discover(category, topic, page)
         }
     }
+    override suspend fun producerWorks(producer: Producer, page: Int) = runInterruptible(Dispatchers.IO) { repository.producerWorks(producer, page).let { CatalogPage(it.items, it.hasMore) } }
     override suspend fun detail(series: Series) = runInterruptible(Dispatchers.IO) { repository.detail(series.id) }
 }
 
@@ -43,6 +45,19 @@ object DemoCatalogSource : CatalogSource {
 
 /** All observable state is confined to the UI dispatcher; stale network results are discarded. */
 class DesktopState(private val scope: CoroutineScope, private val live: CatalogSource, private val demoSource: CatalogSource = DemoCatalogSource, private val library: DesktopLibrary? = null, val playback: DesktopPlayback? = null, initialDemo: Boolean = false, val account: DesktopAccount? = null) {
+    var libraryMessage by mutableStateOf(""); private set
+    private var laterVersion by mutableStateOf(0)
+    fun later(series: Series): Boolean { laterVersion; return library?.later?.containsKey(series.id) == true }
+    fun toggleLater(series: Series) { if (!demo) { library?.toggleLater(series); laterVersion++; if (section == Section.LATER && selected == null) reload() } }
+    fun exportBackup() = library?.exportBackup() ?: error("本机资料库不可用")
+    fun importBackup(raw: String) {
+        library?.importBackup(raw)
+        favorites = library?.favorites?.values?.associateBy { "false:${it.id}" }.orEmpty()
+        laterVersion++; libraryMessage = "已合并本机收藏、历史和稍后看；更新的本机进度优先保留"
+        if (selected == null) reload()
+    }
+    var dark by mutableStateOf(library?.preference("dark", "false").toBoolean()); private set
+    fun changeTheme(value: Boolean) { dark = value; library?.preference("dark", value) }
     var category by mutableStateOf(DramaCategory.REAL); private set
     var topics by mutableStateOf<List<DramaTopic>>(emptyList()); private set
     var topic by mutableStateOf(""); private set
@@ -65,33 +80,47 @@ class DesktopState(private val scope: CoroutineScope, private val live: CatalogS
     var comments by mutableStateOf<List<Pair<String, String>>>(emptyList()); private set
     var commentStatus by mutableStateOf(""); private set
     private var commentCursor = ""
+    private var commentEpisode = ""
     private var commentJob: Job? = null
     var commentsMore by mutableStateOf(false); private set
     fun chooseCategory(value: DramaCategory) { category = value; topic = ""; topics = emptyList(); (live as? LiveCatalogSource)?.let { it.category = value; it.topic = "" }; reload() }
     fun chooseBoard(value: RankBoard) { board = value; (live as? LiveCatalogSource)?.board = value; reload() }
-    fun producerWorks() {
-        val owner = producer ?: return
-        val source = live as? LiveCatalogSource ?: return
-        launch {
-            val result = runInterruptible(Dispatchers.IO) { source.repository.producerWorks(owner) }
-            val apply: () -> Unit = { selected = null; detail = null; items = result.items; page = 1; hasMore = false }
-            apply
-        }
+    var browsingProducer by mutableStateOf<Producer?>(null); private set
+    val heading: String get() = browsingProducer?.let { "${it.name}的作品" } ?: if (query.isNotBlank()) "“$query”的搜索结果" else section.label
+    fun producerWorks() { producer?.let(::browseProducer) }
+    fun browseProducer(owner: Producer) {
+        browsingProducer = owner
+        selected = null; detail = null; query = ""; reload()
+    }
+    fun progressLabel(series: Series): String {
+        val local = library?.history?.get(series.id)
+        val cloud = account?.history?.firstOrNull { it.series.id == series.id }
+        return if (cloud != null && cloud.updatedAt > (local?.updatedAt ?: 0)) "看到第 ${cloud.episodeIndex + 1} 集 · ${progressTime(cloud.position)}"
+        else local?.let { if (it.completed) "第 ${it.episodeIndex + 1} 集已看完" else "看到第 ${it.episodeIndex + 1} 集 · ${progressTime(it.position)}" }.orEmpty()
+    }
+    private fun progressTime(milliseconds: Long): String = "${milliseconds / 60000}:${(milliseconds / 1000 % 60).toString().padStart(2, '0')}"
+    fun reservation(series: Series) = account?.reservations?.firstOrNull { it.series.id == series.id }
+    fun refreshLibrary() {
+        if (!demo && account?.profile != null && section in listOf(Section.FAVORITES, Section.HISTORY, Section.RESERVATIONS)) account.refresh()
+        reload(page)
     }
     fun readComments(more: Boolean = false) {
         val current = detail ?: return
         if (demo || current.episodes.isEmpty()) return
-        val part = episode ?: 0
+        val part = playback?.takeIf { it.active?.series?.id == current.series.id }?.index ?: episode ?: 0
+        val append = more && commentEpisode == current.episodes[part]
+        if (!append) { comments = emptyList(); commentsMore = false; commentCursor = "" }
         val ticket = revision
         commentJob?.cancel()
         commentJob = scope.launch {
             commentStatus = "正在读取第 ${part + 1} 集评论…"
             try {
-                val result = runInterruptible(Dispatchers.IO) { AppCommentPages().read(current.series.id, current.episodes[part], if (more) commentCursor else "") }
-                if (ticket != revision || detail != current || (episode ?: 0) != part) return@launch
+                val result = runInterruptible(Dispatchers.IO) { AppCommentPages().read(current.series.id, current.episodes[part], if (append) commentCursor else "") }
+                if (ticket != revision || detail != current || (playback?.takeIf { it.active?.series?.id == current.series.id }?.index ?: episode ?: 0) != part) return@launch
                 val rows = result.getJSONArray("items")
                 val next = (0 until rows.length()).map { rows.getJSONObject(it).let { row -> row.optString("author") to row.optString("content") } }
-                comments = if (more) comments + next else next
+                comments = if (append) comments + next else next
+                commentEpisode = current.episodes[part]
                 commentCursor = result.optString("nextCursor"); commentsMore = result.optBoolean("hasMore")
                 commentStatus = "第 ${part + 1} 集评论 · ${result.optLong("total")} 条"
             } catch (e: CancellationException) { throw e }
@@ -121,14 +150,15 @@ class DesktopState(private val scope: CoroutineScope, private val live: CatalogS
         if (!demo) library?.toggle(series)
         if (section == Section.FAVORITES && selected == null) reload()
     }
-    fun navigate(next: Section) { section = next; query = ""; items = emptyList(); selected = null; detail = null; episode = null; reload() }
-    fun search(value: String) { suggestionJob?.cancel(); suggestions = emptyList(); query = value.trim().take(80); items = emptyList(); selected = null; detail = null; episode = null; reload() }
+    fun navigate(next: Section) { browsingProducer = null; suggestionJob?.cancel(); suggestions = emptyList(); section = next; query = ""; items = emptyList(); selected = null; detail = null; episode = null; reload() }
+    fun search(value: String) { suggestionJob?.cancel(); suggestions = emptyList(); browsingProducer = null; query = value.trim().take(80); items = emptyList(); selected = null; detail = null; episode = null; reload() }
     fun mode(value: Boolean) { playback?.stop(); demo = value; navigate(Section.DISCOVER) }
-    fun back() { selected = null; detail = null; episode = null; reload() }
+    fun back() { job?.cancel(); revision++; loading = false; error = null; selected = null; detail = null; episode = null; commentJob?.cancel() }
     fun selectEpisode(index: Int) {
         val current = detail ?: return
         if (index !in current.episodes.indices) return
         episode = index
+        commentJob?.cancel(); comments = emptyList(); commentsMore = false; commentCursor = ""; commentStatus = ""
         if (!demo) playback?.play(current, index)
     }
     fun resume() { if (!demo) detail?.let { current ->
@@ -144,11 +174,15 @@ class DesktopState(private val scope: CoroutineScope, private val live: CatalogS
         val source = if (demo) demoSource else live
         val currentSection = section
         val currentQuery = query
+        val owner = browsingProducer
         launch {
-            val result = if (!demo && currentSection == Section.RECOMMENDED && account != null) account.recommendations(nextPage)
+            val result = if (currentQuery.isNotBlank()) source.list(Section.DISCOVER, currentQuery, nextPage)
+                else if (owner != null) source.producerWorks(owner, nextPage)
+                else if (!demo && currentSection == Section.RECOMMENDED && account != null) account.recommendations(nextPage)
                 else if (!demo && account?.profile != null && currentSection == Section.FAVORITES) CatalogPage(account.favorites.map { it.series }, false)
                 else if (!demo && currentSection == Section.RESERVATIONS) CatalogPage(account?.reservations.orEmpty().map { it.series }, false)
                 else if (!demo && account?.profile != null && currentSection == Section.HISTORY) CatalogPage((account.history.map { it.series to it.updatedAt } + library?.history?.values.orEmpty().map { it.series to it.updatedAt }).sortedByDescending { it.second }.distinctBy { it.first.id }.map { it.first }, false)
+                else if (currentSection == Section.LATER) CatalogPage(if (demo) emptyList() else library?.later?.values?.toList().orEmpty(), false)
                 else if (currentSection == Section.FAVORITES) CatalogPage(favorites.filterKeys { it.startsWith("$demo:") }.values.filter { currentQuery.isBlank() || it.title.contains(currentQuery) }, false)
                 else if (currentSection == Section.HISTORY) CatalogPage(if (demo) emptyList() else library?.history?.values?.toList()?.asReversed()?.map { it.series }?.filter { currentQuery.isBlank() || it.title.contains(currentQuery) }.orEmpty(), false)
                 else source.list(currentSection, currentQuery, nextPage)
@@ -160,7 +194,8 @@ class DesktopState(private val scope: CoroutineScope, private val live: CatalogS
         selected = series; detail = null; episode = null; related = emptyList(); producer = null; comments = emptyList(); commentStatus = ""; commentsMore = false; commentJob?.cancel()
         val source = if (demo) demoSource else live
         launch {
-            val result = source.detail(series)
+            val pending = if (demo) null else reservation(series)?.takeIf { !it.online }
+            val result = if (pending != null) Detail(series.copy(description = pending.publishText.ifBlank { "尚未上线，上线后可在我的预约中观看。" }), emptyList()) else source.detail(series)
             val sourceLive = if (demo) null else live as? LiveCatalogSource
             val ticket = revision
             val apply: () -> Unit = {

@@ -22,45 +22,51 @@ import androidx.compose.ui.unit.*
 import com.hongguotv.core.*
 import kotlinx.coroutines.*
 
-private val Ink = Color(0xFF17243B)
-private val Muted = Color(0xFF66748A)
-private val Paper = Color(0xFFF3F5F8)
-private val Brand = Color(0xFFC83D50)
+private val Ink: Color @Composable get() = MaterialTheme.colorScheme.onSurface
+private val Muted: Color @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+private val Paper: Color @Composable get() = MaterialTheme.colorScheme.background
+private val Brand: Color @Composable get() = MaterialTheme.colorScheme.primary
 private val CoverColors = listOf(Color(0xFFB9D0D4), Color(0xFFCBC2B6), Color(0xFFC5C8DB), Color(0xFFD7C6C9))
 
 @Composable
 fun DesktopShell(state: DesktopState) {
+    val gridState = rememberLazyGridState()
+    LaunchedEffect(state.section, state.query, state.page, state.browsingProducer) { gridState.scrollToItem(0) }
     val searchFocus = remember { FocusRequester() }
     var input by remember { mutableStateOf("") }
+    var libraryOpen by remember { mutableStateOf(false) }
     var accountOpen by remember { mutableStateOf(false) }
     var searchActive by remember { mutableStateOf(false) }
     LaunchedEffect(state.query) { input = state.query }
-    MaterialTheme(colorScheme = lightColorScheme(primary = Brand, onPrimary = Color.White, background = Paper, surface = Color.White, onSurface = Ink, secondary = Muted)) {
+    MaterialTheme(colorScheme = if (state.dark) darkColorScheme(primary = Color(0xFFFF9AAA), background = Color(0xFF141820), surface = Color(0xFF202630), onSurface = Color(0xFFE9EDF4), onSurfaceVariant = Color(0xFFAFB8C8)) else lightColorScheme(primary = Color(0xFFC83D50), onPrimary = Color.White, background = Color(0xFFF3F5F8), surface = Color.White, onSurface = Color(0xFF17243B), onSurfaceVariant = Color(0xFF66748A))) {
+        Surface(color = Paper, modifier = Modifier.fillMaxSize()) {
+        if (libraryOpen) LibraryPanel(state) { libraryOpen = false }
         if (accountOpen) state.account?.let { AccountPanel(it) { accountOpen = false } }
         Row(Modifier.fillMaxSize().background(Paper).onPreviewKeyEvent {
             if (it.type != KeyEventType.KeyDown) false
             else when {
                 (it.isCtrlPressed || it.isMetaPressed) && it.key == Key.K -> { searchFocus.requestFocus(); true }
-                it.key == Key.Spacebar && !searchActive && state.playback?.running == true -> { state.playback.togglePause(); true }
+                !accountOpen && !libraryOpen && it.key == Key.Spacebar && !searchActive && state.playback?.running == true -> { state.playback.togglePause(); true }
                 it.key == Key.Escape && state.selected != null -> { state.back(); true }
                 else -> false
             }
         }) {
-            Column(Modifier.width(196.dp).fillMaxHeight().background(Color.White).padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.width(196.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surface).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("▣  红果", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Brand, modifier = Modifier.padding(top = 20.dp, bottom = 4.dp))
                 Text("把故事带到桌面", color = Muted, fontSize = 12.sp)
-                Spacer(Modifier.height(36.dp))
+                Spacer(Modifier.height(8.dp))
                 Section.entries.forEachIndexed { index, section ->
                     val active = state.section == section
-                    TextButton(onClick = { state.navigate(section) }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.textButtonColors(containerColor = if (active) Color(0xFFF9E9EC) else Color.Transparent, contentColor = if (active) Brand else Muted)) {
-                        Text(listOf("◈", "≡", "♡", "◷", "◴", "✧")[index], fontSize = 20.sp)
+                    TextButton(onClick = { state.navigate(section) }, modifier = Modifier.fillMaxWidth().height(40.dp), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.textButtonColors(containerColor = if (active) Brand.copy(alpha = .12f) else Color.Transparent, contentColor = if (active) Brand else Muted)) {
+                        Text(listOf("◈", "≡", "♡", "◷", "◴", "✧", "+")[index], fontSize = 20.sp)
                         Spacer(Modifier.width(12.dp))
                         Text(section.label, modifier = Modifier.weight(1f), fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
                     }
                 }
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.height(20.dp))
                 HorizontalDivider(color = Paper)
-                Text("桌面试用版", color = Ink, fontSize = 13.sp, modifier = Modifier.padding(top = 16.dp))
+                TextButton(onClick = { libraryOpen = true }) { Text("本机资料备份") }
+                TextButton(onClick = { state.changeTheme(!state.dark) }) { Text(if (state.dark) "切换浅色外观" else "切换深色外观") }
                 TextButton(onClick = { accountOpen = true }) { Text(state.account?.profile?.nickname ?: "登录 / 我的账号") }
                 Text(if (state.account?.profile == null) "收藏与进度保存在本机" else "已连接云端账号", color = Muted, fontSize = 11.sp)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -70,7 +76,7 @@ fun DesktopShell(state: DesktopState) {
                 Text("Ctrl / ⌘ K 搜索\nEsc 返回详情前一页", color = Muted, fontSize = 11.sp, lineHeight = 20.sp)
             }
             Column(Modifier.weight(1f).fillMaxHeight()) {
-                Row(Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 28.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 28.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(input, { input = it.take(80); state.suggest(input) }, modifier = Modifier.weight(1f).widthIn(max = 640.dp).focusRequester(searchFocus).onFocusChanged { searchActive = it.isFocused }.onPreviewKeyEvent { event -> if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) { state.search(input); true } else false }, placeholder = { Text("搜索剧名，找到想看的故事") }, singleLine = true, shape = RoundedCornerShape(12.dp), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { state.search(input) }))
                     Spacer(Modifier.width(12.dp))
                     Button(onClick = { state.search(input) }, enabled = input.isNotBlank()) { Text("搜索") }
@@ -86,16 +92,16 @@ fun DesktopShell(state: DesktopState) {
                     else {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(if (state.query.isBlank()) state.section.label else "“${state.query}”的搜索结果", fontSize = 27.sp, fontWeight = FontWeight.Bold)
+                                Text(state.heading, fontSize = 27.sp, fontWeight = FontWeight.Bold)
                                 Text(if (state.demo) "虚构示例内容，用于体验桌面布局与交互" else "浏览短剧，打开详情查看简介与选集", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
                             }
-                            TextButton(onClick = { state.reload() }, enabled = !state.loading) { Text("刷新") }
+                            TextButton(onClick = state::refreshLibrary, enabled = !state.loading) { Text("刷新") }
                         }
-                        if (!state.demo && state.query.isBlank()) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (!state.demo && state.query.isBlank() && state.browsingProducer == null) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (state.section == Section.DISCOVER) DramaCategory.entries.forEach { category -> FilterChip(state.category == category, { state.chooseCategory(category) }, label = { Text(category.label) }) }
                             if (state.section == Section.RANKING) RankBoard.entries.forEach { board -> FilterChip(state.board == board, { state.chooseBoard(board) }, label = { Text(board.label) }) }
                         }
-                        if (!state.demo && state.query.isBlank() && state.section == Section.DISCOVER && state.topics.isNotEmpty()) {
+                        if (!state.demo && state.query.isBlank() && state.browsingProducer == null && state.section == Section.DISCOVER && state.topics.isNotEmpty()) {
                             var topicMenu by remember { mutableStateOf(false) }
                             Box {
                                 TextButton(onClick = { topicMenu = true }) { Text(state.topics.firstOrNull { it.id == state.topic }?.label ?: "全部题材") }
@@ -108,10 +114,10 @@ fun DesktopShell(state: DesktopState) {
                         Spacer(Modifier.height(20.dp))
                         if (state.error != null) ErrorNotice(state)
                         else if (state.items.isEmpty() && !state.loading) {
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(if (state.section == Section.FAVORITES) "还没有收藏，打开剧集详情即可添加。" else "没有找到内容，试试其他关键词。", color = Muted) }
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(if (state.section == Section.FAVORITES) "还没有收藏，打开剧集详情即可添加。" else if (state.section == Section.RESERVATIONS) { if (state.account?.profile == null) "登录后查看已预约的剧集。" else "还没有预约，可在相关作品中预约新一季。" } else if (state.section == Section.HISTORY) "播放一部短剧后，可以在这里继续观看。" else "没有找到内容，试试其他关键词。", color = Muted) }
                         } else {
-                            LazyVerticalGrid(columns = GridCells.Adaptive(160.dp), modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(20.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
-                                items(state.items, key = { it.id }) { series -> SeriesCard(series, state.section == Section.RANKING, state.items.indexOf(series) + 1) { state.open(series) } }
+                            LazyVerticalGrid(state = gridState, columns = GridCells.Adaptive(160.dp), modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(20.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                                items(state.items, key = { it.id }) { series -> SeriesCard(series, state.section == Section.RANKING, (state.page - 1) * state.items.size + state.items.indexOf(series) + 1, state.progressLabel(series)) { state.open(series) } }
                             }
                             Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                                 Text("第 ${state.page} 页", color = Muted, fontSize = 12.sp)
@@ -129,7 +135,9 @@ fun DesktopShell(state: DesktopState) {
     }
 }
 
-@Composable private fun SeriesCard(series: Series, ranked: Boolean, rank: Int, open: () -> Unit) {
+}
+
+@Composable private fun SeriesCard(series: Series, ranked: Boolean, rank: Int, progress: String = "", open: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     Column(Modifier.onFocusChanged { focused = it.isFocused }.border(if (focused) 2.dp else 0.dp, if (focused) Brand else Color.Transparent, RoundedCornerShape(12.dp)).clip(RoundedCornerShape(12.dp)).clickable(onClick = open).padding(4.dp)) {
         Box {
@@ -137,7 +145,7 @@ fun DesktopShell(state: DesktopState) {
             if (ranked) Text("$rank", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.background(Brand, RoundedCornerShape(bottomEnd = 10.dp)).padding(horizontal = 12.dp, vertical = 6.dp))
         }
         Text(series.title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 10.dp))
-        Text(series.badge.ifBlank { "查看剧集" }, fontSize = 12.sp, color = Muted, modifier = Modifier.padding(top = 4.dp))
+        Text(progress.ifBlank { series.badge.ifBlank { "查看剧集" } }, fontSize = 12.sp, color = Muted, modifier = Modifier.padding(top = 4.dp))
     }
 }
 
@@ -168,17 +176,21 @@ fun DesktopShell(state: DesktopState) {
 
 @Composable private fun DetailPane(state: DesktopState) {
     val series = state.detail?.series ?: state.selected ?: return
+    var episodeGroup by remember(series.id) { mutableStateOf(0) }
+    var episodeInput by remember(series.id) { mutableStateOf("") }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         TextButton(onClick = state::back) { Text("‹ 返回列表") }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-            Poster(series, Modifier.width(200.dp).height(278.dp))
+            Poster(series, Modifier.width(160.dp).height(224.dp))
             Column(Modifier.weight(1f)) {
-                Text(series.title, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                Text(series.title, fontSize = 26.sp, fontWeight = FontWeight.Bold)
                 Text(series.tags, color = Muted, modifier = Modifier.padding(top = 12.dp))
                 Text(series.description.ifBlank { "暂无剧集简介" }, fontSize = 15.sp, lineHeight = 25.sp, maxLines = 5, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 20.dp))
-                Spacer(Modifier.height(24.dp))
-                Button(onClick = state::resume, enabled = !state.demo && state.detail?.episodes?.isNotEmpty() == true) { Text("播放 / 继续观看") }
+                Spacer(Modifier.height(12.dp))
+                Text(state.progressLabel(series), color = Muted, fontSize = 13.sp)
+                Button(onClick = state::resume, enabled = !state.demo && state.detail?.episodes?.isNotEmpty() == true) { Text(if (state.reservation(series)?.online == false) "尚未上线" else state.progressLabel(series).let { if (it.isBlank()) "开始观看" else "继续观看" }) }
+                if (!state.demo) TextButton(onClick = { state.toggleLater(series) }) { Text(if (state.later(series)) "已加入稍后看 · 移除" else "＋ 稍后再看") }
                 OutlinedButton(onClick = { state.toggleFavorite(series) }, enabled = state.demo || state.account?.profile == null || (state.account.favoritesLoaded && !state.account.busy)) { Text(if (state.favorite(series)) "已收藏 · 点击移除" else "♡ 加入收藏") }
             }
         }
@@ -198,10 +210,20 @@ fun DesktopShell(state: DesktopState) {
         if (detail != null) {
             Text("选集  /  共 ${detail.episodes.size} 集", fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Text("点击集数在原生窗口播放；底部可暂停、跳转和切换清晰度。", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp, bottom = 16.dp))
-            detail.episodes.indices.toList().chunked(8).forEach { indices ->
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                detail.episodes.indices.toList().chunked(40).forEachIndexed { group, indices ->
+                    FilterChip(episodeGroup == group, { episodeGroup = group }, label = { Text("${indices.first() + 1}–${indices.last() + 1}") })
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(episodeInput, { episodeInput = it.filter(Char::isDigit).take(4) }, label = { Text("跳到第几集") }, modifier = Modifier.width(150.dp), singleLine = true)
+                TextButton(onClick = { val index = (episodeInput.toIntOrNull() ?: 0) - 1; if (index in detail.episodes.indices) { episodeGroup = index / 40; state.selectEpisode(index) } }, enabled = !state.demo && (episodeInput.toIntOrNull() ?: 0) in 1..detail.episodes.size) { Text("播放这一集") }
+            }
+            Spacer(Modifier.height(8.dp))
+            detail.episodes.indices.drop(episodeGroup * 40).take(40).chunked(8).forEach { indices ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 8.dp)) {
                     indices.forEach { index ->
-                        OutlinedButton(onClick = { state.selectEpisode(index) }, enabled = !state.demo, modifier = Modifier.weight(1f), contentPadding = PaddingValues(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = if (state.playback?.active?.series?.id == series.id && state.playback.index == index) Color(0xFFF9E9EC) else Color.White)) { Text("${index + 1}") }
+                        OutlinedButton(onClick = { state.selectEpisode(index) }, enabled = !state.demo, modifier = Modifier.weight(1f), contentPadding = PaddingValues(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = if (state.playback?.active?.series?.id == series.id && state.playback.index == index) Brand.copy(alpha = .12f) else MaterialTheme.colorScheme.surface)) { Text("${index + 1}") }
                     }
                     repeat(8 - indices.size) { Spacer(Modifier.weight(1f)) }
                 }
@@ -218,10 +240,11 @@ fun DesktopShell(state: DesktopState) {
 
 @Composable private fun PlaybackControls(player: DesktopPlayback) {
     val active = player.active ?: return
-    var seeking by remember { mutableStateOf<Float?>(null) }
-    Column(Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 24.dp, vertical = 12.dp)) {
+    var seeking by remember(active.series.id, player.index) { mutableStateOf<Float?>(null) }
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 24.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("${active.series.title} · 第 ${player.index + 1} 集", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            TextButton(onClick = player::fullscreen, enabled = player.running) { Text("全屏") }
             TextButton(onClick = player::stop) { Text("停止播放") }
         }
         if (player.preparing) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -236,6 +259,8 @@ fun DesktopShell(state: DesktopState) {
             Button(onClick = player::togglePause, enabled = player.running && !player.preparing) { Text(if (player.paused) "继续" else "暂停") }
             TextButton(onClick = { player.next(1) }, enabled = player.index < active.episodes.lastIndex && !player.preparing) { Text("下一集") }
             TextButton(onClick = { player.seek(player.position - 10) }, enabled = player.running) { Text("−10秒") }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Slider(value = seeking ?: player.position.toFloat().coerceIn(0f, maxOf(1f, player.duration.toFloat())), onValueChange = { seeking = it }, onValueChangeFinished = { seeking?.let { player.seek(it.toDouble()) }; seeking = null }, valueRange = 0f..maxOf(1f, player.duration.toFloat()), enabled = player.running && player.duration > 0, modifier = Modifier.weight(1f))
             Text("${clock(player.position)} / ${clock(player.duration)}", fontSize = 12.sp, color = Muted)
             var speedMenu by remember { mutableStateOf(false) }
@@ -249,9 +274,10 @@ fun DesktopShell(state: DesktopState) {
                 DropdownMenu(qualityMenu, { qualityMenu = false }) { PlaybackQuality.options.forEach { quality -> DropdownMenuItem(text = { Text("${quality}P") }, onClick = { player.chooseQuality(quality); qualityMenu = false }) } }
             }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
             Checkbox(player.autoNext, { player.changeAutoNext(it) })
             Text("自动连播", fontSize = 12.sp)
+            TextButton(onClick = player::mute, enabled = player.running) { Text("静音 / 恢复") }
             Spacer(Modifier.width(16.dp))
             var settingsMenu by remember { mutableStateOf(false) }
             Box {
