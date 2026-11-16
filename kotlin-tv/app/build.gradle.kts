@@ -28,8 +28,8 @@ android {
         if (!legacyAudio) minSdk = 23
         buildConfigField("boolean", "LEGACY_AUDIO", legacyAudio.toString())
         targetSdk = 36
-        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 26
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.5"
+        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 27
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.6"
     }
     // Publish explicit ARM installer choices plus a universal updater fallback.
     splits {
