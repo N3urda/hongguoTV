@@ -76,7 +76,17 @@ object DesktopSmoke {
         while (number("time-pos") < 15 && System.nanoTime() < seekDeadline) Thread.sleep(250)
         check(number("time-pos") >= 15) { "Seek failed" }
         check(number("speed") == 1.25)
-        val report = JSONObject().put("catalog", true).put("decodedVideo", true).put("audioTrack", audio != null).put("pause", true).put("seek", true).put("speed", true).put("positionSeconds", number("time-pos"))
+        player.command("set_property", "keepaspect", false)
+        check(player.command("get_property", "keepaspect") == false)
+        player.command("set_property", "keepaspect", true)
+        player.command("set_property", "panscan", 1.0)
+        check(number("panscan") == 1.0)
+        player.command("set_property", "video-rotate", 90)
+        check(number("video-rotate") == 90.0)
+        player.command("set_property", "video-rotate", 0)
+        player.command("set_property", "panscan", 0.0)
+        player.command("show-text", DesktopDanmaku.safeText("桌面弹幕显示验证"), 1000)
+        val report = JSONObject().put("frameRotation", true).put("catalog", true).put("decodedVideo", true).put("audioTrack", audio != null).put("pause", true).put("seek", true).put("speed", true).put("positionSeconds", number("time-pos"))
         val output = Path.of("build/reports", reportName)
         Files.createDirectories(output.parent); Files.writeString(output, report.toString(2))
         println("PLAYBACK PASS: decoding, pause, seek, speed. Report saved without source URLs.")
@@ -91,27 +101,35 @@ object DesktopSmoke {
         val library = DesktopLibrary(file)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         val player = DesktopPlayback(scope, repository, library)
-        suspend fun until(condition: () -> Boolean) = withTimeout(90_000) {
-            while (!withContext(Dispatchers.Main) { condition() }) delay(250)
+        suspend fun until(stage: String, condition: () -> Boolean) {
+            println("Controller stage: $stage")
+            try { withTimeout(90_000) {
+                while (!withContext(Dispatchers.Main) { check(player.message == null || player.preparing || player.running) { "Playback stopped with an error" }; condition() }) delay(250)
+            } } catch (e: Exception) {
+                withContext(Dispatchers.Main) { println("Controller state: index=${player.index}, time=${player.position}, duration=${player.duration}, preparing=${player.preparing}, running=${player.running}, paused=${player.paused}, error=${player.message != null}") }
+                throw e
+            }
         }
         try {
             withContext(Dispatchers.Main) { player.play(detail, 0) }
-            until { player.duration > 0 && player.position >= 2 }
+            until("initial playback") { player.duration > 0 && player.position >= 2 }
             withContext(Dispatchers.Main) { player.togglePause() }
-            until { player.paused }
+            until("pause") { player.paused }
             withContext(Dispatchers.Main) { player.seek(15.0); player.setSpeed(1.25f); player.togglePause() }
-            until { !player.paused && player.position >= 15 }
+            until("seek and resume") { !player.paused && player.position >= 15 }
             withContext(Dispatchers.Main) { player.seek(player.duration - 2) }
-            until { player.index == 1 && player.duration > 0 && player.position >= 3 }
+            until("automatic next episode") { player.index == 1 && player.duration > 0 && player.position >= 3 }
             withContext(Dispatchers.Main) { player.stop() }
             val saved = DesktopLibrary(file).history[detail.series.id]!!
             check(saved.episodeId == detail.episodes[1] && saved.position >= 2500)
             withContext(Dispatchers.Main) { player.resume(detail) }
-            until { player.index == 1 && player.duration > 0 && player.position * 1000 >= saved.position }
-            println("CONTROLLER PASS: play, pause, seek, speed, automatic next episode, persisted progress and resume")
+            until("persisted resume") { player.index == 1 && player.duration > 0 && player.position * 1000 >= saved.position }
+            withContext(Dispatchers.Main) { player.sleepEpisode(); player.seek(player.duration - 2) }
+            until("sleep after episode") { player.active == null && !player.running }
+            println("CONTROLLER PASS: play, pause, seek, speed, automatic next episode, persisted progress, resume and stop after episode")
             val report = Path.of("build/reports/desktop-controller-smoke.json")
             Files.createDirectories(report.parent)
-            Files.writeString(report, JSONObject().put("automaticNext", true).put("persistedResume", true).put("pauseSeekSpeed", true).toString(2))
+            Files.writeString(report, JSONObject().put("sleepAfterEpisode", true).put("automaticNext", true).put("persistedResume", true).put("pauseSeekSpeed", true).toString(2))
         } finally {
             withContext(Dispatchers.Main) { player.close() }
             scope.cancel()

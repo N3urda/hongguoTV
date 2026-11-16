@@ -19,13 +19,28 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
     var duration by mutableStateOf(0.0); private set
     var paused by mutableStateOf(false); private set
     var running by mutableStateOf(false); private set
-    var speed by mutableStateOf(1.0); private set
-    var quality by mutableStateOf(1080); private set
-    var autoNext by mutableStateOf(true)
+    var speed by mutableStateOf(PlaybackSpeed.normalize(library.preference("speed", "1.0").toFloatOrNull() ?: 1f).toDouble()); private set
+    var quality by mutableStateOf(PlaybackQuality.normalize(library.preference("quality", "1080").toIntOrNull() ?: 1080)); private set
+    var autoNext by mutableStateOf(library.preference("autoNext", "true").toBoolean())
+    fun changeAutoNext(value: Boolean) { autoNext = value; library.preference("autoNext", value) }
     private var session: PlaybackSession? = null
     private var job: Job? = null
     private var generation = 0
     private var episodeFinished = false
+    var danmakuEnabled by mutableStateOf(library.preference("danmaku", "false").toBoolean()); private set
+    var danmakuStatus by mutableStateOf(""); private set
+    private val danmaku = DesktopDanmaku(scope, { command("show-text", it, 3500) }, { danmakuStatus = it })
+    fun changeDanmaku(enabled: Boolean) { danmakuEnabled = enabled; library.preference("danmaku", enabled); danmaku.reset(); if (!enabled) command("show-text", "", 0) }
+    var progressSaved: (BackupProgress, Int, Boolean) -> Unit = { _, _, _ -> }
+    private val sleepTimer = SleepTimer { System.nanoTime() / 1_000_000 }
+    var sleepLabel by mutableStateOf("定时关闭：关闭"); private set
+    var frame by mutableStateOf(VideoFrameMode.fromStored(library.preference("frame", "FIT"))); private set
+    var rotation by mutableStateOf(0); private set
+    fun sleep(minutes: Int) { sleepTimer.afterMinutes(minutes); sleepLabel = sleepTimer.label() }
+    fun sleepEpisode() { sleepTimer.afterEpisodes(1); sleepLabel = sleepTimer.label() }
+    fun cancelSleep() { sleepTimer.cancel(); sleepLabel = sleepTimer.label() }
+    fun chooseFrame(value: VideoFrameMode) { frame = value; library.preference("frame", value.name); command("set_property", "keepaspect", value != VideoFrameMode.FILL); command("set_property", "panscan", if (value == VideoFrameMode.ZOOM) 1.0 else 0.0) }
+    fun rotate() { rotation = (rotation + 90) % 360; command("set_property", "video-rotate", rotation) }
 
     fun resume(detail: Detail) {
         if (detail.episodes.isEmpty()) return
@@ -35,7 +50,8 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
     }
     fun play(detail: Detail, episode: Int, start: Double = 0.0) {
         if (episode !in detail.episodes.indices) return
-        saveProgress()
+        saveProgress(force = true)
+        danmaku.reset()
         job?.cancel()
         val ticket = ++generation
         val previous = session; session = null
@@ -69,8 +85,11 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
                 val current = session!!
                 var lastSave = 0L
                 var started = false
+                var presentationApplied = false
                 var idleTicks = 0
                 while (isActive && ticket == generation) {
+                    sleepLabel = sleepTimer.label()
+                    if (sleepTimer.poll()) { stop(); message = "定时播放已结束"; break }
                     val values = withContext(Dispatchers.IO) {
                         if (!current.player.alive) null else listOf(
                             current.player.command("get_property", "time-pos"),
@@ -82,7 +101,16 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
                     } ?: break
                     (values[0] as? Number)?.toDouble()?.let { position = it; started = true }
                     (values[1] as? Number)?.toDouble()?.let { duration = it }
+                    if (started && !presentationApplied) {
+                        withContext(Dispatchers.IO) {
+                            current.player.command("set_property", "keepaspect", frame != VideoFrameMode.FILL)
+                            current.player.command("set_property", "panscan", if (frame == VideoFrameMode.ZOOM) 1.0 else 0.0)
+                            current.player.command("set_property", "video-rotate", rotation)
+                        }
+                        presentationApplied = true
+                    }
                     paused = values[2] == true
+                    if (danmakuEnabled && !paused) danmaku.tick(detail.series.id, detail.episodes[episode], (position * 1000).toLong(), (duration * 1000).toLong())
                     if (values[4] == true) idleTicks++ else idleTicks = 0
                     if (idleTicks >= 8) error("视频加载失败，请重试或切换清晰度。")
                     val now = System.currentTimeMillis()
@@ -90,14 +118,19 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
                     if (values[3] == true && started) {
                         episodeFinished = true
                         saveProgress()
+                        if (sleepTimer.episodeEnded()) { stop(); break }
                         if (autoNext && episode < detail.episodes.lastIndex) {
                             scope.launch { play(detail, episode + 1) }
+                        } else if (autoNext) {
+                            val next = withContext(Dispatchers.IO) { runCatching { RelatedWorks.nextSeason(detail.series, repository.related(detail.series.id))?.let { repository.detail(it.series.id) } }.getOrNull() }
+                            if (next != null && next.episodes.isNotEmpty() && ticket == generation) scope.launch { play(next, 0) }
+                            else message = "本剧已播放完毕"
                         } else message = "本集已播放完毕"
                         break
                     }
                     delay(500)
                 }
-                if (ticket == generation && !current.player.alive) { saveProgress(); running = false; message = "播放窗口已关闭，可点击继续播放。" }
+                if (ticket == generation && !current.player.alive) { saveProgress(); running = false; session = null; withContext(Dispatchers.IO) { current.close() }; message = "播放窗口已关闭，可点击继续播放。" }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (e: Exception) {
                 if (ticket == generation) {
@@ -114,24 +147,26 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
     }
     fun togglePause() = command("cycle", "pause")
     fun seek(seconds: Double) = command("seek", seconds.coerceAtLeast(0.0), "absolute")
-    fun setSpeed(value: Float) { speed = PlaybackSpeed.normalize(value).toDouble(); command("set_property", "speed", speed) }
-    fun chooseQuality(value: Int) { quality = PlaybackQuality.normalize(value); active?.let { play(it, index, position) } }
+    fun setSpeed(value: Float) { speed = PlaybackSpeed.normalize(value).toDouble(); library.preference("speed", speed); command("set_property", "speed", speed) }
+    fun chooseQuality(value: Int) { quality = PlaybackQuality.normalize(value); library.preference("quality", quality); active?.let { play(it, index, position) } }
     fun next(delta: Int) { active?.let { play(it, index + delta) } }
     fun retry() { active?.let { play(it, index, position) } }
     private fun command(vararg arguments: Any) {
         val current = session ?: return
         scope.launch { runCatching { withContext(Dispatchers.IO) { current.player.command(*arguments) } }.onFailure { if (session === current) message = "播放器控制失败，请重新播放。" } }
     }
-    private fun saveProgress(completed: Boolean = episodeFinished) {
+    private fun saveProgress(completed: Boolean = episodeFinished, force: Boolean = false) {
         val detail = active ?: return
         if (preparing || duration <= 0) return
-        library.remember(BackupProgress(detail.series, detail.episodes[index], index, (position * 1000).toLong(), (duration * 1000).toLong(), completed, System.currentTimeMillis()))
+        val progress = BackupProgress(detail.series, detail.episodes[index], index, (position * 1000).toLong(), (duration * 1000).toLong(), completed, System.currentTimeMillis())
+        library.remember(progress)
+        progressSaved(progress, detail.episodes.size, force || completed)
     }
     fun stop() {
-        saveProgress(); generation++; job?.cancel(); job = null
+        saveProgress(force = true); danmaku.reset(); generation++; job?.cancel(); job = null
         val old = session; session = null
         old?.close()
         running = false; preparing = false; active = null
     }
-    override fun close() { saveProgress(); generation++; job?.cancel(); session?.close(); session = null }
+    override fun close() { saveProgress(force = true); danmaku.reset(); generation++; job?.cancel(); session?.close(); session = null }
 }

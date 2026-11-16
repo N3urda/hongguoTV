@@ -32,9 +32,11 @@ private val CoverColors = listOf(Color(0xFFB9D0D4), Color(0xFFCBC2B6), Color(0xF
 fun DesktopShell(state: DesktopState) {
     val searchFocus = remember { FocusRequester() }
     var input by remember { mutableStateOf("") }
+    var accountOpen by remember { mutableStateOf(false) }
     var searchActive by remember { mutableStateOf(false) }
     LaunchedEffect(state.query) { input = state.query }
     MaterialTheme(colorScheme = lightColorScheme(primary = Brand, onPrimary = Color.White, background = Paper, surface = Color.White, onSurface = Ink, secondary = Muted)) {
+        if (accountOpen) state.account?.let { AccountPanel(it) { accountOpen = false } }
         Row(Modifier.fillMaxSize().background(Paper).onPreviewKeyEvent {
             if (it.type != KeyEventType.KeyDown) false
             else when {
@@ -51,7 +53,7 @@ fun DesktopShell(state: DesktopState) {
                 Section.entries.forEachIndexed { index, section ->
                     val active = state.section == section
                     TextButton(onClick = { state.navigate(section) }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.textButtonColors(containerColor = if (active) Color(0xFFF9E9EC) else Color.Transparent, contentColor = if (active) Brand else Muted)) {
-                        Text(listOf("◈", "≡", "♡", "◷")[index], fontSize = 20.sp)
+                        Text(listOf("◈", "≡", "♡", "◷", "◴", "✧")[index], fontSize = 20.sp)
                         Spacer(Modifier.width(12.dp))
                         Text(section.label, modifier = Modifier.weight(1f), fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
                     }
@@ -59,7 +61,8 @@ fun DesktopShell(state: DesktopState) {
                 Spacer(Modifier.weight(1f))
                 HorizontalDivider(color = Paper)
                 Text("桌面试用版", color = Ink, fontSize = 13.sp, modifier = Modifier.padding(top = 16.dp))
-                Text("收藏与进度保存在本机", color = Muted, fontSize = 11.sp)
+                TextButton(onClick = { accountOpen = true }) { Text(state.account?.profile?.nickname ?: "登录 / 我的账号") }
+                Text(if (state.account?.profile == null) "收藏与进度保存在本机" else "已连接云端账号", color = Muted, fontSize = 11.sp)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(state.demo, { state.mode(it) })
                     Text("演示内容", fontSize = 13.sp)
@@ -68,11 +71,14 @@ fun DesktopShell(state: DesktopState) {
             }
             Column(Modifier.weight(1f).fillMaxHeight()) {
                 Row(Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 28.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(input, { input = it.take(80) }, modifier = Modifier.weight(1f).widthIn(max = 640.dp).focusRequester(searchFocus).onFocusChanged { searchActive = it.isFocused }.onPreviewKeyEvent { event -> if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) { state.search(input); true } else false }, placeholder = { Text("搜索剧名，找到想看的故事") }, singleLine = true, shape = RoundedCornerShape(12.dp), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { state.search(input) }))
+                    OutlinedTextField(input, { input = it.take(80); state.suggest(input) }, modifier = Modifier.weight(1f).widthIn(max = 640.dp).focusRequester(searchFocus).onFocusChanged { searchActive = it.isFocused }.onPreviewKeyEvent { event -> if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) { state.search(input); true } else false }, placeholder = { Text("搜索剧名，找到想看的故事") }, singleLine = true, shape = RoundedCornerShape(12.dp), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { state.search(input) }))
                     Spacer(Modifier.width(12.dp))
                     Button(onClick = { state.search(input) }, enabled = input.isNotBlank()) { Text("搜索") }
                     Spacer(Modifier.width(24.dp))
                     Text(if (state.demo) "演示模式" else "在线内容", color = Muted, fontSize = 12.sp)
+                }
+                if (searchActive && state.suggestions.isNotEmpty()) Row(Modifier.padding(horizontal = 28.dp)) {
+                    state.suggestions.forEach { suggestion -> TextButton(onClick = { state.search(suggestion) }) { Text(suggestion, maxLines = 1) } }
                 }
                 if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Brand)
                 Column(Modifier.weight(1f).padding(horizontal = 28.dp, vertical = 24.dp)) {
@@ -85,6 +91,20 @@ fun DesktopShell(state: DesktopState) {
                             }
                             TextButton(onClick = { state.reload() }, enabled = !state.loading) { Text("刷新") }
                         }
+                        if (!state.demo && state.query.isBlank()) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (state.section == Section.DISCOVER) DramaCategory.entries.forEach { category -> FilterChip(state.category == category, { state.chooseCategory(category) }, label = { Text(category.label) }) }
+                            if (state.section == Section.RANKING) RankBoard.entries.forEach { board -> FilterChip(state.board == board, { state.chooseBoard(board) }, label = { Text(board.label) }) }
+                        }
+                        if (!state.demo && state.query.isBlank() && state.section == Section.DISCOVER && state.topics.isNotEmpty()) {
+                            var topicMenu by remember { mutableStateOf(false) }
+                            Box {
+                                TextButton(onClick = { topicMenu = true }) { Text(state.topics.firstOrNull { it.id == state.topic }?.label ?: "全部题材") }
+                                DropdownMenu(topicMenu, { topicMenu = false }) {
+                                    DropdownMenuItem(text = { Text("全部题材") }, onClick = { state.chooseTopic(""); topicMenu = false })
+                                    state.topics.forEach { topic -> DropdownMenuItem(text = { Text(topic.label) }, onClick = { state.chooseTopic(topic.id); topicMenu = false }) }
+                                }
+                            }
+                        }
                         Spacer(Modifier.height(20.dp))
                         if (state.error != null) ErrorNotice(state)
                         else if (state.items.isEmpty() && !state.loading) {
@@ -95,12 +115,13 @@ fun DesktopShell(state: DesktopState) {
                             }
                             Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                                 Text("第 ${state.page} 页", color = Muted, fontSize = 12.sp)
-                                TextButton(onClick = { state.reload(state.page - 1) }, enabled = state.page > 1 && !state.loading) { Text("上一页") }
+                                TextButton(onClick = { state.reload(state.page - 1) }, enabled = state.section != Section.RECOMMENDED && state.page > 1 && !state.loading) { Text("上一页") }
                                 TextButton(onClick = { state.reload(state.page + 1) }, enabled = state.hasMore && !state.loading) { Text("下一页") }
                             }
                         }
                     }
                 }
+                state.account?.status?.takeIf { state.account.profile != null }?.let { Text(it, color = Muted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 24.dp)) }
                 state.storageWarning()?.let { Text(it, color = Brand, modifier = Modifier.padding(12.dp)) }
                 state.playback?.let { PlaybackControls(it) }
             }
@@ -158,8 +179,18 @@ fun DesktopShell(state: DesktopState) {
                 Text(series.description.ifBlank { "暂无剧集简介" }, fontSize = 15.sp, lineHeight = 25.sp, maxLines = 5, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 20.dp))
                 Spacer(Modifier.height(24.dp))
                 Button(onClick = state::resume, enabled = !state.demo && state.detail?.episodes?.isNotEmpty() == true) { Text("播放 / 继续观看") }
-                OutlinedButton(onClick = { state.toggleFavorite(series) }) { Text(if (state.favorite(series)) "已收藏 · 点击移除" else "♡ 加入收藏") }
+                OutlinedButton(onClick = { state.toggleFavorite(series) }, enabled = state.demo || state.account?.profile == null || (state.account.favoritesLoaded && !state.account.busy)) { Text(if (state.favorite(series)) "已收藏 · 点击移除" else "♡ 加入收藏") }
             }
+        }
+        state.producer?.let { owner -> TextButton(onClick = state::producerWorks) { Text("制作方：${owner.name} · 查看作品") } }
+        if (state.related.isNotEmpty()) {
+            Text("相关作品 / 季数", style = MaterialTheme.typography.titleMedium)
+            state.related.forEach { work -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("${work.series.title} · ${work.label}", Modifier.weight(1f))
+                TextButton(onClick = { if (work.upcoming) state.account?.reserve(work) else state.open(work.series) }, enabled = !work.upcoming || (state.account?.profile != null && !state.account.busy)) {
+                    Text(if (!work.upcoming) "查看" else if (state.account?.reservations?.any { it.series.id == work.series.id } == true) "已预约" else "预约（需登录）")
+                }
+            } }
         }
         Spacer(Modifier.height(28.dp))
         if (state.error != null) ErrorNotice(state)
@@ -175,6 +206,12 @@ fun DesktopShell(state: DesktopState) {
                     repeat(8 - indices.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
+        }
+        if (!state.demo && detail != null) {
+            TextButton(onClick = { state.readComments() }) { Text("读取当前选集评论") }
+            Text(state.commentStatus, color = Muted)
+            state.comments.forEach { (author, content) -> Text("$author：$content", modifier = Modifier.padding(vertical = 6.dp)) }
+            if (state.commentsMore) TextButton(onClick = { state.readComments(true) }) { Text("更多评论") }
         }
     }
 }
@@ -213,10 +250,24 @@ fun DesktopShell(state: DesktopState) {
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(player.autoNext, { player.autoNext = it })
+            Checkbox(player.autoNext, { player.changeAutoNext(it) })
             Text("自动连播", fontSize = 12.sp)
             Spacer(Modifier.width(16.dp))
-            Text("画面在独立播放窗口中显示 · 空格暂停 · 播放窗口双击全屏", fontSize = 12.sp, color = Muted)
+            var settingsMenu by remember { mutableStateOf(false) }
+            Box {
+                TextButton(onClick = { settingsMenu = true }) { Text("画面 / 定时关闭") }
+                DropdownMenu(settingsMenu, { settingsMenu = false }) {
+                    VideoFrameMode.entries.forEach { mode -> DropdownMenuItem(text = { Text(mode.label) }, onClick = { player.chooseFrame(mode); settingsMenu = false }) }
+                    DropdownMenuItem(text = { Text("旋转 90°") }, onClick = { player.rotate(); settingsMenu = false })
+                    listOf(15, 30, 60).forEach { minutes -> DropdownMenuItem(text = { Text("$minutes 分钟后停止") }, onClick = { player.sleep(minutes); settingsMenu = false }) }
+                    DropdownMenuItem(text = { Text("播完本集停止") }, onClick = { player.sleepEpisode(); settingsMenu = false })
+                    DropdownMenuItem(text = { Text("取消定时关闭") }, onClick = { player.cancelSleep(); settingsMenu = false })
+                }
+            }
+            Text(player.sleepLabel, fontSize = 12.sp, color = Muted)
+            Checkbox(player.danmakuEnabled, player::changeDanmaku)
+            Text("弹幕", fontSize = 12.sp)
+            Text(player.danmakuStatus, fontSize = 11.sp, color = Muted)
         }
     }
 }

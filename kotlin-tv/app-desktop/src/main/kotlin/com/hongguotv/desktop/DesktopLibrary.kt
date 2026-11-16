@@ -7,6 +7,9 @@ import org.json.JSONObject
 import java.nio.file.*
 
 class DesktopLibrary(private val file: Path = defaultFile()) {
+    var preferences = JSONObject(); private set
+    fun preference(key: String, fallback: String) = preferences.optString(key, fallback)
+    @Synchronized fun preference(key: String, value: Any) { preferences.put(key, value); save() }
     val favorites = linkedMapOf<String, Series>()
     val history = linkedMapOf<String, BackupProgress>()
     var warning: String? = null; private set
@@ -27,7 +30,7 @@ class DesktopLibrary(private val file: Path = defaultFile()) {
                 val series = Series.fromJson(row.getJSONObject("series"))
                 loadedHistory[series.id] = BackupProgress(series, row.getString("episodeId"), row.getInt("episodeIndex"), row.getLong("position"), row.getLong("duration"), row.getBoolean("completed"), row.getLong("updatedAt"))
             }
-            favorites.putAll(loadedFavorites); history.putAll(loadedHistory)
+            favorites.putAll(loadedFavorites); history.putAll(loadedHistory); preferences = root.optJSONObject("preferences") ?: JSONObject()
         }.onFailure { warning = "本地记录无法读取，原文件已保留，请先备份后修复。" }
     }
     @Synchronized fun toggle(series: Series) {
@@ -44,7 +47,7 @@ class DesktopLibrary(private val file: Path = defaultFile()) {
         if (warning != null) return
         try {
             Files.createDirectories(file.parent)
-            val root = JSONObject().put("version", 1).put("favorites", JSONArray(favorites.values.map { it.toJson() })).put("history", JSONArray(history.values.map { it.json() }))
+            val root = JSONObject().put("version", 1).put("preferences", preferences).put("favorites", JSONArray(favorites.values.map { it.toJson() })).put("history", JSONArray(history.values.map { it.json() }))
             val temporary = Files.createTempFile(file.parent, "library-", ".tmp")
             try {
                 Files.writeString(temporary, root.toString())
