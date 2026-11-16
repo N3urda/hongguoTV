@@ -971,8 +971,16 @@ constructor(
         else info
     }
 
-    /** Preserve main's registered player path when the newer model service is unavailable. */
-    fun streamLadderWithCompatibility(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
+    /** v5 model requests use the same anonymous registration across foreground and prefetch. */
+    fun streamLadderWithCompatibility(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder =
+        RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(if (speculative) 2 else 8)) {
+            val profile = if (speculative) playbackSession.existing()
+                ?: throw IOException("播放设备尚未就绪") else playbackSession.profile(http)
+            MobilePlayback.ladder(id, profile.values, http, MobilePlayback.signer, clock())
+        }
+
+    /** Retained legacy transport for compatibility regression coverage. */
+    internal fun legacyStreamLadderWithCompatibility(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
         try {
             return streamLadder(id, metadataAhead, speculative)
         } catch (error: IOException) {

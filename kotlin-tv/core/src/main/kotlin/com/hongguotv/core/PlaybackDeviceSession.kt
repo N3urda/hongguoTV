@@ -25,7 +25,10 @@ class PlaybackDeviceSession(
         // Registration has no account cookies. Cancellation belongs to the requesting work scope.
         val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
         RequestScope.execute(transport.newCall(request.build())) { response ->
-            DeviceRegister.parse(cloudResponse(response), response.headers("Set-Cookie"))
+            val text = try { cloudResponse(response) } catch (_: EmptyAccountResponseException) {
+                throw EmptyPlaybackResponseException("stage=register")
+            }
+            DeviceRegister.parse(text, response.headers("Set-Cookie"))
         }
     }
 ) {
@@ -83,6 +86,9 @@ class PlaybackDeviceSession(
         if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
         return toProfile(registerDevice(http)).also { ready = it }
     }
+
+    @Synchronized
+    internal fun existing(): Profile? = ready
 
     @Synchronized
     internal fun takeModel(id: String, owner: Any, now: Long) = ready?.takeModel(id, owner, now)

@@ -16,6 +16,7 @@ internal class Signer(
     private val processNonce: String = java.util.Base64.getUrlEncoder()
         .withoutPadding()
         .encodeToString(ByteArray(18).also(java.security.SecureRandom()::nextBytes)),
+    private val mobileV5: Boolean = false,
 ) {
     private val processStarted: Long = clock()
     data class Request(val url: String, val headers: Map<String, String>, val body: ByteArray?)
@@ -86,8 +87,8 @@ internal class Signer(
         getIv(getIv(getIv(0x20230928, query), body), le32(ts))
 
     fun branch(query: String, body: ByteArray?, ts: Int): Int =
-        (iv(sm3(query.toByteArray()), body?.let { digest("MD5", it) } ?: ByteArray(16), ts) and
-            15) % 3
+        (iv(sm3(query.toByteArray()), body?.let { digest("MD5", it) } ?: ByteArray(16), ts) and 15)
+            .let { if (mobileV5) { if (it == 12) 0 else 1 } else it % 3 }
 
     private fun sumMd5(data: ByteArray): Int {
         var check = 0x20220420
@@ -103,9 +104,10 @@ internal class Signer(
 
     fun hashF13(query: ByteArray, body: ByteArray, ts: Int): ByteArray {
         val index = (iv(query, body, ts) and 15) / 3
-        require((iv(query, body, ts) and 15) % 3 == 0) { "Unsupported hash branch" }
+        require(if (mobileV5) (iv(query, body, ts) and 15) == 12
+            else (iv(query, body, ts) and 15) % 3 == 0) { "Unsupported hash branch" }
         val ivV1 =
-            intArrayOf(
+            if (mobileV5) 0x9d4a97c2.toInt() else intArrayOf(
                 0xc4a78580.toInt(),
                 0xb3c0fd39.toInt(),
                 0xc58c5686.toInt(),
@@ -145,7 +147,7 @@ internal class Signer(
                 )
                 .map { ror(it, count) }
         val chosen =
-            arrayOf(
+            if (mobileV5) intArrayOf(96, 1, 3, 4, 0, 6, 5, 2, 0, 7, 7) else arrayOf(
                 intArrayOf(101, 5, 7, 6, 3, 2, 1, 0, 5, 4, 3),
                 intArrayOf(96, 0, 6, 7, 5, 3, 2, 1, 5, 4, 4),
                 intArrayOf(96, 7, 6, 2, 1, 4, 0, 5, 4, 3, 5),
@@ -169,7 +171,7 @@ internal class Signer(
         }
         val ret = (0..7).fold(byteArrayOf()) { a, i -> a + be32(d[i] + initial[i]) }
         val folded = xor(ret.copyOfRange(0, 16), ret.copyOfRange(16, 32))
-        return folded + le32(sumMd5(folded))
+        return folded + le32(sumMd5(folded) or (if (mobileV5) 0x20 else 0))
     }
 
     fun gorgon(query: String, body: ByteArray?, ts: Int, random: Int): String {
@@ -284,6 +286,7 @@ internal class Signer(
     }
 
     fun medusa(url: String, body: ByteArray?, ts: Int, identity: Map<String, String>? = null): String {
+        if (mobileV5) return medusaV5(url, body, ts, identity ?: device)
         val who = identity ?: device
         val bodyMd5 = body?.let { digest("MD5", it) } ?: ByteArray(16)
         val query = url.substringAfter('?').toByteArray()
@@ -367,6 +370,47 @@ internal class Signer(
         return (prefix + byteArrayOf(r.toByte(), (r shr 8).toByte(), 0, 1) + encrypted).base64()
     }
 
+    private fun medusaV5(url: String, body: ByteArray?, ts: Int, who: Map<String, String>): String {
+        val query = sm3(url.substringAfter('?').toByteArray(Charsets.UTF_8))
+        val f13 = hashF13(query, body?.let { digest("MD5", it) } ?: ByteArray(16), ts)
+        val flags = ByteArray(8)
+        val version = who.getValue("version_name")
+        val deviceInfo = proto(
+            f(1, 1, "sint"), f(2, 2, "sint"), f(3, "8662"), f(4, who.getValue("device_id")),
+            f(5, processNonce), f(6, "!noperm!"), f(12, "Asia/Shanghai,8"), f(13, "zh_CN"),
+            f(22, who.getValue("os_version")), f(25, processStarted, "sint"),
+            f(30, who.getValue("device_type")), f(31, "HONOR"),
+            f(32, who.getValue("device_type")), f(34, "HONOR"),
+        )
+        val env = proto(f(6, "v04.10.03.04-bugfix"), f(8, who.getValue("channel")),
+            f(12, deviceInfo), f(14, version))
+        val message = proto(
+            f(1, V5Constants.magic), f(2, 5, "sint"), f(3, unsigned(rand()), "sint"),
+            f(4, "8662"), f(5, who.getValue("device_id")), f(6, V5Constants.license),
+            f(7, version), f(8, "v04.10.03-ml-android"), f(9, 0x040a0300, "sint"),
+            f(10, flags), f(12, ts, "sint"), f(13, f13), f(14, query.copyOf(6)),
+            f(15, proto(f(1, 1, "sint"), f(2, 1, "sint"), f(3, 1, "sint"), f(5, 1, "sint"))),
+            f(17, ts, "sint"), f(20, "none"), f(21, 377, "sint"), f(23, env),
+            f(24, """{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}"""),
+        )
+        val nonce = rand()
+        val key = V5Constants.signKey
+        val hash = sm3(key + le32(nonce) + key)
+        val high = (nonce ushr 16) and 255
+        val seed = le32((((high shl 11) or (nonce ushr 24)) xor (high ushr 5) xor high).inv())
+        val transformed = (flags + xmxor(message, hash)).reversedArray()
+        for (i in transformed.indices) transformed[i] =
+            (transformed[i].u() xor seed[i.inv() and 3].u()).toByte()
+        val check = 0x18000001 or ((query[0].u() and 63) shl 14) or ((f13[0].u() and 63) shl 8)
+        val packed = byteArrayOf(0xca.toByte()) + le32(rand()) + le32(check) + transformed +
+            byteArrayOf((nonce ushr 16).toByte(), (nonce ushr 24).toByte())
+        val encrypted = AesV3(digest("MD5", key.copyOfRange(0, 16)), ts, v5 = true)
+            .encrypt(packed, digest("MD5", key.copyOfRange(16, 32)))
+        val prefix = le32(5) + V5Constants.magic
+        for (i in prefix.indices) prefix[i] = (prefix[i].u() xor le32(ts)[i and 3].u()).toByte()
+        return (prefix + byteArrayOf(nonce.toByte(), (nonce ushr 8).toByte(), 0, 1) + encrypted).base64()
+    }
+
     fun helios(ts: Int): String {
         val random = rand()
         val ascii = digest("MD5", le32(random) + "8662".toByteArray()).hex().toByteArray()
@@ -382,7 +426,8 @@ internal class Signer(
             b0 = x8
             b8 = words.removeAt(0)
         }
-        val text = "$ts-1588093228-8662".toByteArray()
+        val license = if (mobileV5) V5Constants.license else "1588093228"
+        val text = "$ts-$license-8662".toByteArray()
         val padding = 16 - text.size % 16
         val data = text + ByteArray(padding) { padding.toByte() }
         var output = le32(random)
@@ -478,7 +523,7 @@ internal class Signer(
         now: Long = clock(),
     ): Request {
         val ts = (now / 1000).toInt()
-        for (offset in 0..127) {
+        for (offset in 0..1023) {
             val ticket = now + offset
             val query = encode(values + ("_rticket" to ticket.toString()))
             if (branch(query, body, ts) != 0) continue
@@ -490,8 +535,9 @@ internal class Signer(
                 "x-xs-from-web" to "0", "x-khronos" to ts.toString(),
                 "x-ladon" to be32(ts).base64(), "x-argus" to le32(ts).base64(),
                 "x-gorgon" to gorgon(query, body, ts, (random() * 65536).toInt()),
-                "x-helios" to helios(ts), "x-medusa" to medusa(url, body, ts),
+                "x-helios" to helios(ts), "x-medusa" to medusa(url, body, ts, if (mobileV5) values else null),
             )
+            if (mobileV5) headers.keys.retainAll(setOf("x-khronos", "x-helios", "x-medusa"))
             if (body != null) {
                 headers["Content-Type"] = "application/json; charset=utf-8"
                 headers["x-ss-stub"] = digest("MD5", body).hex().uppercase()

@@ -22,6 +22,7 @@ android {
     compileSdk = 36
     defaultConfig {
         applicationId = "com.hongguotv.nativeapp"
+        testInstrumentationRunner = "com.hongguotv.nativeapp.LivePlaybackInstrumentation"
         manifestPlaceholders["appLabel"] = "hongguoTV"
         minSdk = 21
         if (!legacyAudio) minSdk = 23

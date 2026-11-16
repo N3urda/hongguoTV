@@ -1,5 +1,11 @@
 # Playback identity recovery
 
+Historical compatibility-path notes. Since the v5 repair on 2026-11-16, the TV
+uses the pure Kotlin mobile model path documented in [SIGNING_V5.md](SIGNING_V5.md).
+The compatibility implementation below remains separately named
+`legacyStreamLadderWithCompatibility`; identity rotation alone did not restore
+live playback and is not the current playback fix.
+
 The foreground compatibility path now replaces an explicitly rejected persisted
 player identity once and retries the current episode inside the existing deadline.
 Only the business-code rejection already recognized by this path (10001, 10002,
