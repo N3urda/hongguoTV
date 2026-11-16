@@ -42,6 +42,102 @@ class ContentRepositoryPlayerTest {
     private fun entry(height: Int, codec: String, url: String, width: Int = 0) = JSONObject()
         .put("vheight", height).put("vwidth", width).put("codec_type", codec).put("main_url", url)
 
+    @Test fun emptyCompatibilityIdentityRecoversAndPersistsAcrossRepositories() = emptyRecoveryCase("success")
+    @Test fun persistentEmptyCompatibilityDoesNotRegisterInALoop() = emptyRecoveryCase("empty")
+    @Test fun failedEmptyRegistrationPreservesIdentityAndCoolsDown() = emptyRecoveryCase("registration-fails")
+    @Test fun speculativeEmptyCompatibilityNeverRegisters() = emptyRecoveryCase("speculative")
+    @Test fun mixedEmptyAndMalformedCompatibilityDoesNotRotate() = emptyRecoveryCase("mixed")
+    @Test fun emptyVideoInfoKeepsItsStageAndDoesNotRotateModelIdentity() = emptyRecoveryCase("video-info")
+    @Test fun explicitCompatibilityBackoffDoesNotRotateIdentity() = emptyRecoveryCase("backoff")
+    @Test fun cancelledEmptyRecoveryDoesNotRegister() = emptyRecoveryCase("cancelled")
+
+    private fun emptyRecoveryCase(mode: String) {
+        val store = FakeStore()
+        ContentRepository.deviceStore = store
+        var registrations = 0
+        var compatibilityCalls = 0
+        val deadlines = mutableListOf<Long>()
+        val old = "7000000000001234567"
+        val fresh = "7000000000009999999"
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val did = request.url.queryParameter("device_id")
+            var status = 200
+            val body = when {
+                request.url.encodedPath == "/service/2/device_register/" -> {
+                    registrations++
+                    if (mode == "success") deadlines += chain.call().timeout().deadlineNanoTime()
+                    if (mode == "registration-fails") "" else "{\"device_id\":\"$fresh\",\"install_id\":\"7000000000008888888\"}"
+                }
+                (did == old || did == fresh) && request.url.encodedPath.startsWith("/novel/player/") -> {
+                    compatibilityCalls++
+                    if (mode == "success") deadlines += chain.call().timeout().deadlineNanoTime()
+                    if (mode == "cancelled" && compatibilityCalls == 2) Thread.currentThread().interrupt()
+                    if (mode == "mixed" && request.url.host.startsWith("api3")) "{}"
+                    else if (mode == "video-info") JSONObject().put("code", 0).put("data", JSONObject().put("video_model",
+                        JSONObject().put("fallback_api", "https://example.com/video-info"))).toString()
+                    else if (did == fresh && mode == "success") JSONObject().put("code", 0).put("data", JSONObject().put("video_model",
+                        JSONObject().put("video_list", list(entry(720, "h264", "https://example.com/recovered"))))).toString()
+                    else ""
+                }
+                request.url.host == "example.com" -> ""
+                else -> { status = 403; "" }
+            }
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                .code(status).message("fixture").apply { if (mode == "backoff") header("Retry-After", "60") }
+                .body(body.toResponseBody()).build()
+        }.build()
+        fun repo() = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        try {
+            if (mode == "success") {
+                assertEquals("https://example.com/recovered", repo().legacyStreamLadderWithCompatibility("123").select(720)!!.url)
+                assertEquals("Model attempts and re-registration must share the original deadline", 1, deadlines.distinct().size)
+                assertEquals(5, deadlines.size)
+                assertEquals("https://example.com/recovered", repo().legacyStreamLadderWithCompatibility("123").select(720)!!.url)
+                assertEquals(fresh, PlayerDevice.fromJson(store.value!!)!!.deviceId)
+                assertEquals(1, registrations)
+            } else if (mode == "cancelled") {
+                assertThrows(java.io.InterruptedIOException::class.java) { repo().legacyStreamLadderWithCompatibility("123") }
+                assertEquals(0, registrations)
+                assertEquals(deviceJson, store.value)
+            } else {
+                val first = assertThrows(IOException::class.java) { repo().legacyStreamLadderWithCompatibility("123", speculative = mode == "speculative") }
+                val second = assertThrows(IOException::class.java) { repo().legacyStreamLadderWithCompatibility("456", speculative = mode == "speculative") }
+                assertTrue(first.suppressed.any { it is ContentHttpException && it.statusCode == 403 })
+                if (mode == "video-info") assertTrue((first as EmptyPlaybackResponseException).detail!!.startsWith("stage=compatibility-video-info"))
+                val rotates = mode in setOf("empty", "registration-fails")
+                assertEquals(if (rotates) 1 else 0, registrations)
+                if (rotates) assertTrue(second.suppressed.any { it is PlaybackDiagnosticException && it.detail == "compat-reg=cooldown" })
+                if (mode == "empty") {
+                    assertEquals(6, compatibilityCalls)
+                    assertTrue(first.suppressed.any { it is PlaybackDiagnosticException && it.detail == "compat-reg=ok" })
+                } else assertEquals(deviceJson, store.value)
+            }
+        } finally { Thread.interrupted() }
+    }
+
+    @Test fun simultaneousEmptyRefreshesShareOneRegistration() {
+        val store = FakeStore()
+        ContentRepository.deviceStore = store
+        var registrations = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val body = if (request.url.encodedPath == "/service/2/device_register/") {
+                registrations++
+                """{"device_id":"999","install_id":"888"}"""
+            } else "{}"
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("fixture").body(body.toResponseBody()).build()
+        }.build()
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
+        val gate = java.util.concurrent.CountDownLatch(1)
+        try {
+            val tasks = (1..2).map { executor.submit<PlayerDevice?> { gate.await(); PlayerDeviceSource(http).refreshEmpty(PlayerDevice.fromJson(deviceJson)!!) } }
+            gate.countDown()
+            tasks.forEach { assertEquals("999", it.get(5, java.util.concurrent.TimeUnit.SECONDS)!!.deviceId) }
+            assertEquals(1, registrations)
+        } finally { executor.shutdownNow() }
+    }
+
     @Test fun simultaneousRepositoriesShareOneRefresh() = recoveryCase("concurrent")
     @Test fun expiredIdentityRefreshesOnceAndPersistsReplacement() = recoveryCase("success")
     @Test fun rejectedReplacementStopsAndClearsPersistentIdentity() = recoveryCase("reject")
@@ -92,12 +188,12 @@ class ContentRepositoryPlayerTest {
                 assertEquals(1, registrations)
             } finally { executor.shutdownNow() }
         } else if (mode == "success") {
-            assertEquals("https://example.com/recovered", repo().streamLadderWithCompatibility("123").select(720)!!.url)
+            assertEquals("https://example.com/recovered", repo().legacyStreamLadderWithCompatibility("123").select(720)!!.url)
             assertEquals(fresh, PlayerDevice.fromJson(store.value!!)!!.deviceId)
-            assertEquals("https://example.com/recovered", repo().streamLadderWithCompatibility("456").select(720)!!.url)
+            assertEquals("https://example.com/recovered", repo().legacyStreamLadderWithCompatibility("456").select(720)!!.url)
             assertEquals(1, registrations)
         } else {
-            repeat(2) { assertThrows(IOException::class.java) { repo().streamLadderWithCompatibility("123", speculative = mode == "speculative") } }
+            repeat(2) { assertThrows(IOException::class.java) { repo().legacyStreamLadderWithCompatibility("123", speculative = mode == "speculative") } }
             val recovery = mode == "reject" || mode == "registration-fails"
             assertEquals(if (recovery) 1 else 0, registrations)
             if (recovery) assertNull(store.value) else assertEquals(deviceJson, store.value)
@@ -121,7 +217,7 @@ class ContentRepositoryPlayerTest {
                     .code(if (compatible) 200 else status).message("test").body(body.toResponseBody()).build()
             }.build()
             val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
-            val ladder = repo.streamLadderWithCompatibility("123")
+            val ladder = repo.legacyStreamLadderWithCompatibility("123")
             assertEquals(1, compatibleRequests)
             assertEquals(2, ladder.renditions.size)
             assertEquals("https://example.com/avc", ladder.select(1080) { it.codec == "h264" }!!.url)
@@ -150,10 +246,10 @@ class ContentRepositoryPlayerTest {
                 .message("fixture").body(body.toResponseBody()).build()
         }.build()
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
-        val empty = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadderWithCompatibility("123") }
+        val empty = assertThrows(EmptyPlaybackResponseException::class.java) { repo.legacyStreamLadderWithCompatibility("123") }
         assertEquals("stage=device-register", empty.detail)
         assertNull("Failed registration must not poison the stored device", store.value)
-        assertEquals("https://example.com/recovered", repo.streamLadderWithCompatibility("123").select(720)!!.url)
+        assertEquals("https://example.com/recovered", repo.legacyStreamLadderWithCompatibility("123").select(720)!!.url)
         assertEquals(2, registrations)
         assertNotNull(store.value)
     }
@@ -165,8 +261,11 @@ class ContentRepositoryPlayerTest {
                 .message("fixture").body("  ".toResponseBody()).build()
         }.build()
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
-        val empty = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadderWithCompatibility("123") }
-        assertEquals("stage=compatibility-model", empty.detail)
+        val empty = assertThrows(EmptyPlaybackResponseException::class.java) { repo.legacyStreamLadderWithCompatibility("123") }
+        assertTrue(empty.detail!!.contains("stage=compatibility-model"))
+        assertTrue(empty.detail!!.contains("CS:other=200/2B/h1"))
+        assertTrue(empty.detail!!.contains("CM:b=200/2B/h1"))
+        assertTrue(empty.suppressed.any { it is PlaybackDiagnosticException && it.detail == "compat-reg=failed" })
         assertFalse(empty.message.orEmpty().contains("character"))
     }
 
@@ -202,13 +301,13 @@ class ContentRepositoryPlayerTest {
                 .code(200).message("fixture").body(body.toResponseBody()).build()
         }.build()
         fun repository() = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
-        val first = repository().streamLadderWithCompatibility("123")
+        val first = repository().legacyStreamLadderWithCompatibility("123")
         assertEquals("https://example.com/first.mp4", first.select(720)!!.url)
         assertEquals(1, registrations)
         assertEquals("Optional key failure must not retry or sleep during first playback", 1, keyRequests)
         assertTrue("Model gets its own deadline after cold registration", modelDeadline > registrationDeadline)
         assertNotNull(store.value)
-        assertEquals("https://example.com/first.mp4", repository().streamLadderWithCompatibility("456").select(720)!!.url)
+        assertEquals("https://example.com/first.mp4", repository().legacyStreamLadderWithCompatibility("456").select(720)!!.url)
         assertEquals("Next player reuses the initialized device", 1, registrations)
     }
 
@@ -222,7 +321,7 @@ class ContentRepositoryPlayerTest {
                 .code(200).message("test").body("".toResponseBody()).build()
         }.build()
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
-        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadderWithCompatibility("123", speculative = true) }
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.legacyStreamLadderWithCompatibility("123", speculative = true) }
         assertEquals(0, compatibleRequests)
     }
 
@@ -241,7 +340,7 @@ class ContentRepositoryPlayerTest {
                 .message("fixture").body(body.toResponseBody()).build()
         }.build()
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
-        assertEquals("https://example.com/preload", repo.streamLadderWithCompatibility("123", speculative = true).select(720)!!.url)
+        assertEquals("https://example.com/preload", repo.legacyStreamLadderWithCompatibility("123", speculative = true).select(720)!!.url)
         assertEquals(1, requests)
     }
 

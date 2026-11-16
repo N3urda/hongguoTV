@@ -41,6 +41,21 @@ internal class PlayerDeviceSource(
         fresh
     }
 
+    /** Empty bodies are ambiguous: keep the old slot until a replacement is ready.
+     * Share a monotonic cooldown across repositories, including successful rotations. */
+    fun refreshEmpty(expected: PlayerDevice): PlayerDevice? = synchronized(identityLock) {
+        RequestScope.ensureActive()
+        existing()?.let { if (it != expected) return@synchronized it }
+        val slot = key()
+        if (System.nanoTime() < (emptyRetryAfter[slot] ?: 0L)) return@synchronized null
+        emptyRetryAfter[slot] = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30)
+        val fresh = registrar.register(http)
+        RequestScope.ensureActive()
+        store()?.save(fresh.toJson())
+        cached = fresh
+        fresh
+    }
+
     fun invalidate() = synchronized(identityLock) {
         store()?.save(null)
         cached = null
@@ -66,6 +81,7 @@ internal class PlayerDeviceSource(
 
     companion object {
         private val identityLock = Any()
+        private val emptyRetryAfter = java.util.WeakHashMap<Any, Long>()
         private val retryAfter = java.util.WeakHashMap<Any, Long>()
         // The shortplay video_model URL from fetchShortplayVideoModel.
         internal const val SHORTPLAY_URL = "https://api3-normal-sinfonlinea.fqnovel.com/novel/player/video_model/v1/?iid={install_id}&device_id={device_id}&aid=1967&app_name=novelapp&version_code=72132&version_name=7.2.1.32&device_platform=android&device_brand=Xiaomi&os_version=13&cdid={cdid}"

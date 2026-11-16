@@ -39,7 +39,7 @@ internal fun diagnosticLine(
         "诊断: ${model.take(24)} / Android ${androidVersion.take(16)} / v${appVersion.take(16)} / ${failure.take(40)}"
     val rest = buildList {
         if (recoveryAttempts > 0) add("恢复$recoveryAttempts/$total")
-        if (!detail.isNullOrBlank()) add(detail.take(180))
+        if (!detail.isNullOrBlank()) add(detail.take(640))
     }
     return if (rest.isEmpty()) head else "$head · ${rest.joinToString(" · ")}"
 }

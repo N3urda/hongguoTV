@@ -1,11 +1,91 @@
 package com.hongguotv.core
 
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.OkHttpClient
 
 fun main(args: Array<String>) {
-    val repository = ContentRepository()
+    val repository = if (args.contains("--http1")) ContentRepository(http = OkHttpClient.Builder()
+        .protocols(listOf(okhttp3.Protocol.HTTP_1_1)).build()) else ContentRepository()
+    if (args.contains("--issue61")) {
+        try {
+            for (keyword in listOf("无限白粥", "朕可是忠臣", "无限白粥")) {
+                val found = repository.searchAll(keyword)
+                println("keyword=$keyword; matches=${found.items.map { it.title to it.id }}")
+                for (series in found.items.take(1)) {
+                    val detail = repository.detail(series.id)
+                    println("series=${series.title}; episodes=${detail.episodes.size}")
+                    for (id in detail.episodes.take(2)) {
+                        try {
+                            val ladder = repository.streamLadderWithCompatibility(id)
+                            println("episode=$id; renditions=${ladder.renditions.size}")
+                            val stream = ladder.renditions.first().toStreamInfo()
+                            RemoteVideo(repository.http, stream).use { video ->
+                                video.prepare()
+                                println("episode=$id; bytes=${video.read(0, 65536).size}")
+                            }
+                        } catch (e: Exception) {
+                            println("episode=$id; error=${e.javaClass.simpleName}; message=${e.message?.replace(Regex("https?://[^\\s]+"), "[url]")}")
+                        }
+                    }
+                }
+            }
+        } finally {
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
+    if (args.contains("--verify-tv-playback")) {
+        var failures = 0
+        var verified = 0
+        try {
+            val home = repository.home()
+            for ((seriesIndex, series) in home.items.take(2).withIndex()) {
+                val detail = repository.detail(series.id)
+                println("tv series=${detail.series.title}; episodes=${detail.episodes.size}")
+                for ((index, id) in detail.episodes.take(2).withIndex()) {
+                    try {
+                        val ladder = repository.streamLadderWithCompatibility(id)
+                        val rendition = ladder.playbackOrder(720) { it.codec.lowercase() in listOf("h264", "h265", "avc", "hevc") }.first()
+                        RemoteVideo(repository.http, rendition.toStreamInfo()).use { remote ->
+                            remote.prepare()
+                            val file = java.io.File("/tmp/hongguo-tv-$seriesIndex-$index.mp4")
+                            file.outputStream().use { output ->
+                                var offset = 0L
+                                while (offset < remote.total) {
+                                    val bytes = remote.read(offset, minOf(1024 * 1024L, remote.total - offset).toInt())
+                                    check(bytes.isNotEmpty())
+                                    output.write(bytes)
+                                    offset += bytes.size
+                                }
+                            }
+                            println("tv episode=${index + 1}; quality=${rendition.quality}; codec=${rendition.codec}; bytes=${remote.total}; file=$file")
+                            verified++
+                        }
+                    } catch (error: Exception) {
+                        failures++
+                        val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+                        fun report(problem: Throwable) {
+                            if (!seen.add(problem) || seen.size > 20) return
+                            println("tv failure=${problem.javaClass.simpleName}; trace=" + when (problem) {
+                                is EmptyPlaybackResponseException -> problem.detail
+                                is PlaybackDiagnosticException -> problem.detail
+                                else -> "unavailable"
+                            })
+                            problem.cause?.let(::report)
+                            problem.suppressed.forEach(::report)
+                        }
+                        report(error)
+                        if (args.contains("--fail-fast")) throw error
+                    }
+                }
+            }
+            println("tv summary verified=$verified; failed=$failures")
+            check(verified > 0 && failures == 0) { "TV playback verification failed ($failures failures)" }
+        } finally { repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() }
+        return
+    }
     if (args.contains("--verify-playback")) {
         val at = args.indexOf("--verify-playback")
         val seriesId = args.getOrNull(at + 1) ?: error("用法: --verify-playback <seriesId> [count]")

@@ -225,7 +225,7 @@ class FeedStartupCacheTest {
                             when (req.url.encodedPath) {
                                 "/detail" ->
                                     """<script>_ROUTER_DATA={"loaderData":{"detail_page":{"seriesDetail":{"series_id":"101","series_title":"缓存作品","vid_list":["10101","10102"]}}}};</script>"""
-                                "/novel/player/multi_video_model/v1/" ->
+                                "/novel/player/multi_video_model/player/v1" ->
                                     """{"data":{"10101":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
                                 else -> error("Unexpected request")
                             }
@@ -254,7 +254,7 @@ class FeedStartupCacheTest {
                 }
             }
             assertEquals(1, paths.count { it == "/detail" })
-            assertEquals(2, paths.count { it == "/novel/player/multi_video_model/v1/" })
+            assertEquals(2, paths.count { it == "/novel/player/multi_video_model/player/v1" })
             assertEquals(listOf("bytes=0-262143", "bytes=0-262143"), ranges)
             assertEquals(5, paths.size)
         } finally {
@@ -278,7 +278,10 @@ class FeedStartupCacheTest {
             OkHttpClient.Builder()
                 .addInterceptor { chain ->
                     val req = chain.request()
-                    val requestBody = okio.Buffer().also { req.body?.writeTo(it) }.readUtf8()
+                    val requestBytes = okio.Buffer().also { req.body?.writeTo(it) }.readByteArray()
+                    val requestBody = if (req.header("Content-Encoding") == "gzip")
+                        java.util.zip.GZIPInputStream(requestBytes.inputStream()).reader().readText()
+                    else requestBytes.toString(Charsets.UTF_8)
                     if (req.url.toString().contains("99999") || requestBody.contains("99999"))
                         throw com.hongguotv.core.EmptyPlaybackResponseException("fixture-stale-hint")
                     // 播放模型先读 video_tab 新接口；本用例只统计旧接口与视频分段请求。
@@ -307,7 +310,7 @@ class FeedStartupCacheTest {
                             when (req.url.encodedPath) {
                                 "/detail" ->
                                     """<script>_ROUTER_DATA={"loaderData":{"detail_page":{"seriesDetail":{"series_id":"101","series_title":"缓存作品","vid_list":["10101","10102"]}}}};</script>"""
-                                "/novel/player/multi_video_model/v1/" ->
+                                "/novel/player/multi_video_model/player/v1" ->
                                     """{"data":{"10101":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
                                 else -> throw EmptyPlaybackResponseException("fixture-stale-hint")
                             }
@@ -336,7 +339,7 @@ class FeedStartupCacheTest {
                 }
             }
             assertEquals(1, paths.count { it == "/detail" })
-            assertEquals(2, paths.count { it == "/novel/player/multi_video_model/v1/" })
+            assertEquals(2, paths.count { it == "/novel/player/multi_video_model/player/v1" })
             assertEquals(listOf("bytes=0-262143", "bytes=0-262143"), ranges)
             assertEquals("10101", cache.load("guest", "recommend")!!.trialHints["101"]!!.episodeId)
         } finally {

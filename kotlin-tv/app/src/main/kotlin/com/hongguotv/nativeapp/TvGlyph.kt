@@ -24,7 +24,6 @@ internal class TvGlyph(private val kind: Int, private val size: Int, var ink: In
                 line(15f,14f,15f,18f,21f,18f,21f,21f)
                 c.drawPoint(20f,14f,pen); c.drawPoint(15f,21f,pen)
             }
-            10 -> { c.drawArc(4f,4f,20f,20f,45f,290f,false,pen); line(20f,4f,20f,10f,14f,10f); line(12f,8f,12f,16f,9f,13f); line(12f,16f,15f,13f) }
             7 -> { c.drawCircle(10.5f,10.5f,6.5f,pen); line(15.5f,15.5f,21f,21f) }
             2 -> { line(5f,20f,5f,12f); line(12f,20f,12f,4f); line(19f,20f,19f,8f) }
             3 -> { c.drawCircle(12f,8f,4f,pen); c.drawArc(4f,14f,20f,28f,180f,180f,false,pen) }

@@ -633,20 +633,20 @@ class HomeFeedScreenTest {
         }
         val http = OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
-            val compatible = request.url.host == "api3-normal-sinfonlinea.fqnovel.com"
+            val compatible = request.url.encodedPath == "/novel/player/multi_video_model/player/v1"
             val registering = request.url.encodedPath == "/service/2/device_register/"
             val optional = request.url.encodedPath in listOf("/service/2/app_alert_check/", "/reading/crypt/registerkey")
             val body = when {
                 registering -> if (registrations.incrementAndGet() == 1) "" else
                     """{"device_id":"7000000000001234567","install_id":"7000000000007654321"}"""
-                compatible -> """{"code":0,"data":{"video_model":{"video_list":{"video_1":{"vheight":720,"codec_type":"h264","main_url":"https://example.com/recovered.mp4"}}}}}"""
+                compatible -> """{"code":0,"data":{"101":{"video_model":{"video_list":{"video_1":{"vheight":720,"codec_type":"h264","main_url":"https://example.com/recovered.mp4"}}}}}}"""
                 else -> ""
             }
             okhttp3.Response.Builder().request(request).protocol(okhttp3.Protocol.HTTP_1_1)
                 .code(if (registering || compatible || optional) 200 else 403).message("fixture")
                 .body(okhttp3.ResponseBody.create(null, body)).build()
         }.build()
-        val repository = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        val repository = ContentRepository(http, playbackSession = PlaybackDeviceSession())
         try {
             TrialRecoveryFixture { _, _ -> runCatching { repository.streamLadderWithCompatibility("101") }.exceptionOrNull() }.use { f ->
                 assertEquals(1, registrations.get())

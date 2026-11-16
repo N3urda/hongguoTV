@@ -15,7 +15,7 @@ REPOSITORY = 'N3urda/hongguoTV'
 PACKAGE = 'com.hongguotv.nativeapp'
 CERTIFICATE = '3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98'
 ROOT = Path(__file__).resolve().parents[1]
-NOTES = '补齐 Android 6+ ARM32、ARM64 安装包，保留通用包供现有更新器使用；Android 5 保留兼容通用包。Android 6+ 所有包均无 FFmpeg。沿用 0.16.3 的身份恢复修复，问题设备仍待真机回测。'
+NOTES = '修复部分剧集（例如《无限白粥，朕可是忠臣啊》）无可播放资源的问题：调整播放设备能力声明，向上游请求电视可解码的视频档位。受影响剧集前两集已验证获取兼容档位并成功读取视频数据；未做实体电视播放验收，偶发网络超时仍需重试。包含 Android 5 兼容包、Android 6+ 通用包、ARM32 和 ARM64 分包，沿用原正式签名。'
 
 
 def require(condition, message):

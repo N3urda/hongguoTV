@@ -130,6 +130,30 @@ class LeftRailNavigationTest {
         } finally { browser.close(); controller.pause().stop().destroy() }
     }
 
+    @Test fun enteringSettingsAlwaysStartsAtUpdateAction() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        val activity = controller.get()
+        fun field(name: String) = activity.javaClass.getDeclaredField(name).apply { isAccessible = true }
+        try {
+            val library = field("library").get(activity) as Library
+            val loader = library.javaClass.getDeclaredField("loader").apply { isAccessible = true }
+            (loader.get(library) as java.util.concurrent.ExecutorService).submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            val switch = activity.javaClass.getDeclaredMethod("switchTab", Int::class.javaPrimitiveType).apply { isAccessible = true }
+            repeat(2) {
+                field("settingsGroup").setInt(activity, 2)
+                switch.invoke(activity, 6)
+                layout(activity.window.decorView)
+                assertEquals(0, field("settingsGroup").getInt(activity))
+                assertEquals("检查更新", ((field("root").get(activity) as View).findFocus() as TextView).text.toString())
+                val labels = views(field("root").get(activity) as View).filterIsInstance<TextView>()
+                assertTrue(labels.any { it.text.toString().startsWith("当前版本") })
+                val shell = field("catalogShell").get(activity) as CatalogShell
+                assertFalse(views(shell.getChildAt(0)).filterIsInstance<TextView>().any { it.text == "检查更新" })
+            }
+        } finally { controller.destroy() }
+    }
+
     @Test fun everyPrimaryDestinationBackConfirmsExitAndCancelKeepsFocus() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()
