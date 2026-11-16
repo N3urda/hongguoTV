@@ -10,6 +10,8 @@
 
 模块边界和接入说明见 [shared-core README](../kotlin-tv/shared-core/README.md)。本次是阶段 1/2 的核心基础交付；阶段 0 桌面媒体原型、完整账户/播放协调解耦、桌面 UI 和播放器尚未完成。
 
+2026-11-16：新增 `app-desktop` 通用桌面外壳原型，Windows/macOS 共用 Compose 界面，已在 macOS 生成应用包并验证浏览、详情与会话收藏，在线分类接口返回成功。完整桌面 UI 和播放器仍未完成，键盘实机与 Windows 验收待补充，详见 [桌面原型说明](../kotlin-tv/app-desktop/README.md)。
+
 ## 目标与范围
 
 在同一仓库中维护一个共享业务核心，以及 Windows、macOS、Android 手机、Android TV 四个客户端。业务规则只维护一份；界面按鼠标键盘、触屏、遥控器分别设计；播放器与系统能力通过平台适配层接入。

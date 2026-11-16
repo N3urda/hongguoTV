@@ -22,7 +22,7 @@ jobs:
           java-version: '17'
       - name: Verify shared business rules and JVM integration
         shell: bash
-        run: ./kotlin-tv/gradlew -p kotlin-tv :shared-core:allTests :core:test --console=plain
+        run: ./kotlin-tv/gradlew -p kotlin-tv :shared-core:allTests :core:test :app-desktop:test :app-desktop:assemble --console=plain
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -30,6 +30,7 @@ jobs:
           path: |
             kotlin-tv/shared-core/build/reports/tests/
             kotlin-tv/core/build/reports/tests/
+            kotlin-tv/app-desktop/build/reports/tests/
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 40
