@@ -131,6 +131,7 @@ class TvTools(private val activity: Activity) {
         selected: Int = -1,
         covers: List<String> = emptyList(),
         loadCover: (ImageView, String) -> Unit = { _, _ -> },
+        onBack: (() -> Unit)? = null,
         onExtra: () -> Unit = {},
     ) {
         require(labels.isNotEmpty())
@@ -207,6 +208,12 @@ class TvTools(private val activity: Activity) {
         next = AlertDialog.Builder(activity).create()
         next.setView(content, 0, 0, 0, 0)
         open(next, anchor)
+        if (onBack != null) next.setOnKeyListener { _, key, event ->
+            if (key == KeyEvent.KEYCODE_BACK) {
+                if (event.action == KeyEvent.ACTION_UP) { next.dismiss(); main.post { onBack() } }
+                true
+            } else false
+        }
         next.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
         next.window?.setDimAmount(.6f)
         val width = minOf(dp(if (compact) 440 else 480), (activity.resources.displayMetrics.widthPixels * .82f).toInt())

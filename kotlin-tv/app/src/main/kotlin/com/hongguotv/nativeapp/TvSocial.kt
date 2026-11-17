@@ -33,6 +33,7 @@ class TvSocial(
     private var commentScope: RequestScope? = null
     private var generation = 0
     private var dialog: Dialog? = null
+    val showing: Boolean get() = dialog?.isShowing == true
     private var overlay: BulletView? = null
     private var loading = false
     private var failedAt = 0L
@@ -86,7 +87,7 @@ class TvSocial(
         }
     }
 
-    fun reset() {
+    fun reset(keepDialog: Boolean = false) {
         generation++
         scope?.cancel()
         scope = null
@@ -97,9 +98,11 @@ class TvSocial(
         pages.clear()
         timedStatus = "尚未读取"
         overlay?.setRows(emptyList())
-        dialog?.dismiss()
-        dialog = null
-        key = null
+        if (!keepDialog) {
+            dialog?.dismiss()
+            dialog = null
+        }
+        key = if (keepDialog) identity() else null
     }
 
     fun destroy() {
@@ -164,7 +167,9 @@ class TvSocial(
         }
 
     fun settings(anchor: View) {
+        dialog?.dismiss()
         val d = Dialog(activity)
+        dialog = d
         d.requestWindowFeature(Window.FEATURE_NO_TITLE)
         val body =
             LinearLayout(activity).apply {
@@ -252,7 +257,7 @@ class TvSocial(
         troubleshooting.addView(
             button("重新读取弹幕") {
                 timed.clearCache()
-                reset()
+                reset(keepDialog = true)
             }
         )
         troubleshooting.addView(button("查看读取诊断") {
@@ -268,7 +273,10 @@ class TvSocial(
         body.addView(label("真实时间轴弹幕；无内容时不使用普通评论代替。", 14f))
         body.addView(button("关闭") { d.dismiss() })
         d.setContentView(ScrollView(activity).apply { addView(body) })
-        d.setOnDismissListener { if (anchor.isAttachedToWindow) anchor.requestFocus() }
+        d.setOnDismissListener {
+            if (dialog === d) dialog = null
+            if (anchor.isAttachedToWindow) anchor.requestFocus()
+        }
         d.show()
         d.window?.setLayout(dp(440), -2)
         body.getChildAt(1).requestFocus()

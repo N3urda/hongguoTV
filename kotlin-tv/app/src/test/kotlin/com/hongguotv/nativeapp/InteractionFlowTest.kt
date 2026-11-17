@@ -34,16 +34,44 @@ class InteractionFlowTest {
     }
     private fun texts(view: View): List<TextView> = if (view is ViewGroup) (0 until view.childCount).flatMap { texts(view.getChildAt(it)) } else if (view is TextView) listOf(view) else emptyList()
 
-    @Test fun enteringEpisodeSelectsItImmediatelyInsteadOfOnlyMovingFocus() {
-        val activity = Robolectric.buildActivity(Activity::class.java).setup()
+    @Test fun playbackInlineSelectorSharesDetailRangesGridAndRestoresMenuOnDismiss() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
         var played = -1
-        val panel = EpisodePanel(activity.get(), 40, 0, { _, _, select -> select(24) }, { played = it }, {})
+        var located = -1
+        val panel = EpisodePanel(activity, 65, 24, { current, _, _ -> located = current }, { played = it }, {}, 22)
         try {
-            panel.show()
-            val dialog = get(panel, "dialog") as android.app.Dialog
-            texts(dialog.window!!.decorView).single { it.text == "跳转集数" }.performClick()
-            assertEquals(24, played)
-        } finally { panel.dismiss(); activity.pause().stop().destroy() }
+            val decor = android.widget.LinearLayout(activity).apply { orientation = 1 }
+            val menu = android.widget.LinearLayout(activity)
+            val anchor = TextView(activity).apply { id = View.generateViewId(); isFocusable = true; isFocusableInTouchMode = true }
+            menu.addView(anchor)
+            decor.addView(menu)
+            activity.setContentView(decor)
+            val oldDown = anchor.nextFocusDownId
+            panel.show(decor, anchor)
+            assertEquals(2, decor.childCount)
+            assertSame(menu, decor.getChildAt(0))
+            val current = texts(decor).single { it.text == "25\n当前" }
+            assertTrue(current.hasFocus())
+            val cells = texts(decor).filter { it.tag?.toString()?.startsWith("episode-") == true && !it.tag.toString().startsWith("episode-group-") }
+            assertEquals(20, cells.size)
+            assertEquals(10, (cells.first().parent as ViewGroup).childCount)
+            assertEquals(listOf("1–20", "21–40", "41–60", "61–65"), texts(decor).filter { it.tag?.toString()?.startsWith("episode-group-") == true }.map { it.text.toString() })
+            assertTrue(texts(decor).any { it.text == "23\n上次" })
+            assertFalse(texts(decor).any { it.text == "跳转集数" })
+            val lastGroup = decor.findViewWithTag<View>("episode-group-3")
+            assertEquals(lastGroup.id, lastGroup.nextFocusRightId)
+            decor.findViewWithTag<View>("episode-group-3").performClick()
+            val last = decor
+            assertTrue(last.findViewWithTag<View>("episode-group-3").hasFocus())
+            assertEquals(-1, played)
+            last.findViewWithTag<View>("episode-64").performClick()
+            assertEquals(64, played)
+            panel.dismiss()
+            assertEquals(1, decor.childCount)
+            assertTrue(anchor.hasFocus())
+            assertEquals(oldDown, anchor.nextFocusDownId)
+        } finally { panel.dismiss(); controller.pause().stop().destroy() }
     }
 
     @Test fun episodeInputKeepsInvalidInputOpenAndValidInputPlaysOnce() {
