@@ -101,8 +101,7 @@ class MainActivity : Activity() {
                 else -> throw IllegalArgumentException("Unknown key")
             }
             for (event in listOf(KeyEvent(KeyEvent.ACTION_DOWN, key), KeyEvent(KeyEvent.ACTION_UP, key))) {
-                if (!tvTools.dispatchPhoneKey(event) && !cloudAccount.dispatchPhoneKey(event) &&
-                    episodePanel?.dispatchPhoneKey(event) != true) dispatchKeyEvent(event)
+                if (!tvTools.dispatchPhoneKey(event) && !cloudAccount.dispatchPhoneKey(event)) dispatchKeyEvent(event)
             }
             return JSONObject().put("message", "已发送遥控指令")
         }
@@ -449,6 +448,26 @@ class MainActivity : Activity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var controls: LinearLayout
     private var panel = false
+    // Consume the entire shortcut press, even when ACTION_DOWN opens a focusable panel.
+    private val playerShortcutKeys = mutableSetOf<Int>()
+    private var pendingEpisodeTarget: Int? = null
+    private var pendingEpisodeSwitch: Runnable? = null
+    private var automaticEpisodeFrom = -1
+    private var automaticEpisodeAt = -1L
+
+    private fun cancelEpisodeSwitch() {
+        pendingEpisodeSwitch?.let(main::removeCallbacks)
+        pendingEpisodeSwitch = null
+        pendingEpisodeTarget = null
+    }
+
+    private fun playerModalOpen() =
+        tvTools.showing || relayDialog != null || social.showing
+
+    private fun playerControlsOpen() =
+        panel || playError || recoveryDisplayActive ||
+            (controls.visibility == View.VISIBLE && controls.childCount > 0)
+
     private var playbackClock: TextClock? = null
     private var transportPlay: TextView? = null
     private var sleepButton: TextView? = null
@@ -508,7 +527,7 @@ class MainActivity : Activity() {
             }
         }
     private val hideHud = Runnable {
-        if (screen == "player" && player?.isPlaying == true && !playError && !waitingForFirstFrame && root.hasWindowFocus())
+        if (screen == "player" && player?.isPlaying == true && !playerControlsOpen() && !playerModalOpen() && !waitingForFirstFrame && root.hasWindowFocus())
             hidePlaybackOverlay()
     }
     private val seekRunnable = Runnable {
@@ -770,6 +789,7 @@ class MainActivity : Activity() {
     }
 
     private fun invalidatePage() {
+        cancelEpisodeSwitch()
         cancelNextSeason()
         generation++
         cancelWork()
@@ -2734,118 +2754,23 @@ class MainActivity : Activity() {
         content.addView(text("选集分组 · 共 ${data.episodes.size} 集", 12f, muted).apply {
             setPadding(0, dp(12), 0, dp(6))
         })
-        val groupRow = row()
-        groupRow.gravity = Gravity.CENTER_VERTICAL
-        groupRow.setPadding(0, dp(3), 0, dp(10))
-        val maxGroup = data.episodes.lastIndex / 20
-        group = group.coerceIn(0, maxGroup)
-        val groupStrip = row()
-        val groupScroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            isFocusable = false
-            addView(groupStrip)
-        }
-        groupRow.addView(groupScroll, lp(0, dp(44)).apply { weight = 1f; rightMargin = dp(12) })
-        val groupButtons = (0..maxGroup).map { index ->
-            val start = index * 20 + 1
-            val end = minOf((index + 1) * 20, data.episodes.size)
-            button("$start–$end", index == group) {
-                if (group != index) {
-                    group = index
-                    showDetail(true)
-                    root.findViewWithTag<View>("episode-group-$index")?.requestFocus()
-                }
-            }.apply {
-                tag = "episode-group-$index"
-                contentDescription = "第 $start 至 $end 集分组"
-                textSize = 13f
-                minWidth = dp(88)
-                setPadding(dp(14), 0, dp(14), 0)
-                fun paintGroup() {
-                    setTextColor(if (isSelected) accent else if (hasFocus()) white else muted)
-                    setTypeface(null, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
-                    background = TvStyle.shape(this@MainActivity,
-                        if (isSelected || hasFocus()) TvStyle.raised else Color.TRANSPARENT,
-                        if (hasFocus()) white else Color.TRANSPARENT, radius = 20)
-                }
-                setOnFocusChangeListener { _, _ -> paintGroup() }
-                paintGroup()
-                groupStrip.addView(this, lp(-2, dp(40)).apply { rightMargin = dp(6) })
-            }
-        }
-        val selectedGroupButton = groupButtons[group]
-        groupScroll.post {
-            groupScroll.scrollTo((selectedGroupButton.left - groupScroll.width / 2 +
-                selectedGroupButton.width / 2).coerceAtLeast(0), 0)
-        }
-        lateinit var jump: TextView
-        jump =
-            addButton(groupRow, "跳转集数") {
-                tvTools.episodePicker(data.episodes.size, episodeIndex, jump) { target ->
-                    playEpisode(target)
-                }
-            }
-        content.addView(groupRow)
-        content.addView(
-            text("高亮为当前集 · 上次为续播位置 · 方向键选择，确定播放", 12f, muted).apply { setPadding(0, 0, 0, dp(6)) }
+        group = group.coerceIn(0, data.episodes.lastIndex / 20)
+        val selector = EpisodeSelectorView(
+            this, data.episodes.size, episodeIndex, group, resumeIndex, progress?.completed == true,
+            onGroup = { index ->
+                group = index
+                showDetail(true)
+                root.findViewWithTag<View>("episode-group-$index")?.requestFocus()
+            },
+            onJump = { focused, anchor ->
+                tvTools.episodePicker(data.episodes.size, focused, anchor, ::playSelectedEpisode)
+            },
+            onSelect = ::playSelectedEpisode,
         )
-        val episodes = mutableListOf<View>()
-        (group * 20 until minOf((group + 1) * 20, data.episodes.size))
-            .toList()
-            .chunked(10)
-            .forEach { numbers ->
-                val line = row()
-                numbers.forEach { index ->
-                    val item =
-                        button(
-                            "${index+1}" +
-                                (if (index == episodeIndex) "\n当前"
-                                else if (index == resumeIndex && progress != null)
-                                    if (progress.completed) "\n已看" else "\n上次"
-                                else ""),
-                            index == episodeIndex,
-                        ) {
-                            val current = detailProgress(data)
-                            playEpisode(
-                                index,
-                                if (
-                                    current?.episodeId == data.episodes[index] && !current.completed
-                                )
-                                    current.position
-                                else 0,
-                            )
-                        }
-                    item.textSize = 12f
-                    item.includeFontPadding = false
-                    item.setPadding(dp(2), dp(3), dp(2), dp(3))
-                    item.contentDescription = "第 ${index+1} 集"
-                    line.addView(
-                        item,
-                        lp(0, dp(52)).apply {
-                            weight = 1f
-                            rightMargin = dp(6)
-                        },
-                    )
-                    episodes += item
-                }
-                repeat(10 - numbers.size) {
-                    line.addView(
-                        Space(this),
-                        lp(0, dp(52)).apply {
-                            weight = 1f
-                            rightMargin = dp(6)
-                        },
-                    )
-                }
-                content.addView(line, lp(-1, dp(60)))
-            }
-        episodes.forEachIndexed { i, v ->
-            v.nextFocusLeftId = if (i % 10 == 0) v.id else episodes[i - 1].id
-            v.nextFocusRightId =
-                if (i % 10 == 9 || i == episodes.lastIndex) v.id else episodes[i + 1].id
-            if (i >= 10) v.nextFocusUpId = episodes[i - 10].id
-            v.nextFocusDownId = if (i + 10 < episodes.size) episodes[i + 10].id else v.id
-        }
+        content.addView(selector)
+        val groupButtons = selector.groupButtons
+        val jump = selector.jump
+        val episodes = selector.episodes
         val primary = listOf(play, detailComments)
         play.setTextColor(accent)
         val secondaryActions = listOf(accountFavoriteButton!!, synopsisButton)
@@ -2961,6 +2886,17 @@ class MainActivity : Activity() {
         automaticNext: Boolean = false,
         recreateView: Boolean = false,
     ) {
+        val restoreControls = automaticNext && panel && !playError
+        val restoreControlTag = if (restoreControls) controls.findFocus()?.tag else null
+        if (automaticNext) {
+            if (pendingEpisodeTarget != null) return
+            automaticEpisodeFrom = episodeIndex
+            automaticEpisodeAt = android.os.SystemClock.uptimeMillis()
+        } else {
+            automaticEpisodeFrom = -1
+            automaticEpisodeAt = -1L
+        }
+        cancelEpisodeSwitch()
         cancelNextSeason()
         seasonSuppressed = false
         updater.interrupt()
@@ -3139,7 +3075,7 @@ class MainActivity : Activity() {
                 }
             hud.addView(progressBar, lp(-1, dp(4)))
             hud.addView(
-                text("确认 暂停/播放    左右 快退/快进    ↓ 选集    ↑ 操作菜单    菜单 更多", 13f, Color.LTGRAY).apply {
+                text("观看时 ↑ 上一集  ↓ 下一集  ← → 快退/快进\n确认 暂停/继续并打开菜单 · 菜单键 打开菜单", 13f, Color.LTGRAY).apply {
                     setPadding(0, dp(12), 0, 0)
                 }
             )
@@ -3172,6 +3108,10 @@ class MainActivity : Activity() {
         }
         transportPlay = null
         sleepButton = null
+        if (restoreControls) {
+            showPanel()
+            if (restoreControlTag != null) controls.findViewWithTag<View>(restoreControlTag)?.requestFocus()
+        }
         syncMediaSession()
         val requestedId = data.episodes[episodeIndex]
         val maxQuality = library.maxQuality
@@ -3253,6 +3193,7 @@ class MainActivity : Activity() {
                             if (state == Player.STATE_ENDED) {
                                 saveProgress(true)
                                 if (sleepTimer.episodeEnded()) stopForSleep()
+                                else if (pendingEpisodeTarget != null) return
                                 else if (
                                     foreground &&
                                         requestedAutoplay &&
@@ -3595,6 +3536,10 @@ class MainActivity : Activity() {
         social.reset()
         video = next
         playbackHttp = queuedHttp
+        if (completed) {
+            automaticEpisodeFrom = episodeIndex
+            automaticEpisodeAt = android.os.SystemClock.uptimeMillis()
+        }
         episodeIndex = queuedEpisode
         group = episodeIndex / 20
         queuedNext = null
@@ -3614,13 +3559,17 @@ class MainActivity : Activity() {
         cancelRecovery()
         recovery.reset()
         playbackTitle.text = "${data.series.title}  ·  第 ${episodeIndex+1} 集"
-        controls.removeAllViews()
-        controls.visibility = View.GONE
-        panel = false
+        if (panel && completed) {
+            if (pendingEpisodeTarget == null) showPanel()
+        } else {
+            controls.removeAllViews()
+            controls.visibility = View.GONE
+            panel = false
+        }
         // 自动队列续播保持画面干净，手动切集仍沿用原有提示。
         hideAutoplayOverlay = completed
-        if (completed) hidePlaybackOverlay()
-        transportPlay = null
+        if (completed && !panel && !playerModalOpen()) hidePlaybackOverlay()
+        if (!panel) transportPlay = null
         saveProgress()
         syncMediaSession()
         android.util.Log.i("HongguoTV", "Playback queue transition episode=${episodeIndex+1}")
@@ -3895,6 +3844,7 @@ class MainActivity : Activity() {
                             if (state == Player.STATE_ENDED) {
                                 saveProgress(true)
                                 if (sleepTimer.episodeEnded()) stopForSleep()
+                                else if (pendingEpisodeTarget != null) return
                                 else if (
                                     foreground && requestedAutoplay && !pausedForLifecycle && library.autoNext &&
                                         !sleepStopped &&
@@ -3983,7 +3933,7 @@ class MainActivity : Activity() {
     }
 
     /** 伴机设置：开关 + 局域网地址 + 连接测试。 */
-    private fun showRelaySettings(anchor: TextView) {
+    private fun showRelaySettings(anchor: TextView, onBack: (() -> Unit)? = null) {
         if (relayDialog != null) return
         val container =
             LinearLayout(this).apply {
@@ -4127,6 +4077,15 @@ class MainActivity : Activity() {
             if (anchor.isAttachedToWindow) anchor.requestFocus()
         }
         relayDialog = dialog
+        if (onBack != null) dialog.setOnKeyListener { _, key, event ->
+            if (key == KeyEvent.KEYCODE_BACK) {
+                if (event.action == KeyEvent.ACTION_UP) {
+                    dialog.dismiss()
+                    main.post { if (screen == "player" && anchor.isAttachedToWindow) onBack() }
+                }
+                true
+            } else false
+        }
         dialog.show()
     }
 
@@ -4267,14 +4226,15 @@ class MainActivity : Activity() {
         waitingForFirstFrame = false
         recoveryDisplayActive = false
         allowSlowRecovery = false
-        controls.removeAllViews()
-        controls.visibility = View.GONE
-        panel = false
+        if (!panel) {
+            controls.removeAllViews()
+            controls.visibility = View.GONE
+        }
         if (autoRecoveredPlay) {
             autoRecoveredPlay = false
             Toast.makeText(this, "已恢复播放", Toast.LENGTH_SHORT).show()
         }
-        if (hideAutoplayOverlay) {
+        if (hideAutoplayOverlay && !panel && !playerModalOpen()) {
             hideAutoplayOverlay = false
             hidePlaybackOverlay()
         } else showHud()
@@ -4308,7 +4268,7 @@ class MainActivity : Activity() {
         updateClock()
         updatePlaybackText()
         main.removeCallbacks(hideHud)
-        if (player?.isPlaying == true) main.postDelayed(hideHud, if (panel) 8000 else 4500)
+        if (player?.isPlaying == true && !playerControlsOpen() && !playerModalOpen()) main.postDelayed(hideHud, 4500)
     }
 
     private fun updatePlaybackText() {
@@ -4369,7 +4329,7 @@ class MainActivity : Activity() {
         showHud()
         updatePlaybackText()
         syncMediaSession()
-        if (panel && episodePanel == null) showPanel()
+        // Updating the label is sufficient; rebuilding here loses the focused control.
     }
 
     private fun togglePlayback() =
@@ -4388,11 +4348,37 @@ class MainActivity : Activity() {
         showHud()
     }
 
-    private fun skipEpisode(direction: Int) {
-        if (!foreground || screen != "player") return
-        val count = detail?.episodes?.size ?: return
-        val target = episodeIndex + direction
-        if (target in 0 until count) playEpisode(target)
+    private fun skipEpisode(direction: Int, pressedAt: Long = android.os.SystemClock.uptimeMillis()) {
+        if (!foreground || screen != "player" || playerModalOpen() || episodePanel != null) return
+        val data = detail ?: return
+        // A queued key may predate the automatic transition already delivered on the main thread.
+        val base = pendingEpisodeTarget ?: if (
+            automaticEpisodeFrom >= 0 && pressedAt <= automaticEpisodeAt &&
+            automaticEpisodeAt - pressedAt < 500
+        ) automaticEpisodeFrom else episodeIndex
+        val target = base + direction
+        if (target !in data.episodes.indices) {
+            Toast.makeText(this, if (direction < 0) "已经是第一集" else "已经是最后一集", Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingEpisodeSwitch?.let(main::removeCallbacks)
+        pendingEpisodeTarget = target
+        val ticket = generation
+        playbackText.text = "即将播放第 ${target + 1} 集"
+        hud.visibility = View.VISIBLE
+        val switch = Runnable {
+            pendingEpisodeSwitch = null
+            pendingEpisodeTarget = null
+            if (foreground && screen == "player" && generation == ticket && detail === data) {
+                if (target != episodeIndex) playEpisode(target)
+                else {
+                    if (panel) showPanel() else { updatePlaybackText(); showHud() }
+                }
+            }
+        }
+        pendingEpisodeSwitch = switch
+        // Coalesce taps before starting network/decoder work, not after starting each episode.
+        main.postDelayed(switch, 160)
     }
 
     private fun syncMediaSession() {
@@ -4427,6 +4413,7 @@ class MainActivity : Activity() {
     }
 
     private fun stopForSleep() {
+        cancelEpisodeSwitch()
         cancelNextSeason()
         sleepStopped = true
         requestedAutoplay = false
@@ -4462,6 +4449,7 @@ class MainActivity : Activity() {
                 updatePlaybackText()
                 showHud()
             },
+            onBack = if (anchor.tag == "playback-settings") ({ showPlaybackSettings(anchor) }) else null,
         )
     }
 
@@ -4493,7 +4481,7 @@ class MainActivity : Activity() {
                 }
             } else applyVideoRotation()
             if(anchor.tag!="playback-settings") anchor.text="画面旋转  ·  ${library.videoRotation}°"
-        })
+        }, onBack = if (anchor.tag == "playback-settings") ({ showPlaybackSettings(anchor) }) else null)
     }
     private fun updatePersistentProgress() {
         if (persistentProgress == null || !library.isLoaded) return
@@ -4524,6 +4512,7 @@ class MainActivity : Activity() {
                     anchor.text = (if (inPlayer) "画面 " else "画面模式  ·  ") + library.frameMode.label
             },
             selected = library.frameMode.ordinal,
+            onBack = if (inPlayer && anchor.tag == "playback-settings") ({ showPlaybackSettings(anchor) }) else null,
         )
     }
 
@@ -4546,98 +4535,96 @@ class MainActivity : Activity() {
 
     private fun showPanel() {
         seasonBanner?.visibility = View.GONE
-        if (playError) return
+        if (playError || recoveryDisplayActive) return
+        if (episodePanel != null) { showHud(); return }
+        cancelEpisodeSwitch()
+        val focusedTag = controls.findFocus()?.tag
         panel = true
         showHud()
         controls.visibility = View.VISIBLE
         controls.removeAllViews()
-        if (nextSeasonWork != null) addButton(controls, "取消本次跨季连播") {
-            seasonSuppressed = true
-            cancelNextSeason()
-            showPanel()
-        }
-
-        val transport = row()
-        controls.addView(transport)
-        val play =
-            addButton(transport, if (player?.playWhenReady == true) "暂停" else "播放") {
-                    togglePlayback()
-                }
-                .also { transportPlay = it }
-        addButton(transport, "上一集") { if (episodeIndex > 0) playEpisode(episodeIndex - 1) }
-            .apply {
-                isEnabled = episodeIndex > 0
-                isFocusable = episodeIndex > 0
-                alpha = if (episodeIndex > 0) 1f else .4f
+        val primary = row()
+        controls.addView(primary)
+        fun item(row: LinearLayout, title: String, key: String, action: () -> Unit): TextView =
+            PlaybackIconButton(this, key).apply {
+                text = title
+                tag = key
+                setOnClickListener { action() }
+                row.addView(this, LinearLayout.LayoutParams(dp(64), dp(52)).apply { rightMargin = dp(16) })
             }
-        addButton(transport, "下一集") {
-                if (episodeIndex < (detail?.episodes?.lastIndex ?: 0)) playEpisode(episodeIndex + 1)
-            }
-            .apply {
-                val enabled = episodeIndex < (detail?.episodes?.lastIndex ?: 0)
-                isEnabled = enabled
-                isFocusable = enabled
-                alpha = if (enabled) 1f else .4f
-            }
-        val options = row().apply { setPadding(0, dp(6), 0, 0) }
-        controls.addView(options)
+        val play = item(primary, if (requestedAutoplay) "暂停" else "播放", "transport-play") {
+            val play = !(player?.playWhenReady ?: requestedAutoplay)
+            episodePanel?.dismiss()
+            requestPlayback(play)
+            hidePanel()
+        }.also { transportPlay = it }
         lateinit var episodes: TextView
-        episodes = addButton(options, "选集") { showEpisodePanel(episodes) }
-        lateinit var commentsButton: TextView
-        commentsButton = addButton(options, "评论") { social.showComments(commentsButton) }
-        lateinit var danmakuButton: TextView
-        danmakuButton = addButton(options, "弹幕设置") { social.settings(danmakuButton) }
+        episodes = item(primary, "选集", "episodes") { showEpisodePanel(episodes) }
+        lateinit var speed: TextView
+        speed = item(primary, "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}", "speed") { showSpeedPicker(speed) }
+        lateinit var danmaku: TextView
+        danmaku = item(primary, "弹幕设置", "danmaku") { social.settings(danmaku) }
         lateinit var more: TextView
-        more =
-            addButton(options, "播放设置") {
-                    tvTools.choose(
-                        "播放设置",
-                        listOf(
-                            "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}",
-                            "清晰度 ${library.maxQuality}P",
-                            "画面 ${library.frameMode.label}",
-                            "定时 ${sleepTimer.label()}",
-                            "伴机代解码 ${if (relayStore.enabled) "开" else "关"}",
-                            "从头播放",
-                            "重置设备能力记录",
-                            "画面旋转 ${library.videoRotation}°",
-                            "常驻播放进度 ${if (library.alwaysShowProgress) "开启" else "关闭"}",
-                        ),
-                        more,
-                        { choice ->
-                            main.post {
-                                if (screen == "player" && more.isAttachedToWindow)
-                                    when (choice) {
-                                        0 -> showSpeedPicker(more)
-                                        1 -> showQualityPicker(more, true)
-                                        2 -> showFramePicker(more, true)
-                                        3 -> showSleepPicker(more)
-                                        4 -> showRelaySettings(more)
-                                        5 -> {
-                                            seekTo(0)
-                                            hidePanel()
-                                        }
-                                        7 -> showRotationPicker(more)
-                                        8 -> { library.alwaysShowProgress = !library.alwaysShowProgress; updatePersistentProgress() }
-                                        6 -> {
-                                            val count = CodecCapabilities.learnedCount()
-                                            CodecCapabilities.resetLearned()
-                                            android.util.Log.i(
-                                                "HongguoTV",
-                                                "Decoder capability lessons reset ($count entries)",
-                                            )
-                                            playbackText.text =
-                                                if (count > 0) "已清除 $count 条设备能力记录，重新按解码器实际能力选流"
-                                                else "暂无设备能力记录"
-                                        }
-                                    }
-                            }
-                        },
-                    )
-                }
-                .apply { tag = "playback-settings" }
-        play.requestFocus()
+        more = item(primary, "更多设置", "playback-settings") { showPlaybackSettings(more) }
+        val rows = mutableListOf(primary)
+        if (nextSeasonWork != null) {
+            val seasonal = row()
+            controls.addView(seasonal)
+            rows += seasonal
+            addButton(seasonal, "取消本次跨季连播") {
+                seasonSuppressed = true
+                cancelNextSeason()
+                showPanel()
+            }
+        }
+        // Explicit paths keep focus inside the menu; episode shortcuts belong to fullscreen playback.
+        val buttons = rows.map { row -> (0 until row.childCount).map { row.getChildAt(it) }.filter { it.isFocusable } }
+        buttons.forEachIndexed { r, cells -> cells.forEachIndexed { c, view ->
+            view.nextFocusLeftId = cells[maxOf(0, c - 1)].id
+            view.nextFocusRightId = cells[minOf(cells.lastIndex, c + 1)].id
+            view.nextFocusUpId = buttons[maxOf(0, r - 1)].let { it[minOf(c, it.lastIndex)].id }
+            view.nextFocusDownId = buttons[minOf(buttons.lastIndex, r + 1)].let { it[minOf(c, it.lastIndex)].id }
+        } }
+        (buttons.flatten().firstOrNull { it.tag == focusedTag } ?: play).requestFocus()
         showHud()
+    }
+
+    private fun showPlaybackSettings(anchor: TextView) {
+        tvTools.choose("更多设置", listOf(
+            "清晰度 ${library.maxQuality}P", "画面 ${library.frameMode.label}",
+            "定时 ${sleepTimer.label()}", "从头播放", "高级设置",
+            "画面旋转 ${library.videoRotation}°",
+            "常驻播放进度 ${if (library.alwaysShowProgress) "开启" else "关闭"}",
+        ), anchor, { choice ->
+            main.post {
+                if (screen == "player" && anchor.isAttachedToWindow) when (choice) {
+                    0 -> showQualityPicker(anchor, true)
+                    1 -> showFramePicker(anchor, true)
+                    2 -> showSleepPicker(anchor)
+                    3 -> { seekTo(0); hidePanel() }
+                    4 -> showAdvancedPlaybackSettings(anchor)
+                    5 -> showRotationPicker(anchor)
+                    6 -> { library.alwaysShowProgress = !library.alwaysShowProgress; updatePersistentProgress(); showPlaybackSettings(anchor) }
+                }
+            }
+        })
+    }
+
+    private fun showAdvancedPlaybackSettings(anchor: TextView) {
+        tvTools.choose("高级设置", listOf(
+            "伴机代解码 ${if (relayStore.enabled) "开" else "关"}", "重置设备能力记录",
+        ), anchor, { choice ->
+            main.post {
+                if (screen == "player" && anchor.isAttachedToWindow) when (choice) {
+                    0 -> showRelaySettings(anchor) { showAdvancedPlaybackSettings(anchor) }
+                    1 -> {
+                        val count = CodecCapabilities.learnedCount()
+                        CodecCapabilities.resetLearned()
+                        playbackText.text = if (count > 0) "已清除 $count 条设备能力记录" else "暂无设备能力记录"
+                    }
+                }
+            }
+        }, onBack = { showPlaybackSettings(anchor) })
     }
 
     private fun showSpeedPicker(anchor: TextView, inPlayer: Boolean = true) {
@@ -4661,12 +4648,20 @@ class MainActivity : Activity() {
                 anchor.text = (if (inPlayer) "清晰度 " else "默认清晰度  ·  ") + "${target}P"
             if (inPlayer && changed)
                 playEpisode(episodeIndex, currentPosition(), player?.playWhenReady ?: requestedAutoplay)
-        }, selected = options.indexOf(library.maxQuality))
+        }, selected = options.indexOf(library.maxQuality),
+            onBack = if (inPlayer && anchor.tag == "playback-settings") ({ showPlaybackSettings(anchor) }) else null)
+    }
+
+    private fun playSelectedEpisode(index: Int) {
+        val data = detail ?: return
+        if (index !in data.episodes.indices) return
+        val saved = detailProgress(data)
+        playEpisode(index, if (saved?.episodeId == data.episodes[index] && !saved.completed) saved.position else 0)
     }
 
     private fun showEpisodePanel(anchor: View) {
         val data = detail ?: return
-        if (episodePanel != null) return
+        if (episodePanel != null) { episodePanel?.dismiss(); return }
         val ticket = generation
         val overlayWasVisible = hud.visibility == View.VISIBLE
         requestedAutoplay = player?.playWhenReady ?: requestedAutoplay
@@ -4686,7 +4681,7 @@ class MainActivity : Activity() {
                     else {
                         resumeOnClose = false
                         episodePanel?.dismiss()
-                        playEpisode(selected)
+                        playSelectedEpisode(selected)
                     }
                 },
                 {
@@ -4705,11 +4700,13 @@ class MainActivity : Activity() {
                 lastCompleted = library.progress(data.series.id)?.completed == true,
             )
         episodePanel = next
-        next.show()
+        next.show(controls, anchor)
+        showHud()
     }
 
     private fun hidePanel() {
         if (playError) return
+        episodePanel?.dismiss()
         panel = false
         controls.visibility = View.GONE
         controls.clearFocus()
@@ -4779,7 +4776,7 @@ class MainActivity : Activity() {
             if (token != seasonGeneration || !foreground || detail?.series?.id != current.series.id) return@work
             nextSeasonWork = next
             if (next != null) {
-                val banner = text("本季结束后播放《${next.series.title}》 · 取消请按 ↑ 操作菜单", 13f).apply {
+                val banner = text("本季结束后播放《${next.series.title}》 · 取消请按菜单键，或确认打开菜单", 13f).apply {
                     setPadding(dp(14), dp(9), dp(14), dp(9))
                     setSingleLine(true)
                     ellipsize = TextUtils.TruncateAt.END
@@ -4821,6 +4818,7 @@ class MainActivity : Activity() {
         cancelRecovery()
         cancelPrefetchState(keepPrepared)
         relayStopAsync()
+        cancelEpisodeSwitch()
         mediaSession.deactivate()
         tvTools.close()
         val wasForeground = foreground
@@ -4907,7 +4905,9 @@ class MainActivity : Activity() {
         }
         when (screen) {
             "player" ->
-                if (homePlayback || phonePlayback) returnToDetail(forceDetail = true)
+                if (episodePanel != null) episodePanel?.dismiss()
+                else if (panel && !playError) hidePanel()
+                else if (homePlayback || phonePlayback) returnToDetail(forceDetail = true)
                 else if (waitingForFirstFrame) returnToDetail()
                 else if (hud.visibility == View.VISIBLE && !playError) hidePlaybackOverlay()
                 else returnToDetail()
@@ -4941,14 +4941,21 @@ class MainActivity : Activity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val key = event.keyCode
+        if (key in playerShortcutKeys) {
+            if (event.action == KeyEvent.ACTION_UP) playerShortcutKeys.remove(key)
+            // A fresh non-repeat down also handles remotes that lost an earlier up event.
+            if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount > 0) return true
+            playerShortcutKeys.remove(key)
+        }
         if (event.action == KeyEvent.ACTION_DOWN) gradualPreloader?.yieldToUser()
         if (screen == "catalog" && event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) goBack()
             return true
         }
         if (screen == "player") {
+            if (playerModalOpen()) return super.dispatchKeyEvent(event)
             if (panel && !playError && event.action == KeyEvent.ACTION_DOWN) showHud()
-            val key = event.keyCode
             if (key == KeyEvent.KEYCODE_BACK) {
                 if (event.action == KeyEvent.ACTION_UP) goBack()
                 return true
@@ -4970,8 +4977,8 @@ class MainActivity : Activity() {
                     when (key) {
                         KeyEvent.KEYCODE_MEDIA_PLAY -> requestPlayback(true)
                         KeyEvent.KEYCODE_MEDIA_PAUSE -> requestPlayback(false)
-                        KeyEvent.KEYCODE_MEDIA_NEXT -> skipEpisode(1)
-                        KeyEvent.KEYCODE_MEDIA_PREVIOUS -> skipEpisode(-1)
+                        KeyEvent.KEYCODE_MEDIA_NEXT -> skipEpisode(1, event.downTime)
+                        KeyEvent.KEYCODE_MEDIA_PREVIOUS -> skipEpisode(-1, event.downTime)
                         KeyEvent.KEYCODE_MEDIA_STOP -> returnToDetail()
                         KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> seek(1, 0)
                         KeyEvent.KEYCODE_MEDIA_REWIND -> seek(-1, 0)
@@ -4979,7 +4986,7 @@ class MainActivity : Activity() {
                     }
                 return true
             }
-            if (!panel) {
+            if (!playerControlsOpen()) {
                 if (
                     key in
                         listOf(
@@ -4992,18 +4999,23 @@ class MainActivity : Activity() {
                             KeyEvent.KEYCODE_MENU,
                         )
                 ) {
-                    if (event.action == KeyEvent.ACTION_DOWN)
+                    if (event.action == KeyEvent.ACTION_DOWN) {
+                        if (key !in listOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT))
+                            playerShortcutKeys.add(key)
                         when (key) {
                             KeyEvent.KEYCODE_DPAD_LEFT -> seek(-1, event.repeatCount)
                             KeyEvent.KEYCODE_DPAD_RIGHT -> seek(1, event.repeatCount)
                             KeyEvent.KEYCODE_DPAD_CENTER,
-                            KeyEvent.KEYCODE_ENTER -> if (event.repeatCount == 0) togglePlayback()
-                            KeyEvent.KEYCODE_DPAD_DOWN ->
-                                if (event.repeatCount == 0) showEpisodePanel(hud)
-                            KeyEvent.KEYCODE_DPAD_UP,
+                            KeyEvent.KEYCODE_ENTER -> if (event.repeatCount == 0) {
+                                togglePlayback()
+                                showPanel()
+                            }
+                            KeyEvent.KEYCODE_DPAD_DOWN -> if (event.repeatCount == 0) skipEpisode(1, event.downTime)
+                            KeyEvent.KEYCODE_DPAD_UP -> if (event.repeatCount == 0) skipEpisode(-1, event.downTime)
                             KeyEvent.KEYCODE_MENU -> if (event.repeatCount == 0) showPanel()
                             else -> showHud()
                         }
+                    }
                     return true
                 }
             }
@@ -5084,6 +5096,8 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        cancelEpisodeSwitch()
+        playerShortcutKeys.clear()
         gradualPreloader?.pause()
         stallGuard.suspendObservation()
         cancelNextSeason()
