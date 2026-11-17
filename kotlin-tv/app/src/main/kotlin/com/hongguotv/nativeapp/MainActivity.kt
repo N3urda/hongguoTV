@@ -2886,6 +2886,7 @@ class MainActivity : Activity() {
         automaticNext: Boolean = false,
         recreateView: Boolean = false,
     ) {
+        val keepOverlayHidden = screen == "player" && !panel && hud.visibility != View.VISIBLE
         val restoreControls = automaticNext && panel && !playError
         val restoreControlTag = if (restoreControls) controls.findFocus()?.tag else null
         if (automaticNext) {
@@ -2983,7 +2984,7 @@ class MainActivity : Activity() {
         panel = false
         playError = false
         waitingForFirstFrame = true
-        hideAutoplayOverlay = automaticNext && !keepRecoveryStatus
+        hideAutoplayOverlay = (automaticNext || keepOverlayHidden) && !keepRecoveryStatus
         recoveryDisplayActive = keepRecoveryStatus
         relayAttempted = false
         relaySlowHintShown = false
@@ -3566,9 +3567,9 @@ class MainActivity : Activity() {
             controls.visibility = View.GONE
             panel = false
         }
-        // 自动队列续播保持画面干净，手动切集仍沿用原有提示。
-        hideAutoplayOverlay = completed
-        if (completed && !panel && !playerModalOpen()) hidePlaybackOverlay()
+        // Preserve a hidden overlay for both automatic and remote episode switches.
+        hideAutoplayOverlay = completed || hud.visibility != View.VISIBLE
+        if (hideAutoplayOverlay && !panel && !playerModalOpen()) hidePlaybackOverlay()
         if (!panel) transportPlay = null
         saveProgress()
         syncMediaSession()
@@ -4364,15 +4365,14 @@ class MainActivity : Activity() {
         pendingEpisodeSwitch?.let(main::removeCallbacks)
         pendingEpisodeTarget = target
         val ticket = generation
-        playbackText.text = "即将播放第 ${target + 1} 集"
-        hud.visibility = View.VISIBLE
+        if (hud.visibility == View.VISIBLE) playbackText.text = "即将播放第 ${target + 1} 集"
         val switch = Runnable {
             pendingEpisodeSwitch = null
             pendingEpisodeTarget = null
             if (foreground && screen == "player" && generation == ticket && detail === data) {
                 if (target != episodeIndex) playEpisode(target)
                 else {
-                    if (panel) showPanel() else { updatePlaybackText(); showHud() }
+                    if (panel) showPanel() else updatePlaybackText()
                 }
             }
         }

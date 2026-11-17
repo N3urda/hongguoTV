@@ -233,8 +233,11 @@ class PlaybackQueueTest {
 
     @Test
     fun downDownUpCoalescesToOneQueuedTransitionAndLongPressDoesNotSkip() = fixture { activity, fake, library, _ ->
+        val hud = get(activity, "hud") as LinearLayout
+        hud.visibility = View.GONE
         invoke(activity, "queuePreparedEpisode", "102:${library.maxQuality}")
         press(activity, KeyEvent.KEYCODE_DPAD_DOWN, repeats = 8)
+        assertEquals(View.GONE, hud.visibility)
         assertEquals(1, get(activity, "pendingEpisodeTarget"))
         press(activity, KeyEvent.KEYCODE_DPAD_DOWN)
         assertEquals(2, get(activity, "pendingEpisodeTarget"))
@@ -245,6 +248,9 @@ class PlaybackQueueTest {
         assertEquals(1, fake.calls.count { it == "seekToNextMediaItem" })
         assertEquals(true, invoke(activity, "advanceQueuedEpisode", 12000L, false))
         assertEquals(1, get(activity, "episodeIndex"))
+        assertEquals(View.GONE, hud.visibility)
+        invoke(activity, "playbackFirstFrame")
+        assertEquals(View.GONE, hud.visibility)
         assertEquals("102", library.progress("1")?.episodeId)
         assertFalse(fake.calls.any { it in listOf("stop", "clearMediaItems", "prepare") })
     }
@@ -490,6 +496,57 @@ class PlaybackQueueTest {
                 set(activity, "playbackText", TextView(activity))
                 set(activity, "progressBar", android.widget.ProgressBar(activity))
                 invoke(activity, "playEpisode", 1, 0L, true, false, false, true)
+                assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
+                assertFalse(
+                    "Switching to the next episode must retain its running request",
+                    job.isCancelled,
+                )
+                finish.countDown()
+                (get(activity, "workJob") as Future<*>).get(5, TimeUnit.SECONDS)
+                ShadowLooper.idleMainLooper()
+                invoke(activity, "playbackFirstFrame")
+                assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
+                assertSame(remote, get(activity, "video"))
+                assertSame(http, get(activity, "playbackHttp"))
+                assertEquals(1, get(activity, "episodeIndex"))
+                assertEquals("102", fake.items.single().mediaId)
+                assertEquals(0, metadataRequests.get())
+            } finally {
+                finish.countDown()
+            }
+        }
+
+    @Test
+    fun manualSwitchKeepsOverlayHiddenDuringPreparationAndFirstFrame() =
+        fixture { activity, fake, library, remote ->
+            val metadataRequests = blockDuplicateMetadataRequests(activity)
+            @Suppress("UNCHECKED_CAST")
+            val slot = get(activity, "preparedNext") as PreparedSlot<RemoteVideo>
+            val key = "102:${library.maxQuality}"
+            assertSame(remote, slot.take(key))
+            val ticket = slot.begin(key)
+            val started = CountDownLatch(1)
+            val finish = CountDownLatch(1)
+            val worker = get(activity, "prefetchWorker") as ExecutorService
+            val scope = RequestScope()
+            val http = OkHttpClient()
+            val job =
+                worker.submit {
+                    started.countDown()
+                    finish.await(5, TimeUnit.SECONDS)
+                    slot.complete(ticket, key, remote)
+                }
+            try {
+                assertTrue(started.await(5, TimeUnit.SECONDS))
+                set(activity, "prefetchedFor", key)
+                set(activity, "prefetchJob", job)
+                set(activity, "prefetchScope", scope)
+                set(activity, "prefetchHttp", http)
+                set(activity, "playerView", PlayerView(activity))
+                set(activity, "hud", LinearLayout(activity).apply { visibility = View.GONE })
+                set(activity, "playbackText", TextView(activity))
+                set(activity, "progressBar", android.widget.ProgressBar(activity))
+                invoke(activity, "playEpisode", 1, 0L, true, false, false, false)
                 assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
                 assertFalse(
                     "Switching to the next episode must retain its running request",
