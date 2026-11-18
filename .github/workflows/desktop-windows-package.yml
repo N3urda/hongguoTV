@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/desktop-windows-package.yml'
       - 'kotlin-tv/app-desktop/**'
+      - 'kotlin-tv/core/**'
   workflow_dispatch:
 permissions:
   contents: read

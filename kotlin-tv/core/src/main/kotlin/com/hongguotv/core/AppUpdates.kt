@@ -63,7 +63,8 @@ object UpdateFiles {
                 output.fd.sync()
             }
             if (!verify(partial, update)) throw IOException("安装包校验未通过，请重新下载")
-            if (!partial.renameTo(destination)) throw IOException("无法保存安装包")
+            if (System.getProperty("os.name").startsWith("Windows")) WindowsReplacement.move(partial, destination)
+            else if (!partial.renameTo(destination)) throw IOException("无法保存安装包")
         } finally { partial.delete() }
     }
 }
@@ -152,5 +153,12 @@ class AppUpdateRepository internal constructor(private val http: OkHttpClient, p
         cancellation.shutdown()
         http.connectionPool.evictAll()
         http.dispatcher.executorService.shutdown()
+    }
+}
+
+/** Kept in a separate class: Android API 21 retains rename(2), without loading NIO Files. */
+private object WindowsReplacement {
+    fun move(source: File, target: File) {
+        java.nio.file.Files.move(source.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
     }
 }
