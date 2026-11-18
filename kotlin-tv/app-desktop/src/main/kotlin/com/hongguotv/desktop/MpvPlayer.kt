@@ -92,7 +92,8 @@ class MpvPlayer(url: String, title: String, startSeconds: Double = 0.0, executab
         private val timeouts = Executors.newSingleThreadScheduledExecutor { Thread(it, "mpv-ipc-timeout").apply { isDaemon = true } }
         fun findExecutable(): String {
             val name = if (System.getProperty("os.name").startsWith("Windows")) "mpv.exe" else "mpv"
-            val candidates = listOfNotNull(System.getenv("HONGGUO_MPV"), "/opt/homebrew/bin/mpv", "/usr/local/bin/mpv", "C:/Program Files/mpv/mpv.exe") + System.getenv("PATH").orEmpty().split(File.pathSeparator).map { File(it, name).path }
+            val bundled = System.getProperty("compose.application.resources.dir")?.let { File(it, "mpv/$name").path }
+            val candidates = listOfNotNull(System.getenv("HONGGUO_MPV"), bundled, "/opt/homebrew/bin/mpv", "/usr/local/bin/mpv", "C:/Program Files/mpv/mpv.exe") + System.getenv("PATH").orEmpty().split(File.pathSeparator).map { File(it, name).path }
             return candidates.firstOrNull { File(it).isFile && File(it).canExecute() }
                 ?: error("未找到 mpv。请安装 mpv，或用 HONGGUO_MPV 指定可执行文件路径后重新启动。")
         }

@@ -20,6 +20,7 @@ compose.desktop {
         mainClass = "com.hongguotv.desktop.MainKt"
         jvmArgs += "-Djava.net.useSystemProxies=true"
         nativeDistributions {
+            appResourcesRootDir.set(project.layout.buildDirectory.dir("bundled-resources"))
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "HongguoDesktop"
             packageVersion = "1.0.0"
