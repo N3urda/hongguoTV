@@ -455,7 +455,7 @@ internal class Media3TrialPlayback(context: Context, private val speed: Float = 
                     .build()
             )
     private val preloadManager = preloadBuilder.build()
-    private val player = preloadBuilder.buildExoPlayer()
+    private val player = preloadBuilder.buildExoPlayer().also { it.addAnalyticsListener(PlaybackDiagnostics("feed")) }
     private val items = linkedMapOf<String, MediaItem>()
     private val surface =
         PlayerView(context).apply {

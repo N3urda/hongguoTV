@@ -495,9 +495,17 @@ class MainActivity : Activity() {
                     maybePrepareSeason()
                     updateSeasonBanner()
                     val now = android.os.SystemClock.elapsedRealtime()
-                    if (android.util.Log.isLoggable("HGPlayback", android.util.Log.DEBUG) && now - lastPlaybackDiagnosticAt >= 5000) {
+                    if (android.util.Log.isLoggable("HGPlayback", android.util.Log.DEBUG) && now - lastPlaybackDiagnosticAt >= 1000) {
                         player?.let { p ->
-                            android.util.Log.d("HGPlayback", "state=${p.playbackState} playing=${p.isPlaying} suppressed=${p.playbackSuppressionReason} position=${p.currentPosition} buffered=${p.totalBufferedDuration} audio=${p.audioDecoderCounters?.renderedOutputBufferCount} audioQueued=${p.audioDecoderCounters?.queuedInputBufferCount} audioMime=${p.audioFormat?.sampleMimeType} audioRate=${p.audioFormat?.sampleRate} audioChannels=${p.audioFormat?.channelCount} video=${p.videoDecoderCounters?.renderedOutputBufferCount}")
+                            val video = p.videoDecoderCounters?.also { it.ensureUpdated() }
+                            val audio = p.audioDecoderCounters?.also { it.ensureUpdated() }
+                            android.util.Log.d("HGPlayback",
+                                "tMs=$now dropped=${video?.droppedBufferCount} skipped=${video?.skippedOutputBufferCount}" +
+                                    " size=${p.videoSize.width}x${p.videoSize.height} state=${p.playbackState} playing=${p.isPlaying}" +
+                                    " suppressed=${p.playbackSuppressionReason} position=${p.currentPosition} buffered=${p.totalBufferedDuration}" +
+                                    " audio=${audio?.renderedOutputBufferCount} audioQueued=${audio?.queuedInputBufferCount}" +
+                                    " audioMime=${p.audioFormat?.sampleMimeType} audioRate=${p.audioFormat?.sampleRate}" +
+                                    " audioChannels=${p.audioFormat?.channelCount} video=${video?.renderedOutputBufferCount}")
                         }
                         lastPlaybackDiagnosticAt = now
                     }
@@ -3651,9 +3659,8 @@ class MainActivity : Activity() {
         }
 
     /**
-     * Detects growing audio/video drift (video frame processing offset stays signed) and re-seeks
-     * to the current position once per cooldown window: a seek flushes the audio processors and
-     * clock basis, which users confirmed restores sync; a pause does not.
+     * Requests recovery only for a batch of persistently late video frames. Media3 reports
+     * processing offsets when its renderer stops, so this does not measure lip sync directly.
      */
     private fun playbackDriftListener(p: ExoPlayer): AnalyticsListener {
         val guard = PlaybackSyncGuard()
@@ -3715,9 +3722,16 @@ class MainActivity : Activity() {
     private fun ensurePlayer(): ExoPlayer =
         player
             ?: run {
+                // Older TVs recover poorly from starvation. Read ahead while bandwidth is
+                // available, with the same startup thresholds and allocator byte target.
                 val load =
                     DefaultLoadControl.Builder()
-                        .setBufferDurationsMs(15000, 30000, 1000, 2000)
+                        .setBufferDurationsMs(
+                            if (Build.VERSION.SDK_INT <= 22) 50_000 else 15_000,
+                            if (Build.VERSION.SDK_INT <= 22) 60_000 else 30_000,
+                            1000,
+                            2000,
+                        )
                         .setTargetBufferBytes(12 * 1024 * 1024)
                         .build()
                 val renderers =
@@ -3733,6 +3747,7 @@ class MainActivity : Activity() {
                         true,
                     )
                     it.setHandleAudioBecomingNoisy(true)
+                    it.addAnalyticsListener(PlaybackDiagnostics("player"))
                     it.addAnalyticsListener(playbackDriftListener(it))
                 }
             }
