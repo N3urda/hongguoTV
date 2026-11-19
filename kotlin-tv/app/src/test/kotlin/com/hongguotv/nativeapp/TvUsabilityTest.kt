@@ -15,6 +15,7 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
+import org.robolectric.shadows.ShadowDialog
 import org.robolectric.shadows.ShadowLooper
 
 @RunWith(RobolectricTestRunner::class)
@@ -212,7 +213,7 @@ class TvUsabilityTest {
 
     @Test
     fun settingsSeparatesAccountDataAndUpdatesWithValidFocusLinks() {
-        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val activity = controller.get()
         try {
             val library = get(activity, "library") as Library
@@ -240,6 +241,16 @@ class TvUsabilityTest {
             listOf("检查更新", "播放", "外观与操作", "账户", "关于应用").forEach { title ->
                 assertTrue(rows.any { it.text == title })
             }
+            val danmaku = rows.single { it.text == "弹幕设置" }
+            assertTrue(danmaku.requestFocus())
+            danmaku.performClick()
+            val dialog = ShadowDialog.getLatestDialog()
+            val options = texts(dialog.window!!.decorView)
+            options.single { it.text == "弹幕：开" }.performClick()
+            assertFalse(activity.getSharedPreferences("social", 0).getBoolean("enabled", true))
+            options.single { it.text == "关闭" }.performClick()
+            ShadowLooper.idleMainLooper()
+            assertTrue(danmaku.hasFocus())
             val appearance = root.findViewWithTag<View>("settings-category-2")
             appearance.requestFocus()
             appearance.performClick()
@@ -273,7 +284,7 @@ class TvUsabilityTest {
             assertTrue(texts(root).any { it.text == "关于hongguoTV" })
             assertFalse(texts(root).any { it.text == "登录与账户管理" })
         } finally {
-            controller.destroy()
+            controller.pause().stop().destroy()
         }
     }
 }
