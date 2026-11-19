@@ -92,7 +92,17 @@ class DesktopState(private val scope: CoroutineScope, private val live: CatalogS
         browsingProducer = owner
         selected = null; detail = null; query = ""; reload()
     }
+    val recentSeries by derivedStateOf {
+        library?.historyVersion
+        if (demo) emptyList() else {
+            val local = library?.history?.values.orEmpty().map { it.series to it.updatedAt }
+            val cloud = account?.history.orEmpty().map { it.series to it.updatedAt }
+            (local + cloud).sortedByDescending { it.second }.distinctBy { it.first.id }.map { it.first }
+        }
+    }
+
     fun progressLabel(series: Series): String {
+        library?.historyVersion
         val local = library?.history?.get(series.id)
         val cloud = account?.history?.firstOrNull { it.series.id == series.id }
         return if (cloud != null && cloud.updatedAt > (local?.updatedAt ?: 0)) "看到第 ${cloud.episodeIndex + 1} 集 · ${progressTime(cloud.position)}"
@@ -181,10 +191,9 @@ class DesktopState(private val scope: CoroutineScope, private val live: CatalogS
                 else if (!demo && currentSection == Section.RECOMMENDED && account != null) account.recommendations(nextPage)
                 else if (!demo && account?.profile != null && currentSection == Section.FAVORITES) CatalogPage(account.favorites.map { it.series }, false)
                 else if (!demo && currentSection == Section.RESERVATIONS) CatalogPage(account?.reservations.orEmpty().map { it.series }, false)
-                else if (!demo && account?.profile != null && currentSection == Section.HISTORY) CatalogPage((account.history.map { it.series to it.updatedAt } + library?.history?.values.orEmpty().map { it.series to it.updatedAt }).sortedByDescending { it.second }.distinctBy { it.first.id }.map { it.first }, false)
                 else if (currentSection == Section.LATER) CatalogPage(if (demo) emptyList() else library?.later?.values?.toList().orEmpty(), false)
                 else if (currentSection == Section.FAVORITES) CatalogPage(favorites.filterKeys { it.startsWith("$demo:") }.values.filter { currentQuery.isBlank() || it.title.contains(currentQuery) }, false)
-                else if (currentSection == Section.HISTORY) CatalogPage(if (demo) emptyList() else library?.history?.values?.toList()?.asReversed()?.map { it.series }?.filter { currentQuery.isBlank() || it.title.contains(currentQuery) }.orEmpty(), false)
+                else if (currentSection == Section.HISTORY) CatalogPage(recentSeries, false)
                 else source.list(currentSection, currentQuery, nextPage)
             val apply: () -> Unit = { items = result.items; page = nextPage; hasMore = result.hasMore; topics = result.discovery?.topics.orEmpty() }
             apply

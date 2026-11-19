@@ -5,6 +5,24 @@ import kotlinx.coroutines.*
 import kotlin.test.*
 
 class DesktopStateTest {
+    @Test fun recentSeriesReflectsSavedProgressAndIsolatesDemo() = runBlocking {
+        val library = DesktopLibrary(java.nio.file.Files.createTempDirectory("desktop-history").resolve("library.json"))
+        val state = DesktopState(this, DemoCatalogSource, library = library)
+        val first = Series("one", "第一部")
+        val second = Series("two", "第二部")
+        fun record(series: Series, time: Long) =
+            library.remember(BackupProgress(series, "episode", 0, 1000, 60000, false, time))
+
+        assertTrue(state.recentSeries.isEmpty())
+        record(first, 1)
+        record(second, 2)
+        assertEquals(listOf(second, first), state.recentSeries)
+        record(first, 3)
+        assertEquals(listOf(first, second), state.recentSeries)
+        state.mode(true)
+        assertTrue(state.recentSeries.isEmpty())
+    }
+
     @Test fun producerPagesKeepTheirSourceAfterOpeningDetails() = runBlocking {
         val owner = Producer("123", "制作方")
         val source = object : CatalogSource {

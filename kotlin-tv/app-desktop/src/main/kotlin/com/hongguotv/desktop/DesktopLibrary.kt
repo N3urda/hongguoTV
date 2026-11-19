@@ -2,6 +2,7 @@
 package com.hongguotv.desktop
 
 import com.hongguotv.core.*
+import androidx.compose.runtime.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.nio.file.*
@@ -13,6 +14,7 @@ class DesktopLibrary(private val file: Path = defaultFile()) {
     val later = linkedMapOf<String, Series>()
     val favorites = linkedMapOf<String, Series>()
     val history = linkedMapOf<String, BackupProgress>()
+    var historyVersion by mutableIntStateOf(0); private set
     var warning: String? = null; private set
     init {
         if (Files.exists(file)) runCatching {
@@ -43,6 +45,7 @@ class DesktopLibrary(private val file: Path = defaultFile()) {
     @Synchronized fun remember(progress: BackupProgress) {
         history.remove(progress.series.id); history[progress.series.id] = progress
         while (history.size > 200) history.remove(history.keys.first())
+        historyVersion++
         save()
     }
     @Synchronized fun toggleLater(series: Series) {
@@ -57,6 +60,7 @@ class DesktopLibrary(private val file: Path = defaultFile()) {
         val merged = LibraryBackup.merge(portable(), LibraryBackup.decode(raw), false)
         favorites.clear(); favorites.putAll(merged.favorites.associateBy { it.id })
         history.clear(); history.putAll(merged.history.sortedBy { it.updatedAt }.associateBy { it.series.id })
+        historyVersion++
         later.clear(); later.putAll(merged.later.associateBy { it.id })
         save()
         check(warning == null) { "保存失败" }

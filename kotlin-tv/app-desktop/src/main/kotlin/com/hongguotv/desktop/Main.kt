@@ -7,17 +7,21 @@ import androidx.compose.ui.window.*
 import java.awt.Dimension
 
 fun main(args: Array<String>) {
-    args.firstOrNull { it.startsWith("--smoke-file=") }?.let { DesktopSmoke.runLocal(java.nio.file.Path.of(it.substringAfter("="))); return }
-    if ("--smoke-controller" in args) { DesktopSmoke.controller(); return }
-    if ("--smoke" in args) { DesktopSmoke.run(); return }
-    launchDesktop()
+    val smoke = "--smoke" in args || "--smoke-controller" in args
+    val smokeFile = if (smoke) java.nio.file.Files.createTempDirectory("hongguo-embedded-smoke").resolve("library.json") else null
+    try {
+        launchDesktop(smokeFile)
+    } finally {
+        smokeFile?.let { java.nio.file.Files.deleteIfExists(it); java.nio.file.Files.deleteIfExists(it.parent) }
+    }
 }
 
-private fun launchDesktop() = application {
-    Window(onCloseRequest = ::exitApplication, title = "红果 · 桌面版", state = rememberWindowState(width = 1280.dp, height = 820.dp)) {
+private fun launchDesktop(smokeFile: java.nio.file.Path?) = application(exitProcessOnExit = false) {
+    val windowState = rememberWindowState(width = 1280.dp, height = 820.dp)
+    Window(onCloseRequest = ::exitApplication, title = "红果 · 桌面版", state = windowState) {
         LaunchedEffect(Unit) { window.minimumSize = Dimension(900, 640) }
         val scope = rememberCoroutineScope()
-        val library = remember { DesktopLibrary() }
+        val library = remember { if (smokeFile != null) DesktopLibrary(smokeFile) else DesktopLibrary() }
         val source = remember { LiveCatalogSource() }
         val account = remember { DesktopAccount(scope) }
         val playback = remember { DesktopPlayback(scope, source.repository, library) }
@@ -31,7 +35,27 @@ private fun launchDesktop() = application {
         }
         playback.progressSaved = { progress, count, force -> account.upload(progress, count, force) }
         DisposableEffect(Unit) { onDispose { playback.close(); account.logout(clearStored = false) } }
-        LaunchedEffect(Unit) { state.reload(); account.restore() }
+        LaunchedEffect(Unit) {
+            if (smokeFile == null) {
+                state.reload()
+                account.restore()
+            } else {
+                try {
+                    DesktopSmoke.verify(source, playback, state, smokeFile, window)
+                } catch (failure: Throwable) {
+                    failure.printStackTrace()
+                    kotlin.system.exitProcess(1)
+                }
+                exitApplication()
+            }
+        }
+        var previousPlacement by remember { mutableStateOf(WindowPlacement.Floating) }
+        LaunchedEffect(playback.fullscreenRequested) {
+            if (playback.fullscreenRequested) {
+                previousPlacement = windowState.placement
+                windowState.placement = WindowPlacement.Fullscreen
+            } else if (windowState.placement == WindowPlacement.Fullscreen) windowState.placement = previousPlacement
+        }
         DesktopShell(state)
     }
 }

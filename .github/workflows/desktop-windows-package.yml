@@ -7,6 +7,11 @@ on:
       - 'kotlin-tv/app-desktop/**'
       - 'kotlin-tv/core/**'
   workflow_dispatch:
+    inputs:
+      live_playback:
+        description: Verify real playback in the packaged Windows window
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -19,18 +24,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Bundle verified mpv Windows build
-        shell: pwsh
-        run: |
-          $url = 'https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261111/mpv-x86_64-20261111-git-bcde6b93cc.7z'
-          Invoke-WebRequest $url -OutFile mpv.7z
-          if ((Get-FileHash mpv.7z -Algorithm SHA256).Hash.ToLower() -ne 'f259b5fd4b5c395617c948a4fadcdf55bba1c5282fb7c13e88626b3f71072baf') { throw 'mpv digest mismatch' }
-          $destination = 'kotlin-tv/app-desktop/build/bundled-resources/windows/mpv'
-          New-Item -ItemType Directory -Force $destination | Out-Null
-          7z x mpv.7z "-o$destination" -y
-          if ($LASTEXITCODE -ne 0) { throw 'mpv extraction failed' }
-          if (!(Test-Path "$destination/mpv.exe")) { throw 'Missing mpv.exe' }
-          @('mpv build source: https://github.com/shinchiro/mpv-winbuild-cmake/tree/20261111', 'mpv source: https://github.com/mpv-player/mpv/commit/bcde6b93cc', "Binary archive: $url", 'Included upstream license notices apply.') | Set-Content "$destination/SOURCE.txt"
       - name: Test and package portable exe with runtime
         shell: pwsh
         run: |
@@ -38,9 +31,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
           $app = 'kotlin-tv/app-desktop/build/compose/binaries/main/app/HongguoDesktop'
           if (!(Test-Path "$app/HongguoDesktop.exe")) { throw 'Missing desktop exe' }
-          if (!(Get-ChildItem $app -Filter mpv.exe -Recurse)) { throw 'Player was not packaged' }
+          if (!(Get-ChildItem $app -Filter "mediamp-mpv-runtime-windows-x64-0.5.1.jar" -Recurse)) { throw 'Player was not packaged' }
           Copy-Item LICENSE "$app/LICENSE.txt"
-          @('解压整个文件夹后，双击 HongguoDesktop.exe。不要只复制 exe 文件。', '支持 Windows x64，已附带 Java 运行时和 mpv。', '本包是未签名试用版。账号及 Windows 实机体验仍需验证。') | Set-Content "$app/使用说明.txt" -Encoding utf8
+          @('解压整个文件夹后，双击 HongguoDesktop.exe。不要只复制 exe 文件。', '支持 Windows x64，已附带 Java 运行时和内嵌播放器。', '本包是未签名试用版。账号及 Windows 实机体验仍需验证。') | Set-Content "$app/使用说明.txt" -Encoding utf8
           Compress-Archive -Path $app -DestinationPath HongguoDesktop-Windows-x64.zip
           (Get-FileHash HongguoDesktop-Windows-x64.zip -Algorithm SHA256).Hash | Set-Content HongguoDesktop-Windows-x64.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -50,3 +43,11 @@ jobs:
             HongguoDesktop-Windows-x64.zip
             HongguoDesktop-Windows-x64.sha256
           if-no-files-found: error
+      - name: Verify real playback in the packaged app
+        if: inputs.live_playback
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $exe = 'kotlin-tv/app-desktop/build/compose/binaries/main/app/HongguoDesktop/HongguoDesktop.exe'
+          $process = Start-Process $exe -ArgumentList '--smoke-controller' -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Embedded playback failed ($($process.ExitCode))" }

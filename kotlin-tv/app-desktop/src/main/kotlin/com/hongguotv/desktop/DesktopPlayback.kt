@@ -6,9 +6,11 @@ import com.hongguotv.core.*
 import kotlinx.coroutines.*
 import java.io.Closeable
 
-class PlaybackSession(val bridge: PlaybackBridge, val player: MpvPlayer) : Closeable {
-    override fun close() { try { player.close() } finally { bridge.close() } }
-}
+import org.openani.mediamp.MediaStatus
+import org.openani.mediamp.mpv.MPVHandle
+import org.openani.mediamp.mpv.MpvMediampPlayer
+import org.openani.mediamp.source.MediaExtraFiles
+import org.openani.mediamp.source.UriMediaData
 
 class DesktopPlayback(private val scope: CoroutineScope, private val repository: ContentRepository, private val library: DesktopLibrary) : Closeable {
     var active by mutableStateOf<Detail?>(null); private set
@@ -23,7 +25,17 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
     var quality by mutableStateOf(PlaybackQuality.normalize(library.preference("quality", "1080").toIntOrNull() ?: 1080)); private set
     var autoNext by mutableStateOf(library.preference("autoNext", "true").toBoolean())
     fun changeAutoNext(value: Boolean) { autoNext = value; library.preference("autoNext", value) }
-    private var session: PlaybackSession? = null
+    var engine by mutableStateOf<MpvMediampPlayer?>(null); private set
+    var fullscreenRequested by mutableStateOf(false); private set
+    var showVideo by mutableStateOf(true)
+    private var bridge: PlaybackBridge? = null
+    private val handle: MPVHandle? get() = engine?.impl as? MPVHandle
+
+    private fun releaseSession() {
+        val old = engine
+        engine = null
+        try { old?.close() } finally { bridge?.close(); bridge = null }
+    }
     private var job: Job? = null
     private var generation = 0
     private var episodeFinished = false
@@ -39,8 +51,8 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
     fun sleep(minutes: Int) { sleepTimer.afterMinutes(minutes); sleepLabel = sleepTimer.label() }
     fun sleepEpisode() { sleepTimer.afterEpisodes(1); sleepLabel = sleepTimer.label() }
     fun cancelSleep() { sleepTimer.cancel(); sleepLabel = sleepTimer.label() }
-    fun chooseFrame(value: VideoFrameMode) { frame = value; library.preference("frame", value.name); command("set_property", "keepaspect", value != VideoFrameMode.FILL); command("set_property", "panscan", if (value == VideoFrameMode.ZOOM) 1.0 else 0.0) }
-    fun rotate() { rotation = (rotation + 90) % 360; command("set_property", "video-rotate", rotation) }
+    fun chooseFrame(value: VideoFrameMode) { frame = value; library.preference("frame", value.name); property("keepaspect", value != VideoFrameMode.FILL); property("panscan", if (value == VideoFrameMode.ZOOM) 1.0 else 0.0) }
+    fun rotate() { rotation = (rotation + 90) % 360; property("video-rotate", rotation) }
 
     fun resume(detail: Detail) {
         if (detail.episodes.isEmpty()) return
@@ -54,68 +66,62 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
         danmaku.reset()
         job?.cancel()
         val ticket = ++generation
-        val previous = session; session = null
-        previous?.close()
+        releaseSession()
+        showVideo = true
         episodeFinished = false
         active = detail; index = episode; position = start; duration = 0.0
         preparing = true; running = false; message = null; paused = false
         job = scope.launch {
-            var created: PlaybackSession? = null
+            var pendingBridge: PlaybackBridge? = null
             try {
                 withContext(Dispatchers.IO) {
-                    MpvPlayer.findExecutable() // Fail before requesting upstream when the runtime is absent.
                     repository.preparePlaybackSession()
                     val rendition = repository.streamLadderWithCompatibility(detail.episodes[episode]).select(quality)
                         ?: error("没有可播放的资源，请换一集或清晰度。")
                     val video = RemoteVideo(repository.http, rendition.toStreamInfo())
-                    var bridge: PlaybackBridge? = null
                     try {
                         video.prepare()
                         ensureActive()
-                        bridge = PlaybackBridge(video)
-                        val player = MpvPlayer(bridge.url, "${detail.series.title} · 第 ${episode + 1} 集", start)
-                        created = PlaybackSession(bridge, player)
-                        player.command("set_property", "speed", speed)
-                    } catch (e: Exception) { bridge?.close() ?: video.close(); throw e }
+                        pendingBridge = PlaybackBridge(video)
+                    } catch (e: Throwable) { video.close(); throw e }
                 }
                 ensureActive()
                 if (ticket != generation) return@launch
-                session = created; created = null
-                preparing = false; running = true
-                val current = session!!
+                val source = checkNotNull(pendingBridge)
+                bridge = source
+                pendingBridge = null
+                val current = MpvMediampPlayer(Any(), scope.coroutineContext)
+                engine = current
+                current.setMediaData(UriMediaData(source.url, emptyMap(), MediaExtraFiles.EMPTY), true, (start * 1000).toLong())
                 var lastSave = 0L
                 var started = false
                 var presentationApplied = false
-                var idleTicks = 0
                 while (isActive && ticket == generation) {
                     sleepLabel = sleepTimer.label()
-                    if (sleepTimer.poll()) { stop(); message = "定时播放已结束"; break }
-                    val values = withContext(Dispatchers.IO) {
-                        if (!current.player.alive) null else listOf(
-                            current.player.command("get_property", "time-pos"),
-                            current.player.command("get_property", "duration"),
-                            current.player.command("get_property", "pause"),
-                            current.player.command("get_property", "eof-reached"),
-                            current.player.command("get_property", "idle-active"),
-                        )
-                    } ?: break
-                    (values[0] as? Number)?.toDouble()?.let { position = it; started = true }
-                    (values[1] as? Number)?.toDouble()?.let { duration = it }
+                    if (sleepTimer.poll()) { stop(); break }
+                    val snapshot = current.state.value
+                    val status = snapshot.mediaStatus
+                    if (status is MediaStatus.Error) throw status.error
+                    if (status == MediaStatus.Ready) {
+                        preparing = false
+                        running = true
+                        started = true
+                        position = current.currentPositionMillis.value / 1000.0
+                        duration = (current.mediaProperties.value?.durationMillis ?: 0L) / 1000.0
+                    }
                     if (started && !presentationApplied) {
-                        withContext(Dispatchers.IO) {
-                            current.player.command("set_property", "keepaspect", frame != VideoFrameMode.FILL)
-                            current.player.command("set_property", "panscan", if (frame == VideoFrameMode.ZOOM) 1.0 else 0.0)
-                            current.player.command("set_property", "video-rotate", rotation)
-                        }
+                        property("speed", speed)
+                        property("keepaspect", frame != VideoFrameMode.FILL)
+                        property("panscan", if (frame == VideoFrameMode.ZOOM) 1.0 else 0.0)
+                        property("video-rotate", rotation)
                         presentationApplied = true
                     }
-                    paused = values[2] == true
+                    paused = !snapshot.playWhenReady
                     if (danmakuEnabled && !paused) danmaku.tick(detail.series.id, detail.episodes[episode], (position * 1000).toLong(), (duration * 1000).toLong())
-                    if (values[4] == true) idleTicks++ else idleTicks = 0
-                    if (idleTicks >= 8) error("视频加载失败，请重试或切换清晰度。")
                     val now = System.currentTimeMillis()
                     if (now - lastSave > 5000 && started) { saveProgress(); lastSave = now }
-                    if (values[3] == true && started) {
+                    if (status == MediaStatus.Ended) {
+                        position = duration
                         episodeFinished = true
                         saveProgress()
                         if (sleepTimer.episodeEnded()) { stop(); break }
@@ -130,32 +136,37 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
                     }
                     delay(500)
                 }
-                if (ticket == generation && !current.player.alive) { saveProgress(); running = false; session = null; withContext(Dispatchers.IO) { current.close() }; message = "播放窗口已关闭，可点击继续播放。" }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (e: Exception) {
+            catch (e: Throwable) {
+                if (e !is Exception && e !is LinkageError) throw e
                 if (ticket == generation) {
                     running = false
-                    val failed = session; session = null
-                    withContext(NonCancellable + Dispatchers.IO) { failed?.close() }
-                    message = if (e is IllegalStateException && e.message?.contains("mpv") == true) e.message else "播放失败，请重试或更换清晰度。"
+                    releaseSession()
+                    message = "播放失败，请重试或更换清晰度。"
                 }
             } finally {
-                withContext(NonCancellable + Dispatchers.IO) { created?.close() }
+                pendingBridge?.close()
                 if (ticket == generation) preparing = false
             }
         }
     }
-    fun fullscreen() = command("cycle", "fullscreen")
+    fun fullscreen() { fullscreenRequested = !fullscreenRequested; showVideo = true }
     fun mute() = command("cycle", "mute")
-    fun togglePause() = command("cycle", "pause")
-    fun seek(seconds: Double) = command("seek", seconds.coerceAtLeast(0.0), "absolute")
-    fun setSpeed(value: Float) { speed = PlaybackSpeed.normalize(value).toDouble(); library.preference("speed", speed); command("set_property", "speed", speed) }
+    fun togglePause() { engine?.let { if (it.state.value.playWhenReady) it.pause() else it.play() } }
+    fun seek(seconds: Double) { engine?.seekTo((seconds.coerceIn(0.0, duration) * 1000).toLong()) }
+    fun setSpeed(value: Float) { speed = PlaybackSpeed.normalize(value).toDouble(); library.preference("speed", speed); property("speed", speed) }
     fun chooseQuality(value: Int) { quality = PlaybackQuality.normalize(value); library.preference("quality", quality); active?.let { play(it, index, position) } }
     fun next(delta: Int) { active?.let { play(it, index + delta) } }
     fun retry() { active?.let { play(it, index, position) } }
     private fun command(vararg arguments: Any) {
-        val current = session ?: return
-        scope.launch { runCatching { withContext(Dispatchers.IO) { current.player.command(*arguments) } }.onFailure { if (session === current) message = "播放器控制失败，请重新播放。" } }
+        handle?.command(*arguments.map { it.toString() }.toTypedArray())
+    }
+    private fun property(name: String, value: Any) {
+        when (value) {
+            is Boolean -> handle?.setPropertyBoolean(name, value)
+            is Int -> handle?.setPropertyInt(name, value)
+            is Double -> handle?.setPropertyDouble(name, value)
+        }
     }
     private fun saveProgress(completed: Boolean = episodeFinished, force: Boolean = false) {
         val detail = active ?: return
@@ -166,9 +177,9 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
     }
     fun stop() {
         saveProgress(force = true); danmaku.reset(); generation++; job?.cancel(); job = null
-        val old = session; session = null
-        old?.close()
+        releaseSession()
+        fullscreenRequested = false
         running = false; preparing = false; active = null
     }
-    override fun close() { saveProgress(force = true); danmaku.reset(); generation++; job?.cancel(); session?.close(); session = null }
+    override fun close() = stop()
 }
