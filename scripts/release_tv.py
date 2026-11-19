@@ -15,7 +15,7 @@ REPOSITORY = 'N3urda/hongguoTV'
 PACKAGE = 'com.hongguotv.nativeapp'
 CERTIFICATE = '3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98'
 ROOT = Path(__file__).resolve().parents[1]
-NOTES = '修复 Android 5 设备在短暂卡顿时可能出现的断音和音画不同步（#69），增加音频缓冲和正式播放的网络预读。在 Android 5.0.2 模拟器上复现并验证了相同条件下的修复结果。播放偏好新增弹幕设置入口（#71）。'
+NOTES = '修复播放信息接口间歇性返回空正文导致的播放失败（#72）。前台播放遇到空响应时，使用同一会话通过备用接口重查当前集。在 Android TV 模拟器上验证了上游真实返回空正文时，原生播放器仍能出画并继续播放。\n\n包含倍速播放时画面滞后的修复（#73）。在解码能力不足时，播放器可在解码前丢弃不影响后续画面的迟到帧，以减轻音画不同步。'
 
 
 def require(condition, message):
