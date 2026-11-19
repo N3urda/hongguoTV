@@ -13,6 +13,8 @@ import androidx.media3.exoplayer.audio.DefaultAudioTrackBufferSizeProvider
 internal fun playbackRenderers(context: Context): DefaultRenderersFactory =
     (if (Build.VERSION.SDK_INT <= 22) LegacyPlaybackRenderers(context) else DefaultRenderersFactory(context))
         .setEnableDecoderFallback(true)
+        // When video falls behind the audio clock, shed disposable frames before codec work.
+        .experimentalSetLateThresholdToDropDecoderInputUs(50_000)
         .setExtensionRendererMode(
             audioExtensionRendererMode(Build.VERSION.SDK_INT, BuildConfig.LEGACY_AUDIO)
         )
