@@ -160,8 +160,8 @@ class DesktopState(private val scope: CoroutineScope, private val live: CatalogS
         if (!demo) library?.toggle(series)
         if (section == Section.FAVORITES && selected == null) reload()
     }
-    fun navigate(next: Section) { browsingProducer = null; suggestionJob?.cancel(); suggestions = emptyList(); section = next; query = ""; items = emptyList(); selected = null; detail = null; episode = null; reload() }
-    fun search(value: String) { suggestionJob?.cancel(); suggestions = emptyList(); browsingProducer = null; query = value.trim().take(80); items = emptyList(); selected = null; detail = null; episode = null; reload() }
+    fun navigate(next: Section) { playback?.showVideo = false; browsingProducer = null; suggestionJob?.cancel(); suggestions = emptyList(); section = next; query = ""; items = emptyList(); selected = null; detail = null; episode = null; reload() }
+    fun search(value: String) { playback?.showVideo = false; suggestionJob?.cancel(); suggestions = emptyList(); browsingProducer = null; query = value.trim().take(80); items = emptyList(); selected = null; detail = null; episode = null; reload() }
     fun mode(value: Boolean) { playback?.stop(); demo = value; navigate(Section.DISCOVER) }
     fun back() { job?.cancel(); revision++; loading = false; error = null; selected = null; detail = null; episode = null; commentJob?.cancel() }
     fun selectEpisode(index: Int) {

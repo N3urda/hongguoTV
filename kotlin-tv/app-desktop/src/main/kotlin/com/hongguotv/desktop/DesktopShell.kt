@@ -30,6 +30,7 @@ private val CoverColors = listOf(Color(0xFFB9D0D4), Color(0xFFCBC2B6), Color(0xF
 
 @Composable
 fun DesktopShell(state: DesktopState) {
+    val player = state.playback
     val gridState = rememberLazyGridState()
     LaunchedEffect(state.section, state.query, state.page, state.browsingProducer, state.category, state.topic, state.board) { gridState.scrollToItem(0) }
     val searchFocus = remember { FocusRequester() }
@@ -45,13 +46,14 @@ fun DesktopShell(state: DesktopState) {
         Row(Modifier.fillMaxSize().background(Paper).onPreviewKeyEvent {
             if (it.type != KeyEventType.KeyDown) false
             else when {
-                (it.isCtrlPressed || it.isMetaPressed) && it.key == Key.K -> { searchFocus.requestFocus(); true }
+                player?.fullscreenRequested == true && it.key == Key.Escape -> { player.fullscreen(); true }
+                player?.fullscreenRequested != true && (it.isCtrlPressed || it.isMetaPressed) && it.key == Key.K -> { searchFocus.requestFocus(); true }
                 !accountOpen && !libraryOpen && it.key == Key.Spacebar && !searchActive && state.playback?.running == true -> { state.playback.togglePause(); true }
+                it.key == Key.Escape && player?.active != null && player.showVideo -> { player.showVideo = false; true }
                 it.key == Key.Escape && state.selected != null -> { state.back(); true }
                 else -> false
             }
         }) {
-            val player = state.playback
             if (player?.fullscreenRequested != true) DesktopRail(state, { accountOpen = true }, { libraryOpen = true })
             Column(Modifier.weight(1f).fillMaxHeight()) {
                 if (player?.fullscreenRequested != true) Row(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
