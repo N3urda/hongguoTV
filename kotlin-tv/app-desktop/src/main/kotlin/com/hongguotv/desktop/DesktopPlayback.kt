@@ -43,6 +43,7 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
     var danmakuStatus by mutableStateOf(""); private set
     private val danmaku = DesktopDanmaku(scope, { command("show-text", it, 3500) }, { danmakuStatus = it })
     fun changeDanmaku(enabled: Boolean) { danmakuEnabled = enabled; library.preference("danmaku", enabled); danmaku.reset(); if (!enabled) command("show-text", "", 0) }
+    internal var playbackDiagnostics: ((String) -> Unit)? = null
     var progressSaved: (BackupProgress, Int, Boolean) -> Unit = { _, _, _ -> }
     private val sleepTimer = SleepTimer { System.nanoTime() / 1_000_000 }
     var sleepLabel by mutableStateOf("定时关闭：关闭"); private set
@@ -75,11 +76,14 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
             var pendingBridge: PlaybackBridge? = null
             try {
                 withContext(Dispatchers.IO) {
+                    playbackDiagnostics?.invoke("Preparing media session")
                     repository.preparePlaybackSession()
+                    playbackDiagnostics?.invoke("Resolving episode rendition")
                     val rendition = repository.streamLadderWithCompatibility(detail.episodes[episode]).select(quality)
                         ?: error("没有可播放的资源，请换一集或清晰度。")
                     val video = RemoteVideo(repository.http, rendition.toStreamInfo())
                     try {
+                        playbackDiagnostics?.invoke("Opening media ranges")
                         video.prepare()
                         ensureActive()
                         pendingBridge = PlaybackBridge(video)
@@ -90,8 +94,10 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
                 val source = checkNotNull(pendingBridge)
                 bridge = source
                 pendingBridge = null
+                playbackDiagnostics?.invoke("Loading MediaMP native runtime")
                 val current = MpvMediampPlayer(Any(), scope.coroutineContext)
                 engine = current
+                playbackDiagnostics?.invoke("Opening libmpv stream")
                 current.setMediaData(UriMediaData(source.url, emptyMap(), MediaExtraFiles.EMPTY), true, (start * 1000).toLong())
                 var lastSave = 0L
                 var started = false
@@ -139,6 +145,11 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (e: Throwable) {
                 if (e !is Exception && e !is LinkageError) throw e
+                playbackDiagnostics?.invoke(generateSequence(e) { it.cause }.joinToString(" caused by ") {
+                    // Keep stream URLs, playback keys and credentials out of acceptance reports.
+                    val detail = if (it is UnsatisfiedLinkError) it.message?.substringAfterLast('\\')?.take(200) else null
+                    "${it.javaClass.simpleName} ${detail.orEmpty()} at ${it.stackTrace.firstOrNull()}"
+                })
                 if (ticket == generation) {
                     running = false
                     releaseSession()

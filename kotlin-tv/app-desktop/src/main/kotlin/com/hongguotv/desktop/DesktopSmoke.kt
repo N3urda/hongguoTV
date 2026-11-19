@@ -20,6 +20,7 @@ object DesktopSmoke {
             println(name)
             Files.writeString(report, "$name\n", java.nio.file.StandardOpenOption.APPEND)
         }
+        player.playbackDiagnostics = ::stage
         val detail = withContext(Dispatchers.IO) {
             source.repository.detail(source.repository.discover(DramaCategory.REAL).items.first().id)
         }
