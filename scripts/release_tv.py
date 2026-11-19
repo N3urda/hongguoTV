@@ -15,7 +15,7 @@ REPOSITORY = 'N3urda/hongguoTV'
 PACKAGE = 'com.hongguotv.nativeapp'
 CERTIFICATE = '3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98'
 ROOT = Path(__file__).resolve().parents[1]
-NOTES = '优化遥控上下键切集体验：切换上一集、下一集时不再自动唤起播放控制栏，加载与首帧阶段保持隐藏，减少画面干扰。保留菜单键打开控制栏和播放失败提示。包含 Android 5 兼容包、Android 6+ 通用包及 ARM32/ARM64 分包，沿用原正式签名。'
+NOTES = '修复 Android 5 设备在短暂卡顿时可能出现的断音和音画不同步（#69），增加音频缓冲和正式播放的网络预读。在 Android 5.0.2 模拟器上复现并验证了相同条件下的修复结果。播放偏好新增弹幕设置入口（#71）。'
 
 
 def require(condition, message):
