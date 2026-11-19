@@ -6,8 +6,23 @@ package com.hongguotv.nativeapp
 import android.net.Uri
 import androidx.media3.common.C
 import androidx.media3.datasource.BaseDataSource
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.mp4.Mp4Extractor
 import com.hongguotv.core.RemoteVideo
+
+/** Identify disposable samples so the video renderer can catch up before decoding them. */
+@androidx.media3.common.util.UnstableApi
+internal fun playbackSourceFactory(dataSource: DataSource.Factory) =
+    ProgressiveMediaSource.Factory(
+        dataSource,
+        DefaultExtractorsFactory().setMp4ExtractorFlags(
+            Mp4Extractor.FLAG_READ_WITHIN_GOP_SAMPLE_DEPENDENCIES or
+                Mp4Extractor.FLAG_READ_WITHIN_GOP_SAMPLE_DEPENDENCIES_H265
+        ),
+    )
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class VideoDataSource(private val video: RemoteVideo) : BaseDataSource(true) {

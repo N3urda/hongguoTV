@@ -7,7 +7,6 @@ import android.content.Context
 import android.view.View
 import androidx.media3.common.*
 import androidx.media3.exoplayer.*
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
 import androidx.media3.exoplayer.source.preload.TargetPreloadStatusControl
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -554,7 +553,7 @@ internal class Media3TrialPlayback(context: Context, private val speed: Float = 
     private fun key(clip: TrialClip) = clip.detail.series.id + ":" + clip.episodeId
 
     private fun source(clip: TrialClip) =
-        ProgressiveMediaSource.Factory { VideoDataSource(clip.video) }
+        playbackSourceFactory { VideoDataSource(clip.video) }
             .createMediaSource(
                 MediaItem.Builder()
                     .setMediaId(key(clip))
