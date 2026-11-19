@@ -156,7 +156,7 @@ class StreamLadder(val renditions: List<Rendition>) {
 class ContentHttpException(val statusCode: Int) : IOException("内容请求失败（HTTP $statusCode）")
 
 private class PlaybackModelRejectedException(val code: Int) : IOException("播放接口暂不可用（错误码 $code）")
-private class PlaybackServiceBackoffException : IOException("播放服务繁忙，请稍后重试")
+internal class PlaybackServiceBackoffException : IOException("播放服务繁忙，请稍后重试")
 
 class SearchSessionExpiredException : IOException("搜索结果已过期，请从第 1 页重新搜索")
 
@@ -898,26 +898,21 @@ constructor(
                     if (strict || Thread.currentThread().isInterrupted) throw problem
                     continue
                 } catch (problem: RuntimeException) {
+                    if (strict) throw problem
                     continue
                 }
             val root = runCatching { JSONObject(text) }.getOrNull()
             if (root == null) { trace.rejected(); continue }
+            if (strict) PlaybackModels.checkStatus(root)
             val code = root.optInt("code", root.optInt("Code", -1))
             if (code != 0) { trace.rejected(code); continue }
             val data = root.optJSONObject("data") ?: continue
             val rows = data.optJSONObject("video_model_data") ?: data
             val row =
                 rows.optJSONObject(id)
-                    ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
-                    ?: continue
-            val raw = row.opt("video_model") ?: continue
-            val model =
-                (when (raw) {
-                    is JSONObject -> raw
-                    is String -> runCatching { JSONObject(raw) }.getOrNull()
-                    else -> null
-                }) ?: continue
-            if ((model.optJSONArray("video_list")?.length() ?: 0) == 0) continue
+                    ?: if (strict) null else rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
+            val model = PlaybackModels.objectValue(row?.opt("video_model")) ?: continue
+            if (!strict && (model.optJSONArray("video_list")?.length() ?: 0) == 0) continue
             return JSONObject().put("video_model", model)
         }
         return null
@@ -976,7 +971,24 @@ constructor(
         RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(if (speculative) 2 else 8)) {
             val profile = if (speculative) playbackSession.existing()
                 ?: throw IOException("播放设备尚未就绪") else playbackSession.profile(http)
-            MobilePlayback.ladder(id, profile.values, http, MobilePlayback.signer, clock())
+            try {
+                MobilePlayback.ladder(id, profile.values, http, MobilePlayback.signer, clock())
+            } catch (empty: EmptyPlaybackResponseException) {
+                if (speculative) throw empty
+                RequestScope.ensureActive()
+                val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+                val entry = try {
+                    tabVideoModel(id, profile, transport = transport, strict = true)
+                } catch (_: EmptyPlaybackResponseException) {
+                    throw empty
+                } catch (rejected: ContentHttpException) {
+                    throw PlaybackSourceException(PlaybackSourceException.Reason.HTTP_REJECTED, rejected.statusCode)
+                }
+                RequestScope.ensureActive()
+                val rows = entry?.optJSONObject("video_model")?.let(PlaybackModels::renditions).orEmpty()
+                if (rows.isEmpty()) throw empty
+                StreamLadder(rows)
+            }
         }
 
     /** Retained legacy transport for compatibility regression coverage. */
