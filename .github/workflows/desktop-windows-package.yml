@@ -31,7 +31,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
           $app = 'kotlin-tv/app-desktop/build/compose/binaries/main/app/HongguoDesktop'
           if (!(Test-Path "$app/HongguoDesktop.exe")) { throw 'Missing desktop exe' }
-          if (!(Get-ChildItem $app -Filter "mediamp-mpv-runtime-windows-x64-0.5.1.jar" -Recurse)) { throw 'Player was not packaged' }
+          if (!(Get-ChildItem $app -Filter "mediamp-mpv-runtime-windows-x64-0.5.1*.jar" -Recurse)) { throw 'Player was not packaged' }
           Copy-Item LICENSE "$app/LICENSE.txt"
           @('解压整个文件夹后，双击 HongguoDesktop.exe。不要只复制 exe 文件。', '支持 Windows x64，已附带 Java 运行时和内嵌播放器。', '本包是未签名试用版。账号及 Windows 实机体验仍需验证。') | Set-Content "$app/使用说明.txt" -Encoding utf8
           Compress-Archive -Path $app -DestinationPath HongguoDesktop-Windows-x64.zip
