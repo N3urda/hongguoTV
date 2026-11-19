@@ -126,10 +126,10 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
                         saveProgress()
                         if (sleepTimer.episodeEnded()) { stop(); break }
                         if (autoNext && episode < detail.episodes.lastIndex) {
-                            scope.launch { play(detail, episode + 1) }
+                            if (ticket == generation) play(detail, episode + 1)
                         } else if (autoNext) {
                             val next = withContext(Dispatchers.IO) { runCatching { RelatedWorks.nextSeason(detail.series, repository.related(detail.series.id))?.let { repository.detail(it.series.id) } }.getOrNull() }
-                            if (next != null && next.episodes.isNotEmpty() && ticket == generation) scope.launch { play(next, 0) }
+                            if (next != null && next.episodes.isNotEmpty() && ticket == generation) play(next, 0)
                             else message = "本剧已播放完毕"
                         } else message = "本集已播放完毕"
                         break

@@ -13,12 +13,19 @@ import java.awt.Rectangle
 /** Opt-in acceptance through the same window, controller and media surface used by the app. */
 object DesktopSmoke {
     suspend fun verify(source: LiveCatalogSource, player: DesktopPlayback, state: DesktopState, file: Path, window: Window) {
+        val report = Path.of("build/reports/desktop-controller-smoke.txt")
+        Files.createDirectories(report.parent)
+        Files.writeString(report, "Checking live catalog and detail\n")
+        fun stage(name: String) {
+            println(name)
+            Files.writeString(report, "$name\n", java.nio.file.StandardOpenOption.APPEND)
+        }
         val detail = withContext(Dispatchers.IO) {
             source.repository.detail(source.repository.discover(DramaCategory.REAL).items.first().id)
         }
         require(detail.episodes.size >= 2)
         suspend fun until(stage: String, condition: () -> Boolean) {
-            println("Checking $stage")
+            stage("Checking $stage")
             withTimeout(90_000) {
                 while (!condition()) {
                     check(player.message == null) { "Playback failed during $stage" }
@@ -57,7 +64,7 @@ object DesktopSmoke {
         val saved = DesktopLibrary(file).history.getValue(detail.series.id)
         check(saved.episodeId == detail.episodes[1] && saved.position >= 12_000)
         state.resume()
-        until("resume saved episode and time") { player.index == 1 && player.running && player.duration > 0 && player.position * 1000 in saved.position.toDouble()..(saved.position + 3000).toDouble() }
-        println("PASS embedded frames, audio track, pause, seek, next episode and resume at ${saved.position} ms")
+        until("resume saved episode and time") { player.index == 1 && player.running && player.duration > 0 && player.position * 1000 in (saved.position + 500).toDouble()..(saved.position + 4000).toDouble() }
+        stage("PASS embedded frames, audio track, pause, seek, next episode and resume at ${saved.position} ms")
     }
 }
