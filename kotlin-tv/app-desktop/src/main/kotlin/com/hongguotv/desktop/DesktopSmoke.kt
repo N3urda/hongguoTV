@@ -40,8 +40,12 @@ object DesktopSmoke {
         state.selectEpisode(0)
         until("embedded playback") { player.position >= 2 && player.duration > 20 }
         val native = player.engine!!.impl as MPVHandle
-        check(native.getPropertyInt("video-params/w") > 0 && native.getPropertyInt("audio-params/samplerate") > 0)
+        val width = native.getPropertyInt("video-params/w")
+        val sampleRate = native.getPropertyInt("audio-params/samplerate")
+        stage("Decoded video width $width and audio sample rate $sampleRate")
+        check(width > 0 && sampleRate > 0)
         // Sample the centre of the actual video pane, away from controls and letterboxing.
+        window.isAlwaysOnTop = true
         window.toFront()
         delay(500)
         val origin = window.locationOnScreen

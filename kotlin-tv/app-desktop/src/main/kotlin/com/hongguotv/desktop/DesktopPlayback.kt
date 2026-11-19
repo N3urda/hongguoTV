@@ -95,7 +95,12 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
                 bridge = source
                 pendingBridge = null
                 playbackDiagnostics?.invoke("Loading MediaMP native runtime")
-                val current = MpvMediampPlayer(Any(), scope.coroutineContext)
+                val current = MpvMediampPlayer(Any(), scope.coroutineContext) { handle ->
+                    // Hosted Windows runners have no WASAPI endpoint. Keep decoding the real audio track.
+                    if (playbackDiagnostics != null && System.getenv("HONGGUO_SMOKE_NULL_AUDIO") == "1") {
+                        handle.option("ao", "null")
+                    }
+                }
                 engine = current
                 playbackDiagnostics?.invoke("Opening libmpv stream")
                 current.setMediaData(UriMediaData(source.url, emptyMap(), MediaExtraFiles.EMPTY), true, (start * 1000).toLong())

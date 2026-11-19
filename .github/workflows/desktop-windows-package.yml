@@ -49,6 +49,7 @@ jobs:
         timeout-minutes: 6
         run: |
           $exe = 'kotlin-tv/app-desktop/build/compose/binaries/main/app/HongguoDesktop/HongguoDesktop.exe'
+          $env:HONGGUO_SMOKE_NULL_AUDIO = '1'
           $process = Start-Process $exe -ArgumentList '--smoke-controller' -WorkingDirectory $PWD.Path -PassThru -Wait
           $report = 'build/reports/desktop-controller-smoke.txt'
           if (Test-Path $report) { Get-Content $report }

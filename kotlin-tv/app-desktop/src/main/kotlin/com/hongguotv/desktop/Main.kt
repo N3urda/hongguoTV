@@ -43,6 +43,8 @@ private fun launchDesktop(smokeFile: java.nio.file.Path?) = application(exitProc
                 try {
                     DesktopSmoke.verify(source, playback, state, smokeFile, window)
                 } catch (failure: Throwable) {
+                    val report = java.nio.file.Path.of("build/reports/desktop-controller-smoke.txt")
+                    java.nio.file.Files.writeString(report, "FAIL ${failure.javaClass.simpleName} at ${failure.stackTrace.firstOrNull()}\n", java.nio.file.StandardOpenOption.APPEND)
                     failure.printStackTrace()
                     kotlin.system.exitProcess(1)
                 }
