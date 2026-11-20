@@ -90,6 +90,7 @@ internal class PublicFeedBackend(
     account: AccountCredentials? = null,
     private val startupCache: FeedStartupCache? = null,
     private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared,
+    private val recentSources: PlaybackSourceCache = PlaybackSourceCache(),
 ) : FeedBackend {
     companion object {
         // Reuse idle public TLS connections across homepage visits. Dispatchers remain per backend,
@@ -220,6 +221,7 @@ internal class PublicFeedBackend(
             id,
             quality,
             CodecCapabilities::supports,
+            recentSources,
             initialBytes = 32 * 1024,
             speculative = speculative,
         ) {

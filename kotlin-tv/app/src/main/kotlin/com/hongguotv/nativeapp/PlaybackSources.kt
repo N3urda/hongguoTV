@@ -1,14 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.nativeapp
 
+import android.os.SystemClock
 import android.util.Log
 import com.hongguotv.core.ContentHttpException
 import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.EmptyPlaybackResponseException
+import com.hongguotv.core.PlaybackDiagnosticException
+import com.hongguotv.core.PlaybackSourceException
 import com.hongguotv.core.RemoteVideo
 import com.hongguotv.core.Rendition
+import com.hongguotv.core.RequestScope
+import com.hongguotv.core.StreamLadder
 import com.hongguotv.core.VideoTracks
+import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.SocketTimeoutException
+import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
+
+private fun Throwable.isPlaybackTimeout(): Boolean =
+    this is SocketTimeoutException ||
+        this is InterruptedIOException && (message == "timeout" || message == "deadline reached")
 
 /** 只展示已知错误类别，不把响应正文、媒体地址或查询凭据带到界面和日志。 */
 internal fun playbackFailureSummary(problem: Throwable): String {
@@ -27,8 +40,7 @@ internal fun playbackFailureSummary(problem: Throwable): String {
         ?.let {
             return it
         }
-    if (causes.any { it is java.net.SocketTimeoutException ||
-        it is java.io.InterruptedIOException && it.message in setOf("timeout", "deadline reached") }) return "网络请求超时"
+    if (causes.any { it.isPlaybackTimeout() }) return "网络请求超时"
     if (causes.any { it is java.net.UnknownHostException }) return "无法解析服务器域名"
     if (causes.any { it is java.io.EOFException }) return "视频分段提前断开"
     val known =
@@ -109,6 +121,36 @@ internal class OpenedStream(
     override fun close() = video.close()
 }
 
+/** Shares previously opened renditions between the feed and full-screen player in one Activity. */
+internal class PlaybackSourceCache(private val clock: () -> Long = SystemClock::elapsedRealtime) {
+    private data class Entry(val rendition: Rendition, val openedAt: Long)
+    private val entries = linkedMapOf<String, Entry>()
+
+    @Synchronized
+    fun find(id: String): Rendition? {
+        prune(clock())
+        return entries[id]?.rendition
+    }
+
+    @Synchronized
+    fun remember(id: String, rendition: Rendition) {
+        val now = clock()
+        prune(now)
+        entries.remove(id)
+        entries[id] = Entry(rendition, now)
+        while (entries.size > 6) entries.remove(entries.keys.first())
+    }
+
+    @Synchronized
+    fun forget(id: String, rendition: Rendition? = null) {
+        if (rendition == null || entries[id]?.rendition === rendition) entries.remove(id)
+    }
+
+    private fun prune(now: Long) {
+        entries.entries.removeAll { now - it.value.openedAt !in 0 until TimeUnit.MINUTES.toMillis(5) }
+    }
+}
+
 /**
  * 阶梯非空但没有任何一档能被本机解码（bytevc2 锁定集的确定性结果）：重试只会得到同一结果，
  * 上层不应再进入自动恢复预算；手动重试保留（服务端转码推进后该集供给可能翻转为 bytevc1）。
@@ -137,10 +179,8 @@ internal fun <T> firstPlayableEpisode(
 }
 
 /**
- * Opens the first rendition the device can actually decode: select by API metadata, then verify the
- * coded size read from the MP4 header and step down the ladder on mismatch. Throws
- * [NoPlayableQualityException] when the ladder has renditions but none is decodable on this device
- * (deterministic — retrying yields the same result); returns null only for an empty ladder.
+ * Selects a rendition and checks its MP4 header. A transient model failure can reuse a rendition
+ * for the same episode, provided a new media request still validates it.
  */
 internal fun openStream(
     http: OkHttpClient,
@@ -148,33 +188,61 @@ internal fun openStream(
     id: String,
     maxQuality: Int,
     supportsRendition: (Rendition) -> Boolean,
+    recentSources: PlaybackSourceCache,
     initialBytes: Int = 256 * 1024,
     metadataAhead: List<String> = emptyList(),
     speculative: Boolean = false,
     supportsTrack: (VideoTracks.Track?) -> Boolean,
 ): OpenedStream? {
-    val ladder = repository.streamLadderWithCompatibility(id, metadataAhead, speculative)
-    for (rendition in ladder.playbackOrder(maxQuality, supportsRendition)) {
-        val video = RemoteVideo(http, rendition.toStreamInfo())
-        try {
-            video.prepare(initialBytes)
-            val track = video.trackInfo()
-            if (supportsTrack(track))
-                return OpenedStream(video, rendition, ladder.renditions, track)
-            Log.i(
-                "HongguoTV",
-                "Skipped ${rendition.quality}P ${rendition.codec}: coded ${track?.width}x${track?.height} beyond decoder capability",
-            )
-            video.close()
-        } catch (error: Exception) {
-            video.close()
-            throw error
+    fun prepare(ladder: StreamLadder): OpenedStream? {
+        for (rendition in ladder.playbackOrder(maxQuality, supportsRendition)) {
+            val video = RemoteVideo(http, rendition.toStreamInfo())
+            try {
+                video.prepare(initialBytes)
+                RequestScope.ensureActive()
+                val track = video.trackInfo()
+                if (supportsTrack(track))
+                    return OpenedStream(video, rendition, ladder.renditions, track)
+                Log.i(
+                    "HongguoTV",
+                    "Skipped ${rendition.quality}P ${rendition.codec}: coded ${track?.width}x${track?.height} beyond decoder capability",
+                )
+                video.close()
+            } catch (error: Exception) {
+                video.close()
+                throw error
+            }
         }
+        if (ladder.renditions.isNotEmpty()) throw NoPlayableQualityException()
+        return null
     }
-    // 空阶梯维持 null（供给异常语义，由调用方提示）；非空阶梯走到这里说明每一档都被
-    // 能力判定（metadata 过滤或 moov 复核）拒掉，属确定性失败。
-    if (ladder.renditions.isNotEmpty()) throw NoPlayableQualityException()
-    return null
+
+    val ladder = try {
+        repository.streamLadderWithCompatibility(id, metadataAhead, speculative)
+    } catch (problem: IOException) {
+        RequestScope.ensureActive()
+        if (problem is PlaybackSourceException) recentSources.forget(id)
+        val modelsEmpty = problem is EmptyPlaybackResponseException && problem.allPlaybackModelsEmpty
+        val backupTimedOut = problem.isPlaybackTimeout() &&
+            problem.suppressed.any { it is EmptyPlaybackResponseException }
+        if (speculative || (!modelsEmpty && !backupTimedOut)) throw problem
+        val cached = recentSources.find(id)?.takeIf { it.quality <= maxQuality } ?: throw problem
+        val recovered = try {
+            RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(2)) {
+                prepare(StreamLadder(listOf(cached)))
+            }
+        } catch (_: IOException) {
+            RequestScope.ensureActive()
+            recentSources.forget(id, cached)
+            problem.addSuppressed(PlaybackDiagnosticException("recent-source=unavailable"))
+            throw problem
+        }
+        Log.i("HongguoTV", "Opened recently verified playback source")
+        return recovered
+    }
+    return prepare(ladder)?.also { opened ->
+        opened.rendition?.let { recentSources.remember(id, it) }
+    }
 }
 
 /**

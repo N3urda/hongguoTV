@@ -161,6 +161,7 @@ class MainActivity : Activity() {
     }
     private val preparedNext =
         PreparedSlot<RemoteVideo>({ android.os.SystemClock.elapsedRealtime() })
+    private val recentPlaybackSources = PlaybackSourceCache()
     private var prefetchJob: java.util.concurrent.Future<*>? = null
     private var prefetchScope: RequestScope? = null
 
@@ -1133,6 +1134,7 @@ class MainActivity : Activity() {
                         library.maxQuality,
                         account = cloudAccount.recommendationCredentials(),
                         startupCache = cloudAccount.recommendationStartupCache(),
+                        recentSources = recentPlaybackSources,
                     ),
                     Media3TrialPlayback(this, library.playbackSpeed, library.frameMode),
                     autoPreview = library.homeAutoplay,
@@ -3165,6 +3167,7 @@ class MainActivity : Activity() {
                             requestedId,
                             maxQuality,
                             CodecCapabilities::supports,
+                            recentPlaybackSources,
                             metadataAhead = data.episodes.drop(selectedIndex + 1).take(2),
                         ) {
                             it == null || CodecCapabilities.supports(it)
@@ -3449,6 +3452,7 @@ class MainActivity : Activity() {
                                     id,
                                     quality,
                                     CodecCapabilities::supports,
+                                    recentPlaybackSources,
                                     initialBytes = 32 * 1024,
                                     metadataAhead = metadataAhead,
                                     speculative = true,
