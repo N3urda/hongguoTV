@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.nativeapp
 
+import android.os.Handler
+import android.os.Looper
+import androidx.media3.common.Player
+import org.robolectric.Shadows.shadowOf
+import java.util.concurrent.TimeUnit
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -22,6 +27,26 @@ class PlaybackLoadingStateTest {
     }
     private fun call(target: Any, name: String) {
         target.javaClass.getDeclaredMethod(name).apply { isAccessible = true }.invoke(target)
+    }
+
+    @Test fun spinnerAppearsOnlyAfterUninterruptedBuffering() {
+        val looper = Looper.getMainLooper()
+        val visibility = mutableListOf<Boolean>()
+        val indicator = PlaybackBufferingIndicator(Handler(looper)) { visibility.add(it) }
+        indicator.onPlaybackStateChanged(Player.STATE_BUFFERING)
+        shadowOf(looper).idleFor(800, TimeUnit.MILLISECONDS)
+        indicator.onPlaybackStateChanged(Player.STATE_READY)
+        indicator.onPlaybackStateChanged(Player.STATE_BUFFERING)
+        shadowOf(looper).idleFor(800, TimeUnit.MILLISECONDS)
+        assertFalse(true in visibility)
+        shadowOf(looper).idleFor(200, TimeUnit.MILLISECONDS)
+        assertTrue(visibility.last())
+        indicator.onPlaybackStateChanged(Player.STATE_READY)
+        assertFalse(visibility.last())
+        indicator.onPlaybackStateChanged(Player.STATE_BUFFERING)
+        indicator.clear()
+        shadowOf(looper).idleFor(2, TimeUnit.SECONDS)
+        assertFalse(visibility.last())
     }
 
     @Test fun pendingFirstFrameRetainsCauseAndCannotHideStatusEvenWhenPlayerIsReady() {

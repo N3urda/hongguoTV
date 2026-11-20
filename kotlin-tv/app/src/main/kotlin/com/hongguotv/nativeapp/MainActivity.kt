@@ -298,6 +298,9 @@ class MainActivity : Activity() {
     private val sleepTimer = SleepTimer { android.os.SystemClock.elapsedRealtime() }
     private var sleepStopped = false
     private var playerView: PlayerView? = null
+    private val bufferingIndicator = PlaybackBufferingIndicator(main) { visible ->
+        playerView?.setShowBuffering(if (visible) PlayerView.SHOW_BUFFERING_ALWAYS else PlayerView.SHOW_BUFFERING_NEVER)
+    }
     private val social by lazy {
         TvSocial(
             this,
@@ -3046,7 +3049,7 @@ class MainActivity : Activity() {
                     isFocusable = false
                     setKeepContentOnPlayerReset(true)
                     setShutterBackgroundColor(Color.BLACK)
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                 }
             playerView = view
             root.addView(view, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
@@ -3775,6 +3778,7 @@ class MainActivity : Activity() {
                     playbackRenderers(this)
                 ExoPlayer.Builder(this, renderers).setLoadControl(load).build().also {
                     player = it
+                    it.addListener(bufferingIndicator)
                     playerView?.player = it
                     it.setAudioAttributes(
                         AudioAttributes.Builder()
@@ -4907,6 +4911,8 @@ class MainActivity : Activity() {
         playerListener = null
         video?.close()
         video = null
+        player?.removeListener(bufferingIndicator)
+        bufferingIndicator.clear()
         playerView?.player = null
         playerView = null
         seekHint = null
