@@ -18,10 +18,29 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo) : Closea
 
     data class Range(val bytes: ByteArray, val total: Long)
 
+    /** A prepared stream can move to a new player without inheriting the old player's HTTP calls. */
+    class PreparedSource internal constructor(
+        private val info: StreamInfo,
+        private val size: Long,
+        private val prepared: MediaCrypto.Prepared,
+        private val prefix: ByteArray,
+    ) {
+        fun open(http: OkHttpClient): RemoteVideo = RemoteVideo(http, info).also { next ->
+            next.total = size
+            next.prefix = prefix
+            next.prepared = prepared
+        }
+    }
+
+    fun preparedSource(): PreparedSource? = synchronized(calls) {
+        if (closed || !::prepared.isInitialized) null
+        else PreparedSource(info, total, prepared, prefix)
+    }
+
     var total: Long = 0
         private set
 
-    private lateinit var prepared: MediaCrypto.Prepared
+    @Volatile private lateinit var prepared: MediaCrypto.Prepared
     @Volatile private var prefix = byteArrayOf()
 
     private fun newCall(start: Long, end: Long): Call {
@@ -170,8 +189,9 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo) : Closea
                 first.bytes + range(first.bytes.size.toLong(), end - 1L).bytes
             else first.bytes.copyOf(end)
         if (header.size > prefix.size) prefix = header
-        prepared = MediaCrypto.prepare(header, info.key)
-        if (prepared.samples.any { it.end > total }) throw IOException("视频样本超出资源大小")
+        val layout = MediaCrypto.prepare(header, info.key)
+        if (layout.samples.any { it.end > total }) throw IOException("视频样本超出资源大小")
+        prepared = layout
         return this
     }
 

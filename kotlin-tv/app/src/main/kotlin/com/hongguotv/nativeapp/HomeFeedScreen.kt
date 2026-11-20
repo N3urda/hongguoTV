@@ -495,6 +495,11 @@ internal class HomeFeedScreen(
         if (!closed) paintActions()
     }
 
+    fun currentPlayback(seriesId: String): TrialClip? {
+        if (!playbackReady || failed || buffering || state.userPaused || state.ended || playback.position() <= 0) return null
+        return clip?.takeIf { it.detail.series.id == seriesId }
+    }
+
     private fun openCurrent() {
         state.current?.let { remember(force = true); pause(); watch(it) }
     }

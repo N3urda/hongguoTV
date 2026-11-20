@@ -2564,6 +2564,11 @@ class MainActivity : Activity() {
         fromHome: Boolean = false,
         fromPhone: Boolean = false,
     ) {
+        val trial = if (fromHome && resume) homeFeed?.currentPlayback(series.id) else null
+        val trialEpisodeId = trial?.episodeId
+        val trialSource = trial?.video?.preparedSource()
+        val trialCapturedAt = android.os.SystemClock.elapsedRealtime()
+        val trialMaxQuality = trialSource?.let { library.maxQuality }
         if (!fromRelated) detailTrail.clear()
         relatedSection = null
         val accountScope = cloudAccount.historyScope
@@ -2609,8 +2614,20 @@ class MainActivity : Activity() {
                     )
                 episodeIndex = target.index
                 group = episodeIndex / 20
-                if (resume) playEpisode(target.index, target.position, autoplay = detailAutoplay)
-                else showDetail(false)
+                if (!resume) {
+                    showDetail(false)
+                    return@work
+                }
+                val episodeId = result.episodes.getOrNull(target.index)
+                if (trialSource != null && episodeId != null && episodeId == trialEpisodeId &&
+                    trialMaxQuality == library.maxQuality &&
+                    android.os.SystemClock.elapsedRealtime() - trialCapturedAt in 0..15_000
+                ) {
+                    cancelPrefetch()
+                    val key = "$episodeId:$trialMaxQuality"
+                    preparedNext.complete(preparedNext.begin(key), key, trialSource.open(repository.http))
+                }
+                playEpisode(target.index, target.position, autoplay = detailAutoplay)
             },
             { problem ->
                 error(body, problem) {
@@ -2941,7 +2958,7 @@ class MainActivity : Activity() {
         val pending =
             if (position == 0L && !recovering) claimPendingPreparation(prepareKey) else null
         val prefetched =
-            if (position == 0L && !recovering && pending == null) preparedNext.take(prepareKey)
+            if (!recovering && pending == null) preparedNext.take(prepareKey)
             else null
         val claimedHttp =
             if (prefetched != null) prefetchHttp.also { prefetchHttp = null } else null

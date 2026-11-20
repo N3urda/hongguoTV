@@ -80,6 +80,38 @@ class RemoteVideoStreamingTest {
         }
     }
 
+    @Test
+    fun preparedSourceKeepsLocalBytesAndUsesTheNewTransportAfterThePreviewCloses() {
+        val file = fixture()
+        val previewRanges = mutableListOf<String>()
+        val playerRanges = mutableListOf<String>()
+        fun transport(ranges: MutableList<String>) = OkHttpClient.Builder().addInterceptor { chain ->
+            val range = chain.request().header("Range")!!
+            ranges += range
+            val (start, end) = range.removePrefix("bytes=").split('-').map(String::toInt)
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(206).message("Partial Content")
+                .header("Content-Range", "bytes $start-$end/${file.size}")
+                .body(file.copyOfRange(start, end + 1).toResponseBody()).build()
+        }.build()
+        val preview = RemoteVideo(transport(previewRanges), StreamInfo("https://example.test/video", null, "测试"))
+        val prepared = preview.use {
+            assertNull(it.preparedSource())
+            it.prepare()
+            checkNotNull(it.preparedSource())
+        }
+        assertNull(preview.preparedSource())
+        prepared.open(transport(playerRanges)).use { player ->
+            assertArrayEquals(file.copyOfRange(0, 32), player.read(0, 32))
+            assertTrue(playerRanges.isEmpty())
+            player.openRead(300 * 1024L, 64).use { input ->
+                assertArrayEquals(file.copyOfRange(300 * 1024, 300 * 1024 + 64), input.readBytes())
+            }
+        }
+        assertEquals(listOf("bytes=0-262143"), previewRanges)
+        assertEquals(listOf("bytes=307200-307263"), playerRanges)
+    }
+
     private fun fixture(headerSize: Int = 16): ByteArray =
         ByteArray(1024 * 1024) { (it % 239).toByte() }
             .also {
