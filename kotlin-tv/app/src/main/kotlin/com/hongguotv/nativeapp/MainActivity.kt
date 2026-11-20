@@ -3421,6 +3421,7 @@ class MainActivity : Activity() {
         if (
             prefetchAttempts >= 3 ||
                 (prefetchAttempts > 0 && now - prefetchAttemptAt < 15_000) ||
+                repository.shouldDeferPlaybackPrefetch() ||
                 connectivity.isActiveNetworkMetered ||
                 !networkAvailable()
         )

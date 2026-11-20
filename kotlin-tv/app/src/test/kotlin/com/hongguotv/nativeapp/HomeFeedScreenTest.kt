@@ -945,6 +945,36 @@ class HomeFeedScreenTest {
     }
 
     @Test
+    fun primaryMetadataCooldownDefersNewPreloadsWhileTheCurrentClipPlays() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        var deferred = true
+        val backend = object : Backend() {
+            override fun shouldDeferPlaybackPrefetch(): Boolean = deferred
+        }
+        val player = Playback(activity)
+        val screen = HomeFeedScreen(activity, DramaFeedState(), listOf(TextView(activity)), {},
+            { _, _ -> }, { "收藏" }, backend, player)
+        try {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+            player.status?.invoke(TrialStatus.READY)
+            ShadowLooper.idleMainLooper(1, TimeUnit.SECONDS)
+            assertEquals(listOf("1"), backend.preparedIds.toList())
+            assertTrue(player.playing)
+
+            deferred = false
+            ShadowLooper.idleMainLooper(1, TimeUnit.SECONDS)
+            finishPrefetch(screen)
+            assertEquals(listOf("1", "2"), backend.preparedIds.toList())
+        } finally {
+            screen.close()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
     fun progressivelyPrebuffersThreeWorksAndReusesCachedNextAndPrevious() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()

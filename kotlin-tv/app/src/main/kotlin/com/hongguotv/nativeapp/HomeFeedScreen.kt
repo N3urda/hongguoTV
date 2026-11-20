@@ -965,7 +965,7 @@ internal class HomeFeedScreen(
             prefetchSeries = state.current?.id
             prefetchReadyAt = now
         }
-        if (now - prefetchReadyAt < 500) return
+        if (now - prefetchReadyAt < 500 || backend.shouldDeferPlaybackPrefetch()) return
         val current = clip ?: return
         if (autoNext && current.trialEpisodeIndex < current.episodeCount && nextEpisode == null &&
             playback.duration() > 0 && playback.duration() - playback.position() <= 8_000 &&

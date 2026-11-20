@@ -966,6 +966,8 @@ constructor(
         else info
     }
 
+    fun shouldDeferPlaybackPrefetch(): Boolean = playbackSession.shouldDeferPlaybackPrefetch(clock())
+
     /** v5 model requests use the same anonymous registration across foreground and prefetch. */
     fun streamLadderWithCompatibility(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder =
         RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(if (speculative) 2 else 8)) {
@@ -973,7 +975,9 @@ constructor(
                 ?: throw IOException("播放设备尚未就绪") else playbackSession.profile(http)
             try {
                 MobilePlayback.ladder(id, profile.values, http, MobilePlayback.signer, clock())
+                    .also { profile.recordPlayablePrimaryModel() }
             } catch (empty: EmptyPlaybackResponseException) {
+                profile.recordEmptyPrimaryModel(clock())
                 if (speculative) throw empty
                 RequestScope.ensureActive()
                 val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
@@ -985,8 +989,14 @@ constructor(
                         addSuppressed(empty)
                         addSuppressed(PlaybackDiagnosticException("video-tab-empty ${trace.summary()}"))
                     }
-                } catch (rejected: ContentHttpException) {
-                    throw PlaybackSourceException(PlaybackSourceException.Reason.HTTP_REJECTED, rejected.statusCode)
+                } catch (fallback: IOException) {
+                    val failure = if (fallback is ContentHttpException)
+                        PlaybackSourceException(PlaybackSourceException.Reason.HTTP_REJECTED, fallback.statusCode)
+                    else fallback
+                    throw failure.apply {
+                        addSuppressed(empty)
+                        addSuppressed(PlaybackDiagnosticException("video-tab ${trace.summary()}"))
+                    }
                 }
                 RequestScope.ensureActive()
                 val rows = entry?.optJSONObject("video_model")?.let(PlaybackModels::renditions).orEmpty()
