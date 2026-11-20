@@ -104,7 +104,7 @@ data class CatalogPage(
     val trialHints: Map<String, TrialHint> = emptyMap(),
 )
 
-data class StreamInfo(val url: String, val key: ByteArray?, val quality: String)
+data class StreamInfo(val url: String, val key: ByteArray?, val quality: String, val backupUrl: String? = null)
 
 /** One playable rendition; width/height are the coded dimensions when the API reports them. */
 data class Rendition(
@@ -114,8 +114,9 @@ data class Rendition(
     val height: Int?,
     val url: String,
     val key: ByteArray?,
+    val backupUrl: String? = null,
 ) {
-    fun toStreamInfo() = StreamInfo(url, key, if (quality > 0) "${quality}P" else "自动")
+    fun toStreamInfo() = StreamInfo(url, key, if (quality > 0) "${quality}P" else "自动", backupUrl)
 }
 
 /**

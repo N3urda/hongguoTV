@@ -55,6 +55,7 @@ internal fun playbackFailureSummary(problem: Throwable): String {
             "播放准备已取消",
             "视频分段范围不匹配",
             "视频资源已变化，请重试",
+            "备用视频资源的索引与当前集不一致",
             "播放信息为空",
             "播放地址格式异常",
             // 前缀匹配：这两类消息带变量后缀（清晰度建议语、HTTP 码），完整文案原样透出。
@@ -253,8 +254,11 @@ internal fun openStream(
                 video.prepare(initialBytes)
                 RequestScope.ensureActive()
                 val track = video.trackInfo()
-                if (supportsTrack(track))
-                    return OpenedStream(video, rendition, ladder.renditions, track)
+                if (supportsTrack(track)) {
+                    val openedRendition = if (video.info.url == rendition.url) rendition
+                    else rendition.copy(url = video.info.url, backupUrl = video.info.backupUrl)
+                    return OpenedStream(video, openedRendition, ladder.renditions, track)
+                }
                 Log.i(
                     "HongguoTV",
                     "Skipped ${rendition.quality}P ${rendition.codec}: coded ${track?.width}x${track?.height} beyond decoder capability",
