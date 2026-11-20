@@ -8,6 +8,7 @@ import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.EmptyPlaybackResponseException
 import com.hongguotv.core.PlaybackDiagnosticException
 import com.hongguotv.core.PlaybackSourceException
+import com.hongguotv.core.PreparedSlot
 import com.hongguotv.core.RemoteVideo
 import com.hongguotv.core.Rendition
 import com.hongguotv.core.RequestScope
@@ -16,7 +17,12 @@ import com.hongguotv.core.VideoTracks
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executor
+import java.util.concurrent.FutureTask
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import okhttp3.OkHttpClient
 
 private fun Throwable.isPlaybackTimeout(): Boolean =
@@ -151,6 +157,52 @@ internal class PlaybackSourceCache(private val clock: () -> Long = SystemClock::
     }
 }
 
+private class RecentSourceValidation(
+    private val id: String,
+    val rendition: Rendition,
+    private val deadline: Long,
+    executor: Executor,
+    prepare: () -> OpenedStream?,
+) : java.io.Closeable {
+    private val scope = RequestScope()
+    private val ready = PreparedSlot<OpenedStream>(SystemClock::elapsedRealtime)
+    private val ticket = ready.begin(id)
+    private val job = FutureTask {
+        scope.run {
+            RequestScope.withDeadline(deadline) {
+                prepare()?.let { ready.complete(ticket, id, it) }
+            }
+        }
+    }
+
+    init {
+        executor.execute(job)
+    }
+
+    fun take(): OpenedStream? {
+        try {
+            job.get((deadline - System.nanoTime()).coerceAtLeast(0L), TimeUnit.NANOSECONDS)
+        } catch (_: TimeoutException) {
+            return null
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw InterruptedIOException("播放准备已取消")
+        } catch (failure: ExecutionException) {
+            val cause = failure.cause
+            if (cause is IOException) return null
+            throw cause ?: failure
+        }
+        RequestScope.ensureActive()
+        return ready.take(id)
+    }
+
+    override fun close() {
+        ready.clear()
+        scope.cancel()
+        job.cancel(true)
+    }
+}
+
 /**
  * 阶梯非空但没有任何一档能被本机解码（bytevc2 锁定集的确定性结果）：重试只会得到同一结果，
  * 上层不应再进入自动恢复预算；手动重试保留（服务端转码推进后该集供给可能翻转为 bytevc1）。
@@ -217,8 +269,22 @@ internal fun openStream(
         return null
     }
 
+    var validation: RecentSourceValidation? = null
+    val prepareDeadline = RequestScope.deadlineAtMost(Long.MAX_VALUE)
     val ladder = try {
-        repository.streamLadderWithCompatibility(id, metadataAhead, speculative)
+        repository.streamLadderWithCompatibility(id, metadataAhead, speculative) {
+            val cached = recentSources.find(id)?.takeIf { it.quality <= maxQuality }
+            if (cached != null) {
+                val deadline = minOf(prepareDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(2))
+                try {
+                    validation = RecentSourceValidation(id, cached, deadline, http.dispatcher.executorService) {
+                        prepare(StreamLadder(listOf(cached)))
+                    }
+                } catch (_: RejectedExecutionException) {
+                    // The playback transport may already be closing.
+                }
+            }
+        }
     } catch (problem: IOException) {
         RequestScope.ensureActive()
         if (problem is PlaybackSourceException) recentSources.forget(id)
@@ -226,19 +292,22 @@ internal fun openStream(
         val backupTimedOut = problem.isPlaybackTimeout() &&
             problem.suppressed.any { it is EmptyPlaybackResponseException }
         if (speculative || (!modelsEmpty && !backupTimedOut)) throw problem
-        val cached = recentSources.find(id)?.takeIf { it.quality <= maxQuality } ?: throw problem
-        val recovered = try {
-            RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(2)) {
-                prepare(StreamLadder(listOf(cached)))
-            }
-        } catch (_: IOException) {
-            RequestScope.ensureActive()
-            recentSources.forget(id, cached)
+        val pending = validation ?: throw problem
+        if (recentSources.find(id) !== pending.rendition) throw problem
+        val recovered = pending.take()
+        if (recovered == null) {
+            recentSources.forget(id, pending.rendition)
             problem.addSuppressed(PlaybackDiagnosticException("recent-source=unavailable"))
+            throw problem
+        }
+        if (recentSources.find(id) !== pending.rendition) {
+            recovered.close()
             throw problem
         }
         Log.i("HongguoTV", "Opened recently verified playback source")
         return recovered
+    } finally {
+        validation?.close()
     }
     return prepare(ladder)?.also { opened ->
         opened.rendition?.let { recentSources.remember(id, it) }

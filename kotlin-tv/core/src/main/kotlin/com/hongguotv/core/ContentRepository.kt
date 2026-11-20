@@ -969,7 +969,12 @@ constructor(
     fun shouldDeferPlaybackPrefetch(): Boolean = playbackSession.shouldDeferPlaybackPrefetch(clock())
 
     /** v5 model requests use the same anonymous registration across foreground and prefetch. */
-    fun streamLadderWithCompatibility(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder =
+    fun streamLadderWithCompatibility(
+        id: String,
+        metadataAhead: List<String> = emptyList(),
+        speculative: Boolean = false,
+        onPrimaryEmpty: (() -> Unit)? = null,
+    ): StreamLadder =
         RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(if (speculative) 2 else 8)) {
             val profile = if (speculative) playbackSession.existing()
                 ?: throw IOException("播放设备尚未就绪") else playbackSession.profile(http)
@@ -980,6 +985,7 @@ constructor(
                 profile.recordEmptyPrimaryModel(clock())
                 if (speculative) throw empty
                 RequestScope.ensureActive()
+                onPrimaryEmpty?.invoke()
                 val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
                 val trace = PlaybackRequestTrace()
                 val entry = try {

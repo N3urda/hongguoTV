@@ -6,6 +6,9 @@ import com.hongguotv.core.EmptyPlaybackResponseException
 import com.hongguotv.core.PlaybackSourceException
 import java.io.InterruptedIOException
 import java.nio.ByteBuffer
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Response
@@ -26,9 +29,11 @@ class PlaybackSourceRecoveryTest {
         var now = 0L
         var primaryEmpty = false
         var backupTimesOut = false
+        var backupWaitsForCdn = false
         var backupStatus = 200
         var cdnStatus = 206
-        val requests = mutableListOf<String>()
+        private val cachedCdnStarted = CountDownLatch(1)
+        val requests = CopyOnWriteArrayList<String>()
         val recentSources = PlaybackSourceCache { now }
         val http = OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
@@ -42,11 +47,13 @@ class PlaybackSourceRecoveryTest {
                 }
                 "/reading/bookapi/video_tab/multi_video_model/v1/" -> {
                     requests += "backup"
+                    if (backupWaitsForCdn) assertTrue(cachedCdnStarted.await(1, TimeUnit.SECONDS))
                     if (backupTimesOut) throw InterruptedIOException("deadline reached")
                     response.code(backupStatus).body("".toResponseBody()).build()
                 }
                 "/episode.mp4" -> {
                     requests += "cdn"
+                    if (primaryEmpty) cachedCdnStarted.countDown()
                     response.code(cdnStatus)
                         .header("Content-Range", "bytes 0-${mp4.lastIndex}/${mp4.size}")
                         .body(mp4.toResponseBody()).build()
@@ -70,6 +77,11 @@ class PlaybackSourceRecoveryTest {
             requests.clear()
             primaryEmpty = true
         }
+
+        fun assertWarmRecoveryRequests() {
+            assertEquals("primary", requests.first())
+            assertEquals(listOf("backup", "cdn"), requests.drop(1).sorted())
+        }
     }
 
     @Test
@@ -78,7 +90,7 @@ class PlaybackSourceRecoveryTest {
         val playerRepository = ContentRepository(fixture.http, playbackSession = fixture.session)
         fixture.now = 299_999
         fixture.open(repo = playerRepository).use { assertEquals(16L, it.video.total) }
-        assertEquals(listOf("primary", "backup", "cdn"), fixture.requests)
+        fixture.assertWarmRecoveryRequests()
 
         fixture.now = 300_000
         fixture.requests.clear()
@@ -88,10 +100,14 @@ class PlaybackSourceRecoveryTest {
     }
 
     @Test
-    fun usesRecentSourceIfThePrimaryIsEmptyAndBackupTimesOut() {
-        val fixture = Fixture().apply { warm(); backupTimesOut = true }
+    fun validatesTheRecentCdnWhileTheBackupModelIsStillPending() {
+        val fixture = Fixture().apply {
+            warm()
+            backupWaitsForCdn = true
+            backupTimesOut = true
+        }
         fixture.open().use { assertEquals(16L, it.video.total) }
-        assertEquals(listOf("primary", "backup", "cdn"), fixture.requests)
+        fixture.assertWarmRecoveryRequests()
     }
 
     @Test
@@ -109,7 +125,7 @@ class PlaybackSourceRecoveryTest {
         val error = assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open() }
         assertTrue(diagnosticDetail(error)!!.contains("recent-source=unavailable"))
         assertTrue(error.allPlaybackModelsEmpty)
-        assertEquals(listOf("primary", "backup", "cdn"), fixture.requests)
+        fixture.assertWarmRecoveryRequests()
 
         fixture.requests.clear()
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open() }
@@ -118,11 +134,16 @@ class PlaybackSourceRecoveryTest {
 
     @Test
     fun anExplicitModelRejectionInvalidatesThePreviouslyOpenedSource() {
-        val fixture = Fixture().apply { warm(); backupStatus = 403 }
+        val fixture = Fixture().apply {
+            warm()
+            backupWaitsForCdn = true
+            backupStatus = 403
+        }
         val error = assertThrows(PlaybackSourceException::class.java) { fixture.open() }
         assertEquals(403, error.upstreamCode)
-        assertEquals(listOf("primary", "backup"), fixture.requests)
+        fixture.assertWarmRecoveryRequests()
 
+        fixture.backupWaitsForCdn = false
         fixture.backupStatus = 200
         fixture.requests.clear()
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open() }
