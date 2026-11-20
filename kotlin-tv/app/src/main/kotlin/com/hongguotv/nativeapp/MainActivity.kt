@@ -160,13 +160,14 @@ class MainActivity : Activity() {
             .build()
     }
     private val preparedNext =
-        PreparedSlot<RemoteVideo>({ android.os.SystemClock.elapsedRealtime() })
+        PreparedSlot<OpenedStream>({ android.os.SystemClock.elapsedRealtime() })
     private val recentPlaybackSources = PlaybackSourceCache()
     private var prefetchJob: java.util.concurrent.Future<*>? = null
     private var prefetchScope: RequestScope? = null
 
     private data class PendingEpisodePreparation(
         val key: String,
+        val ticket: Long,
         val job: java.util.concurrent.Future<*>,
         val scope: RequestScope,
         val http: okhttp3.OkHttpClient,
@@ -176,7 +177,7 @@ class MainActivity : Activity() {
     private var lastPlaybackFailure = ""
     private var lastPlaybackDetail: String? = null
     private var autoRecoveredPlay = false
-    private var queuedNext: RemoteVideo? = null
+    private var queuedNext: OpenedStream? = null
     private var queuedHttp: okhttp3.OkHttpClient? = null
     private var queuedEpisode = -1
     private var episodeDuration = 0L
@@ -2621,13 +2622,14 @@ class MainActivity : Activity() {
                     return@work
                 }
                 val episodeId = result.episodes.getOrNull(target.index)
-                if (trialSource != null && episodeId != null && episodeId == trialEpisodeId &&
+                if (trial != null && trialSource != null && episodeId != null && episodeId == trialEpisodeId &&
                     trialMaxQuality == library.maxQuality &&
                     android.os.SystemClock.elapsedRealtime() - trialCapturedAt in 0..15_000
                 ) {
                     cancelPrefetch()
                     val key = "$episodeId:$trialMaxQuality"
-                    preparedNext.complete(preparedNext.begin(key), key, trialSource.open(repository.http))
+                    val opened = OpenedStream(trialSource.open(repository.http), trial.rendition, trial.tiers, trial.track)
+                    preparedNext.complete(preparedNext.begin(key), key, opened)
                 }
                 playEpisode(target.index, target.position, autoplay = detailAutoplay)
             },
@@ -2956,7 +2958,7 @@ class MainActivity : Activity() {
             return
         }
         val prepareKey = "${data.episodes[selectedIndex]}:${library.maxQuality}"
-        // 切到正在准备的下一集时接管原任务，不能先 take/clear 再取消，否则会重新请求同一集。
+        // Retain a nearly completed prefetch while keeping most of the foreground deadline available.
         val pending =
             if (position == 0L && !recovering) claimPendingPreparation(prepareKey) else null
         val prefetched =
@@ -2994,7 +2996,7 @@ class MainActivity : Activity() {
         } else releasePlayer(keepPrepared = pending != null)
         artwork.cancelPage(clearMemory = true)
         playbackHttp = claimedHttp
-        video = prefetched
+        video = prefetched?.video
         var firstReady = true
         var firstFrame = true
         if (!recovering) {
@@ -3160,7 +3162,7 @@ class MainActivity : Activity() {
                             ?: pending?.let {
                                 awaitPreparedEpisode(it, remaining).also { ready -> usedPending = ready != null }
                             }
-                    prepared?.let { OpenedStream(it, null, emptyList(), it.trackInfo()) }
+                    prepared
                         ?: openStream(
                             repository.http,
                             repository,
@@ -3182,11 +3184,7 @@ class MainActivity : Activity() {
                 }
                 val remote = opened.video
                 video = remote
-                quality = playedQualityLabel(opened, maxQuality)
-                attemptedQuality = opened.rendition?.quality ?: 0
-                currentTrack = opened.track
-                currentRendition = opened.rendition
-                currentTiers = opened.tiers
+                applyOpenedStream(opened, maxQuality)
                 val p =
                     ensurePlayer()
                 p.setPlaybackSpeed(library.playbackSpeed)
@@ -3326,41 +3324,44 @@ class MainActivity : Activity() {
     private fun claimPendingPreparation(key: String): PendingEpisodePreparation? {
         if (prefetchedFor != key || preparedNext.isFresh(key)) return null
         val job = prefetchJob?.takeIf { !it.isDone } ?: return null
+        val ticket = preparedNext.ticketFor(key) ?: return null
         val scope = prefetchScope ?: return null
         val http = prefetchHttp ?: return null
         prefetchJob = null
         prefetchScope = null
         prefetchHttp = null
         prefetchedFor = ""
-        return PendingEpisodePreparation(key, job, scope, http)
+        return PendingEpisodePreparation(key, ticket, job, scope, http)
     }
 
-    private fun awaitPreparedEpisode(pending: PendingEpisodePreparation, remainingMillis: Long): RemoteVideo? {
+    private fun awaitPreparedEpisode(pending: PendingEpisodePreparation, remainingMillis: Long): OpenedStream? {
         try {
-            pending.job.get(remainingMillis.coerceAtLeast(1), java.util.concurrent.TimeUnit.MILLISECONDS)
+            pending.job.get(minOf(400L, remainingMillis), java.util.concurrent.TimeUnit.MILLISECONDS)
         } catch (_: java.util.concurrent.TimeoutException) {
-            pending.scope.cancel()
-            pending.job.cancel(true)
-            closeTransport(pending.http)
-            throw java.net.SocketTimeoutException("预加载等待超时")
+            cancelPreparedWork(pending)
+            return null
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             throw java.io.InterruptedIOException("播放准备已取消")
         } catch (_: java.util.concurrent.ExecutionException) {
-            // 预加载失败只影响本次投机任务；正式播放仍可正常重新获取一次。
+            // A failed background request leaves the foreground path available.
         } catch (_: java.util.concurrent.CancellationException) {
-            throw java.io.InterruptedIOException("播放准备已取消")
+            // Check the foreground scope below before using the network again.
         }
-        if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放准备已取消")
-        return preparedNext.take(pending.key)
+        RequestScope.ensureActive()
+        return preparedNext.take(pending.key, pending.ticket)
+    }
+
+    private fun cancelPreparedWork(pending: PendingEpisodePreparation) {
+        preparedNext.take(pending.key, pending.ticket)?.close()
+        pending.scope.cancel()
+        pending.job.cancel(true)
     }
 
     private fun cancelPromotedPreparation() {
         val pending = promotedPreparation ?: return
         promotedPreparation = null
-        pending.scope.cancel()
-        pending.job.cancel(true)
-        preparedNext.clear()
+        cancelPreparedWork(pending)
         closeTransport(pending.http)
     }
 
@@ -3440,12 +3441,10 @@ class MainActivity : Activity() {
         prefetchScope = scope
         prefetchJob =
             prefetchWorker.submit {
-                var remote: RemoteVideo? = null
                 try {
                     val prepared =
                         scope.run {
-                            val opened =
-                                // 播放地址复用当前 Repository 的设备身份和会话；仅视频传输独立取消。
+                            RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(5)) {
                                 openStream(
                                     http,
                                     repository,
@@ -3459,7 +3458,7 @@ class MainActivity : Activity() {
                                 ) {
                                     it == null || CodecCapabilities.supports(it)
                                 } ?: throw java.io.IOException("没有电视可播放的清晰度")
-                            opened.video.also { remote = it }
+                            }
                         }
                     if (preparedNext.complete(ticket, key, prepared)) {
                         android.util.Log.i(
@@ -3469,7 +3468,6 @@ class MainActivity : Activity() {
                         main.post { queuePreparedEpisode(key) }
                     }
                 } catch (problem: Exception) {
-                    remote?.close()
                     android.util.Log.i(
                         "HongguoTV",
                         "Next episode preparation unavailable: ${problem.javaClass.simpleName}",
@@ -3513,12 +3511,12 @@ class MainActivity : Activity() {
                 p.currentMediaItem?.mediaId != data.episodes[episodeIndex]
         )
             return
-        val remote = preparedNext.take(key) ?: return
-        queuedNext = remote
+        val prepared = preparedNext.take(key) ?: return
+        queuedNext = prepared
         queuedHttp = prefetchHttp
         prefetchHttp = null
         queuedEpisode = next
-        p.addMediaSource(episodeSource(remote, data.episodes[next]))
+        p.addMediaSource(episodeSource(prepared.video, data.episodes[next]))
         android.util.Log.i("HongguoTV", "Next episode added to playback queue target=${next+1}")
     }
 
@@ -3569,7 +3567,7 @@ class MainActivity : Activity() {
         val previous = video
         val previousHttp = playbackHttp
         social.reset()
-        video = next
+        video = next.video
         playbackHttp = queuedHttp
         if (completed) {
             automaticEpisodeFrom = episodeIndex
@@ -3583,7 +3581,8 @@ class MainActivity : Activity() {
         if (p.currentMediaItemIndex > 0) p.removeMediaItems(0, p.currentMediaItemIndex)
         previous?.close()
         closeTransport(previousHttp)
-        quality = next.info.quality
+        applyOpenedStream(next, library.maxQuality)
+        autoDowngrades = 0
         pendingSeek = null
         startPosition = 0
         playbackReady = p.playbackState == Player.STATE_READY
@@ -3742,6 +3741,14 @@ class MainActivity : Activity() {
         if (rendition.quality > maxQuality) return label + "（兼容资源）"
         val ideal = opened.tiers.filter { it.quality in 1..maxQuality }.maxOfOrNull { it.quality }
         return if (ideal != null && rendition.quality < ideal) label + "（自动降清）" else label
+    }
+
+    private fun applyOpenedStream(opened: OpenedStream, maxQuality: Int) {
+        quality = playedQualityLabel(opened, maxQuality)
+        attemptedQuality = opened.rendition?.quality ?: 0
+        currentTrack = opened.track
+        currentRendition = opened.rendition
+        currentTiers = opened.tiers
     }
 
     /** 懒建播放器（正式路径与伴机路径共用）；已存在则原样返回。 */

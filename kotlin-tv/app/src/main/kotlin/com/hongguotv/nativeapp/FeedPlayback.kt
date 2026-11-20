@@ -23,6 +23,8 @@ internal data class TrialClip(
     val track: VideoTracks.Track? = null,
     // 实际试播集的集内序号（1 起）：bytevc2 锁定集后移换集后 >1，界面据此改文案。
     val trialEpisodeIndex: Int = 1,
+    val rendition: Rendition? = null,
+    val tiers: List<Rendition> = emptyList(),
 ) : Closeable {
     val episodeId
         get() = detail.episodes.first()
@@ -254,13 +256,11 @@ internal class PublicFeedBackend(
         val found =
             firstPlayableEpisode(detail.episodes, 0) { open(it) }
                 ?: throw java.io.IOException("该剧暂无电视可解码的清晰度")
-        return TrialClip(
-            detail,
-            found.first.video,
-            track = found.first.track,
-            trialEpisodeIndex = found.second + 1,
-        )
+        return found.first.toTrialClip(detail, detail.episodes.size, found.second + 1)
     }
+
+    private fun OpenedStream.toTrialClip(detail: Detail, count: Int, index: Int) =
+        TrialClip(detail, video, count, track, index, rendition, tiers)
 
     override fun trial(series: Series): TrialClip = trial(series, speculative = false)
 
@@ -299,11 +299,9 @@ internal class PublicFeedBackend(
             if (verified.episodeId == hint.episodeId) throw problem
             openTrialEpisode(series, verified, false)
         }
-        return TrialClip(
+        return openedTrial.opened.toTrialClip(
             Detail(series, listOf(openedTrial.episodeId)),
-            openedTrial.opened.video,
             synchronized(trialHints) { trialHints[series.id] }?.hint?.episodeCount ?: hint.episodeCount,
-            openedTrial.opened.track,
             openedTrial.displayIndex,
         )
     }
@@ -314,8 +312,7 @@ internal class PublicFeedBackend(
         val full = detail(series)
         val id = full.episodes.getOrNull(index) ?: throw java.io.IOException("该集暂不可用")
         val opened = open(id)
-        return TrialClip(full.copy(episodes = listOf(id)), opened.video,
-            full.episodes.size, opened.track, index + 1)
+        return opened.toTrialClip(full.copy(episodes = listOf(id)), full.episodes.size, index + 1)
     }
 
     override fun prefetchEpisode(series: Series, index: Int): TrialClip {
@@ -324,8 +321,7 @@ internal class PublicFeedBackend(
         val opened = open(id, speculative = true)
         try {
             opened.video.warm(512 * 1024)
-            return TrialClip(full.copy(episodes = listOf(id)), opened.video,
-                full.episodes.size, opened.track, index + 1)
+            return opened.toTrialClip(full.copy(episodes = listOf(id)), full.episodes.size, index + 1)
         } catch (error: Throwable) { opened.video.close(); throw error }
     }
 
