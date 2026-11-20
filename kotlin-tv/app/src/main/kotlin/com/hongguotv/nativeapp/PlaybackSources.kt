@@ -73,6 +73,9 @@ private fun diagnosticProblems(problem: Throwable): Sequence<Throwable> = sequen
     }
 }
 
+internal fun hasEmptyPlaybackModels(problem: Throwable): Boolean =
+    diagnosticProblems(problem).any { it is EmptyPlaybackResponseException && it.allPlaybackModelsEmpty }
+
 internal fun diagnosticDetail(problem: Throwable): String? =
     diagnosticProblems(problem)
         .mapNotNull { cause ->

@@ -345,6 +345,8 @@ class MainActivity : Activity() {
     private var hideAutoplayOverlay = false
     private var recoveryDisplayActive = false
     private var allowSlowRecovery = false
+    private var waitForEmptyPlaybackModels = false
+    private val slowRecoveryAllowed get() = allowSlowRecovery || waitForEmptyPlaybackModels
     private var playbackPreparationUntil = 0L
     private var recoveryAction: TextView? = null
     private var retryAutoplay = true
@@ -385,7 +387,7 @@ class MainActivity : Activity() {
         retryPending = false
         if (foreground && screen == "player" && playError && autoRecovery) {
             if (!networkAvailable()) scheduleRecovery()
-            else if (!allowSlowRecovery && android.os.SystemClock.elapsedRealtime() >= playbackPreparationUntil) scheduleRecovery()
+            else if (!slowRecoveryAllowed && android.os.SystemClock.elapsedRealtime() >= playbackPreparationUntil) scheduleRecovery()
             else if (recovery.consume()) {
                 android.util.Log.i(
                     "HongguoTV",
@@ -2979,6 +2981,7 @@ class MainActivity : Activity() {
         if (!recovering) {
             recovery.reset()
             allowSlowRecovery = false
+            waitForEmptyPlaybackModels = false
             playbackPreparationUntil = android.os.SystemClock.elapsedRealtime() + 20_000
             autoRecoveredPlay = false
         }
@@ -3129,7 +3132,7 @@ class MainActivity : Activity() {
         var usedPending = false
         work(
             {
-                val remaining = if (allowSlowRecovery) 20_000L else
+                val remaining = if (slowRecoveryAllowed) 20_000L else
                     playbackPreparationUntil - android.os.SystemClock.elapsedRealtime()
                 if (remaining <= 0) throw java.net.SocketTimeoutException("播放准备超时")
                 RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(remaining)) {
@@ -3606,7 +3609,7 @@ class MainActivity : Activity() {
                 autoplay = retryAutoplay,
                 slow = recovery.slow,
                 attempt = recovery.attempts + 1,
-                total = if (allowSlowRecovery) recovery.total else RecoveryBudget.FAST_ATTEMPTS,
+                total = if (slowRecoveryAllowed) recovery.total else recovery.fastAttempts,
                 remainingMillis = remainingMillis,
                 positionText = formatTime(retryPosition),
             )
@@ -3614,7 +3617,7 @@ class MainActivity : Activity() {
 
     private fun scheduleRecovery() {
         if (!foreground || !playError || !autoRecovery || retryPending) return
-        if (!recovery.remaining || (!allowSlowRecovery &&
+        if (!recovery.remaining || (!slowRecoveryAllowed &&
             (recovery.slow || android.os.SystemClock.elapsedRealtime() >= playbackPreparationUntil))) {
             autoRecovery = false
             playbackText.text = (if (recovery.remaining)
@@ -3632,7 +3635,7 @@ class MainActivity : Activity() {
             return
         }
         val plannedDelay = recovery.delayMillis ?: return
-        val delay = if (allowSlowRecovery) plannedDelay else minOf(plannedDelay,
+        val delay = if (slowRecoveryAllowed) plannedDelay else minOf(plannedDelay,
             (playbackPreparationUntil - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0))
         recoveryScheduledAt = android.os.SystemClock.uptimeMillis()
         recoveryDelayMillis = delay
@@ -4113,6 +4116,7 @@ class MainActivity : Activity() {
             allowSlowRecovery = false
             recovery.reset()
         }
+        waitForEmptyPlaybackModels = hasEmptyPlaybackModels(problem)
         lastPlaybackFailure = playbackFailureSummary(problem)
         lastPlaybackDetail = diagnosticDetail(problem)
         retryPosition = currentPosition().coerceAtLeast(0)
@@ -4243,6 +4247,7 @@ class MainActivity : Activity() {
         waitingForFirstFrame = false
         recoveryDisplayActive = false
         allowSlowRecovery = false
+        waitForEmptyPlaybackModels = false
         if (!panel) {
             controls.removeAllViews()
             controls.visibility = View.GONE

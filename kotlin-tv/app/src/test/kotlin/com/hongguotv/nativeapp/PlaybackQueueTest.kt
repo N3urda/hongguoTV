@@ -607,6 +607,23 @@ class PlaybackQueueTest {
     }
 
     @Test
+    fun bothEmptyModelsKeepAutomaticRecoveryAfterTheFastAttempts() = fixture { activity, _, _, _ ->
+        val status = TextView(activity)
+        set(activity, "hud", LinearLayout(activity))
+        set(activity, "playbackText", status)
+        set(activity, "progressBar", android.widget.ProgressBar(activity))
+        set(activity, "waitingForFirstFrame", true)
+        val budget = get(activity, "recovery") as RecoveryBudget
+        repeat(budget.fastAttempts) { budget.consume() }
+
+        invoke(activity, "playerFailure", EmptyPlaybackResponseException("stage=mobile-model", allPlaybackModelsEmpty = true))
+
+        assertTrue(get(activity, "autoRecovery") as Boolean)
+        assertTrue(get(activity, "waitForEmptyPlaybackModels") as Boolean)
+        assertFalse(status.text.contains("快速恢复暂未成功"))
+    }
+
+    @Test
     fun leavingWhileWaitingCancelsPromotedRequestAndClosesALateResult() =
         fixture { activity, _, library, remote ->
             val metadataRequests = blockDuplicateMetadataRequests(activity)

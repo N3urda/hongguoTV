@@ -107,6 +107,23 @@ class MobilePlaybackTest {
         }
     }
 
+    @Test fun bothEmptyModelsRetainResponseDiagnosticsForRecovery() {
+        val requests = mutableListOf<Request>()
+        val repository = repositoryWithModels("", "", requests)
+
+        val error = assertThrows(EmptyPlaybackResponseException::class.java) {
+            repository.streamLadderWithCompatibility("123")
+        }
+
+        assertTrue(error.allPlaybackModelsEmpty)
+        assertEquals("stage=mobile-model", error.detail)
+        val primary = error.suppressed.filterIsInstance<EmptyPlaybackResponseException>().single()
+        assertEquals("mobile-model=200/0B", (primary.suppressed.single() as PlaybackDiagnosticException).detail)
+        val tab = error.suppressed.filterIsInstance<PlaybackDiagnosticException>().single()
+        assertTrue(tab.detail.startsWith("video-tab-empty ") && tab.detail.contains("200/0B"))
+        assertEquals(listOf("POST", "GET"), requests.map { it.method })
+    }
+
     @Test fun tabFallbackDoesNotSelectAnotherEpisode() {
         val requests = mutableListOf<Request>()
         val repository = repositoryWithModels("", model(id = "456"), requests)
@@ -115,6 +132,7 @@ class MobilePlaybackTest {
             repository.streamLadderWithCompatibility("123")
         }
         assertEquals("stage=mobile-model", error.detail)
+        assertFalse(error.allPlaybackModelsEmpty)
         assertEquals(listOf("POST", "GET"), requests.map { it.method })
     }
 

@@ -161,7 +161,7 @@ internal class PlaybackServiceBackoffException : IOException("播放服务繁忙
 class SearchSessionExpiredException : IOException("搜索结果已过期，请从第 1 页重新搜索")
 
 /** `detail` 仅携带路径代号、HTTP/字节数/协议与注册结果，不含地址与凭据。 */
-class EmptyPlaybackResponseException(val detail: String? = null, internal val allCompatibilityModelsEmpty: Boolean = false) :
+class EmptyPlaybackResponseException(val detail: String? = null, val allPlaybackModelsEmpty: Boolean = false) :
     IOException("播放接口暂时返回空响应，请稍后重试")
 
 class PlaybackDiagnosticException(val detail: String) : IOException("播放恢复诊断")
@@ -977,16 +977,23 @@ constructor(
                 if (speculative) throw empty
                 RequestScope.ensureActive()
                 val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+                val trace = PlaybackRequestTrace()
                 val entry = try {
-                    tabVideoModel(id, profile, transport = transport, strict = true)
+                    tabVideoModel(id, profile, trace, transport, strict = true)
                 } catch (_: EmptyPlaybackResponseException) {
-                    throw empty
+                    throw EmptyPlaybackResponseException(empty.detail, allPlaybackModelsEmpty = true).apply {
+                        addSuppressed(empty)
+                        addSuppressed(PlaybackDiagnosticException("video-tab-empty ${trace.summary()}"))
+                    }
                 } catch (rejected: ContentHttpException) {
                     throw PlaybackSourceException(PlaybackSourceException.Reason.HTTP_REJECTED, rejected.statusCode)
                 }
                 RequestScope.ensureActive()
                 val rows = entry?.optJSONObject("video_model")?.let(PlaybackModels::renditions).orEmpty()
-                if (rows.isEmpty()) throw empty
+                if (rows.isEmpty()) {
+                    empty.addSuppressed(PlaybackDiagnosticException("video-tab-no-model ${trace.summary()}"))
+                    throw empty
+                }
                 StreamLadder(rows)
             }
         }
@@ -1015,7 +1022,7 @@ constructor(
                 val device = RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(8)) { devices.obtain() }
                 return RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(8)) {
                     try { playerLadder(id, device) } catch (empty: EmptyPlaybackResponseException) {
-                        if (!empty.allCompatibilityModelsEmpty) throw empty
+                        if (!empty.allPlaybackModelsEmpty) throw empty
                         RequestScope.ensureActive()
                         val replacement = try { devices.refreshEmpty(device) } catch (registration: IOException) {
                             RequestScope.ensureActive()

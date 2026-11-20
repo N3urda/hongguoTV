@@ -696,6 +696,24 @@ class HomeFeedScreenTest {
     }
 
     @Test
+    fun bothEmptyModelsWaitForNativePlaybackPastTheInitialDeadline() {
+        TrialRecoveryFixture { _, count ->
+            EmptyPlaybackResponseException("stage=mobile-model", allPlaybackModelsEmpty = true).takeIf { count <= 3 }
+        }.use { fixture ->
+            fixture.advance(2)
+            fixture.advance(5)
+            assertEquals(3, fixture.reads())
+            assertTrue(fixture.hasText("15 秒后自动恢复 3/7"))
+            fixture.advance(14)
+            assertEquals(3, fixture.reads())
+            fixture.advance(1)
+            assertEquals(4, fixture.reads())
+            assertEquals("1", fixture.player.loaded)
+            assertTrue(fixture.player.playing)
+        }
+    }
+
+    @Test
     fun switchingWorksCancelsPendingTrialRecovery() {
         TrialRecoveryFixture { id, _ -> if (id == "1") EmptyPlaybackResponseException() else null }.use { f ->
             f.screen.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT))
