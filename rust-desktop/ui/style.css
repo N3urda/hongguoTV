@@ -157,7 +157,13 @@ h2 { font-size: 20px; line-height: 1.35; font-weight: 700; }
 .tabs { flex-wrap: wrap; margin-bottom: 18px; }
 .tab { color: var(--muted); background: transparent; border-radius: 22px; min-width: 74px; white-space: nowrap; }
 .tab[aria-pressed="true"] { color: var(--accent); background: var(--raised); font-weight: 650; }
-.search { display: flex; align-items: center; gap: 9px; max-width: 620px; margin-bottom: 22px; }
+.search-tools { margin-bottom: 22px; }
+.search { display: flex; align-items: center; gap: 9px; max-width: 620px; }
+.search-matches { margin-top: 14px; }
+.search-matches h2 { font-size: 14px; margin-bottom: 7px; }
+.search-words { display: flex; flex-wrap: wrap; gap: 7px; }
+.topic-field { display: inline-flex; align-items: center; gap: 10px; margin-bottom: 16px; color: var(--muted); }
+.topic-field select { max-width: 60vw; min-height: 40px; padding: 6px 10px; border: 1px solid var(--outline); border-radius: var(--radius); background: var(--surface); color: var(--text); }
 .search-field { flex: 1; position: relative; min-width: 0; }
 .search-field .icon { position: absolute; left: 12px; top: 13px; color: var(--muted); pointer-events: none; }
 .search input, .episode-jump input {
@@ -254,6 +260,9 @@ input[type="range"] { margin: 0; accent-color: var(--accent); cursor: pointer; }
 .watch-panel .episode-grid button { min-height: 43px; }
 .watch-panel .episode-tools { margin-bottom: 4px; }
 .watch-options { max-width: 440px; margin-left: auto; }
+.watch-comments { max-width: 680px; margin-left: auto; }
+.watch-comments h2 { font-size: 18px; }
+.watch-comments .count { margin-left: 10px; }
 .watch-options > button { margin-top: 10px; }
 .watch-clock {
   position: absolute;

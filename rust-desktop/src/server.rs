@@ -202,6 +202,13 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
             }),
         )
         .route("/api/catalog", get(catalog))
+        .route("/api/search/suggestions", get(search_suggestions))
+        .route(
+            "/api/search/recent",
+            get(recent_searches)
+                .post(remember_search)
+                .delete(clear_recent_searches),
+        )
         .route("/api/rank", get(rank))
         .route("/api/preferences", get(preferences).post(save_preferences))
         .route(
@@ -221,6 +228,10 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
         )
         .route("/api/account/qr/{id}", get(account_qr).post(account_poll))
         .route("/api/detail/{id}", get(detail))
+        .route(
+            "/api/detail/{id}/episodes/{episode}/comments",
+            get(episode_comments),
+        )
         .route("/api/library", get(library))
         .route(
             "/api/library/backup",
@@ -284,6 +295,7 @@ fn asset(content_type: &'static str, bytes: &'static [u8]) -> Response {
 #[derive(Deserialize)]
 struct CatalogQuery {
     category: Option<Category>,
+    topic: Option<String>,
     q: Option<String>,
     page: Option<u32>,
 }
@@ -302,12 +314,77 @@ async fn catalog(
     }
     let site = app.account_site().await;
     let result = if keyword.is_empty() {
-        site.discover(query.category.unwrap_or(Category::Real), page)
-            .await
+        let category = query.category.unwrap_or(Category::Real);
+        match query.topic.as_deref() {
+            Some(topic) => site.discover_topic(category, topic, page).await,
+            None => site.discover(category, page).await,
+        }
     } else {
         site.search(keyword, page).await
     };
     result.map(Json).map_err(ApiError::upstream)
+}
+
+#[derive(Deserialize)]
+struct SearchKeyword {
+    q: String,
+}
+
+async fn search_suggestions(
+    State(app): State<App>,
+    Query(query): Query<SearchKeyword>,
+) -> ApiResult<Json<Vec<String>>> {
+    let keyword = query.q.trim();
+    if keyword.chars().count() > 80 {
+        return Err(ApiError::bad_request("搜索词最多 80 个字"));
+    }
+    app.site
+        .suggestions(keyword)
+        .await
+        .map(Json)
+        .map_err(ApiError::upstream)
+}
+
+async fn recent_searches(State(app): State<App>) -> ApiResult<Json<Vec<String>>> {
+    app.store
+        .recent_searches()
+        .map(Json)
+        .map_err(ApiError::storage)
+}
+
+async fn remember_search(
+    State(app): State<App>,
+    Json(query): Json<SearchKeyword>,
+) -> ApiResult<StatusCode> {
+    let keyword = query.q.trim();
+    if keyword.is_empty() || keyword.chars().count() > 80 {
+        return Err(ApiError::bad_request("请输入 1 到 80 个字的搜索词"));
+    }
+    app.store
+        .remember_search(keyword.to_owned())
+        .map_err(ApiError::storage)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn clear_recent_searches(State(app): State<App>) -> ApiResult<StatusCode> {
+    app.store
+        .clear_recent_searches()
+        .map_err(ApiError::storage)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn episode_comments(
+    State(app): State<App>,
+    RoutePath((series, episode)): RoutePath<(String, String)>,
+) -> ApiResult<impl IntoResponse> {
+    if !valid_id(&series) || !valid_id(&episode) {
+        return Err(ApiError::bad_request("分集编号无效"));
+    }
+    app.site
+        .episode_comments(&series, &episode)
+        .await
+        .map(Json)
+        .map_err(ApiError::upstream)
 }
 
 #[derive(Deserialize)]

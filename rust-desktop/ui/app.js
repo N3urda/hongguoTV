@@ -10,10 +10,10 @@ const sectionNames = { home: "首页", feed: "随心看", browse: "找剧", sear
 const boards = [["all", "热播榜"], ["real", "真人剧"], ["comic", "漫剧"], ["ai", "AI 剧"], ["new", "新剧榜"], ["searched", "热搜榜"], ["favorites", "收藏榜"]];
 const groupSize = 20;
 const state = {
-  section: "home", category: "real", page: 1, query: "", libraryTab: "history",
+  section: "home", category: "real", topic: "", page: 1, query: "", libraryTab: "history",
   library: { favorites: [], history: [], later: [] }, detail: null, returnPoint: null,
   navigation: null, player: null, playing: null, prepare: null,
-  stopping: Promise.resolve(), savingPreferences: Promise.resolve(),
+  stopping: Promise.resolve(), savingPreferences: Promise.resolve(), savingSearch: Promise.resolve(),
   board: "all", suggestion: null,
   preferences: { theme: "dark", quality: 1080, speed: 100, frame: "fit", rotation: 0,
     show_progress: false, auto_next: true, startup: "home", feed_autoplay: true, clock: "controls" },
@@ -184,7 +184,8 @@ function tabs(choices, selected, onSelect) {
   return group;
 }
 
-function searchForm() {
+function searchForm(signal) {
+  const section = node("div", "search-tools");
   const form = node("form", "search");
   form.setAttribute("role", "search");
   const field = node("div", "search-field");
@@ -200,20 +201,98 @@ function searchForm() {
   input.value = state.query;
   const submit = node("button", "primary", "搜索");
   submit.type = "submit";
+  const matches = node("section", "search-matches");
+  const heading = node("h2", "meta");
+  const words = node("div", "search-words");
+  const notice = node("p", "meta");
+  notice.setAttribute("role", "status");
+  matches.append(heading, words, notice);
+  matches.hidden = true;
+  let pending;
+  let timer;
+
+  function recordSearch(query) {
+    state.savingSearch = state.savingSearch.then(() => post("api/search/recent", { q: query })).catch(() => {});
+    state.query = query;
+    openSection("search", { focus: "query" });
+  }
+
+  async function showWords(query, signal) {
+    const recent = query === "";
+    if (recent) await state.savingSearch;
+    if (signal.aborted) return;
+    const path = recent ? "api/search/recent" : `api/search/suggestions?${new URLSearchParams({ q: query })}`;
+    try {
+      const entries = await request(path, { signal });
+      if (signal.aborted) return;
+      heading.textContent = recent ? "最近搜索" : "搜索联想";
+      notice.textContent = "";
+      words.replaceChildren(...entries.map(word => button(word, () => recordSearch(word), "tab")));
+      if (recent && entries.length) {
+        const clear = button("清空最近搜索", async () => {
+          clear.disabled = true;
+          try {
+            await request("api/search/recent", { method: "DELETE" });
+            if (signal.aborted) return;
+            input.focus();
+            refresh();
+          } catch (error) {
+            if (!signal.aborted) notice.textContent = error.message;
+          } finally {
+            clear.disabled = false;
+          }
+        }, "quiet");
+        words.append(clear);
+      }
+      matches.hidden = entries.length === 0;
+    } catch {
+      if (!signal.aborted) matches.hidden = true;
+    }
+  }
+
+  function refresh() {
+    clearTimeout(timer);
+    pending?.abort();
+    matches.hidden = true;
+    if (signal.aborted) return;
+    pending = new AbortController();
+    const query = input.value.trim();
+    const responseSignal = pending.signal;
+    if (query) timer = setTimeout(() => showWords(query, responseSignal), 220);
+    else showWords("", responseSignal);
+  }
+  signal.addEventListener("abort", () => {
+    clearTimeout(timer);
+    pending?.abort();
+  }, { once: true });
+  input.addEventListener("input", event => { if (!event.isComposing) refresh(); });
+  input.addEventListener("compositionstart", () => { clearTimeout(timer); pending?.abort(); matches.hidden = true; });
+  input.addEventListener("compositionend", refresh);
+  input.addEventListener("keydown", event => {
+    if (event.key !== "ArrowDown" || event.isComposing || matches.hidden) return;
+    event.preventDefault();
+    words.querySelector("button")?.focus();
+  });
+  words.addEventListener("keydown", event => {
+    if (event.key !== "ArrowUp") return;
+    event.preventDefault();
+    input.focus();
+  });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const query = input.value.trim();
-    if (!query) return;
-    state.query = query;
-    openSection("search", { focus: "query" });
+    if (query) recordSearch(query);
   });
   field.append(label, icon("search"), input);
   form.append(field, submit);
-  return form;
+  section.append(form, matches);
+  if (!input.value) refresh();
+  return section;
 }
 
 function browseReal() {
   state.category = "real";
+  state.topic = "";
   openSection("browse");
 }
 
@@ -341,6 +420,7 @@ async function openSection(section, { page = 1, restore = false, focus, settings
     frame.append(heading);
   }
   if (section === "browse" || section === "feed") frame.append(tabs(categories, state.category, (category) => {
+    if (state.category !== category) state.topic = "";
     state.category = category;
     openSection(section, { focus: `tab:${category}` });
   }));
@@ -348,7 +428,7 @@ async function openSection(section, { page = 1, restore = false, focus, settings
     state.board = board;
     openSection("rank", { focus: `tab:${board}` });
   }));
-  if (section === "search") frame.append(searchForm());
+  if (section === "search") frame.append(searchForm(signal));
   if (section === "library") frame.append(tabs([["history", "观看历史"], ["favorites", "收藏"], ["later", "稍后看"]], state.libraryTab, openLibrary));
   const outlet = node("div");
   frame.append(outlet);
@@ -394,16 +474,41 @@ async function openSection(section, { page = 1, restore = false, focus, settings
     } else {
       const params = new URLSearchParams({ page: String(page), category: state.category });
       if (section === "search") params.set("q", state.query);
+      if (section === "browse" && state.topic) params.set("topic", state.topic);
       const results = await request(`api/catalog?${params}`, { signal });
       if (signal.aborted) return;
       outlet.replaceChildren();
       if (section === "search") outlet.append(node("h2", "result-heading", `“${state.query}”的搜索结果`));
+      if (section === "browse" && results.topics?.length) {
+        const field = node("label", "topic-field");
+        const picker = node("select");
+        for (const { id, label } of [{ id: "", label: "全部题材" }, ...results.topics]) {
+          const option = node("option", "", label);
+          option.value = id;
+          picker.append(option);
+        }
+        picker.value = state.topic;
+        picker.addEventListener("change", () => {
+          state.topic = picker.value;
+          openSection("browse", { focus: "topic" });
+        });
+        picker.dataset.key = "topic";
+        field.append(node("span", "", "题材"), picker);
+        outlet.append(field);
+        if (focus === "topic") focusKey(focus);
+      }
       outlet.append(results.items.length ? grid(results.items.map((entry) => card(entry, section))) : status("没有找到匹配的剧集"));
       if (page > 1 || results.has_more) outlet.append(pagination(section, page, results.has_more, focus));
     }
     if (restore && !signal.aborted) restorePoint(state.returnPoint);
   } catch (error) {
-    if (!signal.aborted) outlet.replaceChildren(status(error.message, () => openSection(section, { page, restore, focus })));
+    if (!signal.aborted) {
+      outlet.replaceChildren(status(error.message, () => openSection(section, { page, restore, focus })));
+      if (section === "browse" && state.topic) outlet.append(button("查看全部题材", () => {
+        state.topic = "";
+        openSection("browse", { focus: "topic" });
+      }));
+    }
   }
 }
 
@@ -651,6 +756,7 @@ function stopPlayback() {
 function leavePlayer() {
   const stopped = stopPlayback();
   if (state.player) {
+    state.player.commentRequest?.abort();
     clearTimeout(state.player.hideTimer);
     clearTimeout(state.player.sleepTimer);
     clearInterval(state.player.clockTimer);
@@ -690,7 +796,10 @@ function shiftEpisode(direction) {
 }
 
 function toggleEpisodes(view, open, restoreFocus = false) {
-  if (open) toggleMore(view, false);
+  if (open) {
+    toggleMore(view, false);
+    toggleComments(view, false);
+  }
   view.menu.setAttribute("aria-expanded", String(open));
   view.panel.hidden = !open;
   if (open) {
@@ -708,7 +817,7 @@ function showControls() {
   delete watch.dataset.idle;
   clearTimeout(view.hideTimer);
   const video = state.playing?.video;
-  if (!video || video.paused || video.ended || !view.panel.hidden || !view.more.hidden) return;
+  if (!video || video.paused || video.ended || !view.panel.hidden || !view.more.hidden || !view.comments.hidden) return;
   view.hideTimer = setTimeout(() => {
     if (state.player === view && !watch.querySelector(".watch-header:hover, .watch-footer:hover, .watch-header:focus-within, .watch-footer:focus-within")) {
       watch.dataset.idle = "true";
@@ -717,12 +826,54 @@ function showControls() {
 }
 
 function toggleMore(view, open, restoreFocus = false) {
-  if (open) toggleEpisodes(view, false);
+  if (open) {
+    toggleEpisodes(view, false);
+    toggleComments(view, false);
+  }
   view.more.hidden = !open;
   view.moreButton.setAttribute("aria-expanded", String(open));
   if (open) view.more.querySelector("select")?.focus({ preventScroll: true });
   else if (restoreFocus) view.moreButton.focus({ preventScroll: true });
   showControls();
+}
+
+async function toggleComments(view, open, restoreFocus = false) {
+  view.commentRequest?.abort();
+  view.comments.hidden = !open;
+  view.commentsButton.setAttribute("aria-expanded", String(open));
+  if (!open) {
+    if (restoreFocus) view.commentsButton.focus({ preventScroll: true });
+    showControls();
+    return;
+  }
+  toggleEpisodes(view, false);
+  toggleMore(view, false);
+  const episode = view.detail.episodes[view.index];
+  const controller = new AbortController();
+  view.commentRequest = controller;
+  const { signal } = controller;
+  const heading = node("h2", "", `第 ${episode.number} 集评论`);
+  const body = status("正在读取公开评论…");
+  view.comments.replaceChildren(heading, body);
+  view.comments.scrollTop = 0;
+  view.comments.focus({ preventScroll: true });
+  showControls();
+  try {
+    const { items, total } = await request(`api/detail/${view.detail.series.id}/episodes/${episode.id}/comments`, { signal });
+    if (signal.aborted) return;
+    if (!items.length) {
+      body.replaceWith(status("本集暂无公开评论"));
+      return;
+    }
+    if (total > items.length) heading.append(node("span", "count", `已显示 ${items.length} 条 · 共 ${total} 条`));
+    body.replaceWith(...items.map(({ author, content }) => {
+      const review = node("article", "review");
+      review.append(node("strong", "", author), node("p", "summary", content));
+      return review;
+    }));
+  } catch (error) {
+    if (!signal.aborted) body.replaceWith(status(error.message, () => toggleComments(view, true)));
+  }
 }
 
 function playerPreference(view, control, key, apply) {
@@ -826,6 +977,9 @@ function createPlayer(detail) {
   view.moreButton = button("更多设置", () => toggleMore(view, view.more.hidden, true));
   view.moreButton.setAttribute("aria-expanded", "false");
   view.moreButton.setAttribute("aria-controls", "watch-options");
+  view.commentsButton = button("本集评论", () => toggleComments(view, view.comments.hidden, true));
+  view.commentsButton.setAttribute("aria-expanded", "false");
+  view.commentsButton.setAttribute("aria-controls", "watch-comments");
   view.quality = namedControl(node("select"), "清晰度");
   view.quality.disabled = true;
   view.quality.addEventListener("change", () => switchQuality(view));
@@ -879,7 +1033,7 @@ function createPlayer(detail) {
     view.episodesLeft = { episode: 1, "episodes-3": 3, "episodes-5": 5 }[view.sleep.value] || 0;
     if (minutes > 0) view.sleepTimer = setTimeout(() => stopForSleep(view), minutes * 60_000);
   });
-  settings.append(view.menu, view.quality, speed, view.sleep, view.moreButton, mute, volume, autoLabel);
+  settings.append(view.menu, view.commentsButton, view.quality, speed, view.sleep, view.moreButton, mute, volume, autoLabel);
   if (document.fullscreenEnabled && watch.requestFullscreen) {
     view.fullscreen = button("全屏", async () => {
       try {
@@ -894,7 +1048,12 @@ function createPlayer(detail) {
   view.panel.id = "watch-episodes";
   view.panel.hidden = true;
   view.more = playerOptions(view);
-  footer.append(view.panel, view.more, heading, timeline, transport);
+  view.comments = node("section", "watch-panel watch-comments");
+  view.comments.id = "watch-comments";
+  view.comments.hidden = true;
+  view.comments.tabIndex = -1;
+  view.comments.setAttribute("aria-label", "本集评论");
+  footer.append(view.panel, view.more, view.comments, heading, timeline, transport);
   watch.replaceChildren(header, view.stage, footer);
   view.ambient = node("progress", "watch-progress card-progress");
   view.ambient.setAttribute("aria-hidden", "true");
@@ -1033,6 +1192,7 @@ async function openPlayer(episode, position = 0, prepared) {
   qualityOptions(view);
   toggleEpisodes(view, false);
   toggleMore(view, false);
+  toggleComments(view, false);
   syncControls(view);
   if (focusStage || document.activeElement?.disabled) view.stage.focus({ preventScroll: true });
   if (!episode.available) {
@@ -1101,7 +1261,7 @@ async function openPlayer(episode, position = 0, prepared) {
       }
       const next = detail.episodes[view.index + 1];
       const sameScope = next?.full === (playback.scope === "full");
-      if (!view.sleepStopped && state.preferences.auto_next && next?.available && sameScope && view.panel.hidden && view.more.hidden) openPlayer(next);
+      if (!view.sleepStopped && state.preferences.auto_next && next?.available && sameScope && view.panel.hidden && view.more.hidden && view.comments.hidden) openPlayer(next);
     });
     video.addEventListener("error", () => {
       if (state.playing !== session) return;
@@ -1170,6 +1330,7 @@ document.addEventListener("keydown", (event) => {
     } else if (state.player) {
       if (!state.player.more.hidden) toggleMore(state.player, false, true);
       else if (!state.player.panel.hidden) toggleEpisodes(state.player, false, true);
+      else if (!state.player.comments.hidden) toggleComments(state.player, false, true);
       else openDetail(state.player.detail.series.id);
     } else if (shell.dataset.view === "detail") backToSection();
     return;

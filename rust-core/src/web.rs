@@ -42,6 +42,14 @@ pub struct CatalogPage {
     pub items: Vec<Series>,
     pub page: u32,
     pub has_more: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub topics: Vec<DramaTopic>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DramaTopic {
+    id: String,
+    label: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,6 +72,12 @@ pub struct Detail {
 pub struct Review {
     pub author: String,
     pub content: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EpisodeComments {
+    pub items: Vec<Review>,
+    pub total: u64,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -188,7 +202,22 @@ impl Site {
     }
 
     pub async fn discover(&self, category: Category, page: u32) -> Result<CatalogPage> {
-        let mut url = self.base.join(category.path())?;
+        self.discover_topic(category, "", page).await
+    }
+
+    pub async fn discover_topic(
+        &self,
+        category: Category,
+        topic: &str,
+        page: u32,
+    ) -> Result<CatalogPage> {
+        ensure!(topic.is_empty() || valid_topic(topic), "题材无效");
+        let path = if topic.is_empty() {
+            category.path().to_owned()
+        } else {
+            format!("{}/{topic}", category.path())
+        };
+        let mut url = self.base.join(&path)?;
         url.query_pairs_mut().append_pair("page", &page.to_string());
         let root = router_data(&self.text(url).await?)?;
         let section = root["loaderData"]
@@ -196,15 +225,7 @@ impl Site {
             .filter(|row| row.is_object())
             .or_else(|| root["loaderData"].get("category_page"))
             .context("分类内容暂不可用")?;
-        let rows = section["recommendList"]
-            .as_array()
-            .context("分类列表格式已变化")?;
-        let total_pages = number(&section["pagination"]["totalPages"]).unwrap_or(100);
-        Ok(CatalogPage {
-            items: cards(rows),
-            page,
-            has_more: !rows.is_empty() && u64::from(page) < total_pages.min(100),
-        })
+        parse_discovery(section, category, &path, topic, page)
     }
 
     pub async fn search(&self, query: &str, page: u32) -> Result<CatalogPage> {
@@ -237,7 +258,42 @@ impl Site {
             items,
             page,
             has_more: !rows.is_empty() && has_more && page < 100,
+            topics: Vec::new(),
         })
+    }
+
+    pub async fn suggestions(&self, query: &str) -> Result<Vec<String>> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        ensure!(query.chars().count() <= 80, "搜索词最多 80 个字");
+        let mut url = self.base.join("incent_resource/suggestion")?;
+        url.query_pairs_mut()
+            .append_pair("app_id", "8662")
+            .append_pair("query", query)
+            .append_pair("count", "8");
+        let root: Value = serde_json::from_str(&self.with_cookie(None).text(url).await?)
+            .map_err(|_| anyhow::anyhow!("搜索联想格式已变化"))?;
+        let rows = root["suggest_list"]
+            .as_array()
+            .context("搜索联想暂不可用")?;
+        let mut seen = HashSet::new();
+        Ok(rows
+            .iter()
+            .filter_map(|row| {
+                public_text(&row["name"]).or_else(|| public_text(&row["display_words"][0]))
+            })
+            .filter(|word| word.chars().count() <= 80 && seen.insert(word.clone()))
+            .take(8)
+            .collect())
+    }
+
+    pub async fn episode_comments(&self, series: &str, episode: &str) -> Result<EpisodeComments> {
+        ensure!(valid_id(series) && valid_id(episode), "分集编号无效");
+        let url = self.base.join(&format!("player/{series}/{episode}"))?;
+        let root = router_data(&self.with_cookie(None).text(url).await?)?;
+        parse_episode_comments(&root, series, episode)
     }
 
     pub async fn detail(&self, id: &str) -> Result<Detail> {
@@ -257,23 +313,7 @@ impl Site {
                 .take(12)
                 .collect();
         }
-        if let Some(rows) = page["seriesSocialInfo"]["reviews"]["reviews"].as_array() {
-            detail.reviews = rows
-                .iter()
-                .filter_map(|row| {
-                    let content = string(&row["content"])?;
-                    Some(Review {
-                        content: content.chars().take(800).collect(),
-                        author: string(&row["user_name"])
-                            .unwrap_or_else(|| "红果用户".to_owned())
-                            .chars()
-                            .take(100)
-                            .collect(),
-                    })
-                })
-                .take(30)
-                .collect();
-        }
+        detail.reviews = reviews(&page["seriesSocialInfo"]["reviews"]["reviews"], 30);
         Ok(detail)
     }
 
@@ -483,6 +523,111 @@ fn string(value: &Value) -> Option<String> {
     }
 }
 
+fn public_text(value: &Value) -> Option<String> {
+    let text = value.as_str()?.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+fn valid_topic(topic: &str) -> bool {
+    topic.len() <= 80
+        && topic.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        })
+}
+
+fn parse_discovery(
+    section: &Value,
+    category: Category,
+    path: &str,
+    topic: &str,
+    page: u32,
+) -> Result<CatalogPage> {
+    let route = &section["categoryRoute"];
+    ensure!(
+        section["isSuccess"] == true
+            && route["enabled"] == true
+            && route["contentType"].as_str() == category.path().strip_prefix("category/")
+            && route["canonicalPath"]
+                .as_str()
+                .and_then(|path| path.strip_prefix('/'))
+                == Some(path),
+        "官网未确认所选题材，请重新选择"
+    );
+    let pagination = &section["pagination"];
+    ensure!(
+        number(&pagination["pageNum"]) == Some(u64::from(page)),
+        "分类页码不匹配"
+    );
+    let total_pages = number(&pagination["totalPages"]).context("分类分页信息缺失")?;
+    let rows = section["recommendList"]
+        .as_array()
+        .context("分类列表格式已变化")?;
+    let mut seen = HashSet::new();
+    let topics: Vec<_> = section["selectorList"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|group| group["items"].as_array().into_iter().flatten())
+        .filter_map(|item| {
+            let id = public_text(&item["selector_item_id"]).filter(|id| valid_topic(id))?;
+            let label =
+                public_text(&item["show_name"]).filter(|label| label.chars().count() <= 40)?;
+            seen.insert(id.clone()).then_some(DramaTopic { id, label })
+        })
+        .take(128)
+        .collect();
+    ensure!(
+        topic.is_empty() || topics.iter().any(|item| item.id == topic),
+        "该题材已变化，请重新选择"
+    );
+    Ok(CatalogPage {
+        items: cards(rows),
+        page,
+        has_more: !rows.is_empty() && u64::from(page) < total_pages.min(100),
+        topics,
+    })
+}
+
+fn parse_episode_comments(root: &Value, series: &str, episode: &str) -> Result<EpisodeComments> {
+    let row = root["loaderData"]
+        .as_object()
+        .and_then(|routes| {
+            routes.values().find(|row| {
+                row["isSuccess"] != false
+                    && string(&row["seriesDetail"]["series_id"]).as_deref() == Some(series)
+                    && string(&row["vid"]).as_deref() == Some(episode)
+            })
+        })
+        .context("公开评论分集与请求不匹配")?;
+    let review_data = &row["episodeSocialInfo"]["reviews"];
+    let items = reviews(&review_data["reviews"], 50);
+    let total = number(&review_data["total_count"])
+        .unwrap_or(0)
+        .max(items.len() as u64);
+    Ok(EpisodeComments { items, total })
+}
+
+fn reviews(rows: &Value, limit: usize) -> Vec<Review> {
+    rows.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            Some(Review {
+                content: public_text(&row["content"])?.chars().take(800).collect(),
+                author: public_text(&row["user_name"])
+                    .unwrap_or_else(|| "红果用户".to_owned())
+                    .chars()
+                    .take(100)
+                    .collect(),
+            })
+        })
+        .take(limit)
+        .collect()
+}
+
 fn series_from(row: &Value) -> Option<Series> {
     let source = row["video_data"]
         .as_object()
@@ -594,6 +739,40 @@ mod tests {
         assert!(detail.episodes[0].available);
         assert!(!detail.episodes[1].available);
         assert!(parse_detail(&raw, "2").is_err());
+    }
+
+    #[test]
+    fn rejects_category_fallbacks_and_mismatched_pages() {
+        let fixture = json!({
+            "isSuccess": true,
+            "categoryRoute": {"contentType": "real-drama", "enabled": true, "canonicalPath": "/category/real-drama/suspense"},
+            "pagination": {"pageNum": 2, "totalPages": 3},
+            "selectorList": [{"items": [{"selector_item_id": "suspense", "show_name": "悬疑"}]}],
+            "recommendList": [{"series_id": "21", "series_name": "测试剧集"}]
+        });
+        let path = "category/real-drama/suspense";
+        let parsed = parse_discovery(&fixture, Category::Real, path, "suspense", 2).unwrap();
+        assert_eq!(parsed.items[0].id, "21");
+        assert!(parsed.has_more);
+        assert!(parse_discovery(&fixture, Category::Real, path, "suspense", 1).is_err());
+        assert!(parse_discovery(&fixture, Category::Real, "category/real-drama", "", 2).is_err());
+        assert!(!valid_topic("a/../b"));
+    }
+
+    #[test]
+    fn episode_comments_match_both_ids_and_exclude_series_reviews() {
+        let fixture = json!({"loaderData": {"player": {
+            "seriesDetail": {"series_id": "101"},
+            "vid": 202,
+            "episodeSocialInfo": {"reviews": {"total_count": 7, "reviews": [{"content": "分集评论"}]}},
+            "seriesSocialInfo": {"reviews": {"reviews": [{"content": "全剧评论"}]}}
+        }}});
+        let comments = parse_episode_comments(&fixture, "101", "202").unwrap();
+        assert_eq!(comments.total, 7);
+        assert_eq!(comments.items.len(), 1);
+        assert_eq!(comments.items[0].content, "分集评论");
+        assert!(parse_episode_comments(&fixture, "102", "202").is_err());
+        assert!(parse_episode_comments(&fixture, "101", "203").is_err());
     }
 
     #[test]

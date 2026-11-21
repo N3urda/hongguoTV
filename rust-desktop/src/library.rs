@@ -14,6 +14,7 @@ use crate::catalog::Series;
 pub(crate) const MAX_HISTORY: usize = 200;
 pub(crate) const MAX_FAVORITES: usize = 500;
 pub(crate) const MAX_LATER: usize = 100;
+const MAX_RECENT_SEARCHES: usize = 12;
 pub(crate) const DEFAULT_QUALITIES: [u16; 3] = [480, 720, 1080];
 const MAX_DATA_BYTES: u64 = 3 * 1024 * 1024;
 
@@ -129,6 +130,8 @@ pub struct Library {
     #[serde(default)]
     pub later: Vec<Series>,
     #[serde(default)]
+    recent_searches: Vec<String>,
+    #[serde(default)]
     pub(crate) preferences: Preferences,
 }
 
@@ -139,6 +142,7 @@ impl Default for Library {
             favorites: Vec::new(),
             history: Vec::new(),
             later: Vec::new(),
+            recent_searches: Vec::new(),
             preferences: Preferences::default(),
         }
     }
@@ -215,6 +219,24 @@ impl LibraryStore {
 
     pub fn read(&self) -> Result<Library> {
         Ok(self.data()?.clone())
+    }
+
+    pub(crate) fn recent_searches(&self) -> Result<Vec<String>> {
+        Ok(self.data()?.recent_searches.clone())
+    }
+
+    pub(crate) fn remember_search(&self, keyword: String) -> Result<()> {
+        self.update(|library| {
+            library
+                .recent_searches
+                .retain(|item| !item.eq_ignore_ascii_case(&keyword));
+            library.recent_searches.insert(0, keyword);
+            library.recent_searches.truncate(MAX_RECENT_SEARCHES);
+        })
+    }
+
+    pub(crate) fn clear_recent_searches(&self) -> Result<()> {
+        self.update(|library| library.recent_searches.clear())
     }
 
     pub(crate) fn preferences(&self) -> Result<Preferences> {
