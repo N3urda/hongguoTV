@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>红果 · 短剧</title>
+  <link rel="icon" href="logo.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <div class="mark"><img src="logo.png" alt=""><span>红果</span></div>
+      <nav aria-label="主导航">
+        <button data-section="discover"><span class="nav-icon" aria-hidden="true">▣</span>发现</button>
+        <button data-section="favorites"><span class="nav-icon" aria-hidden="true">♡</span>收藏</button>
+        <button data-section="history"><span class="nav-icon" aria-hidden="true">◷</span>继续观看</button>
+      </nav>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <form id="search" role="search">
+          <label class="sr-only" for="query">搜索剧名</label>
+          <input id="query" name="q" type="search" placeholder="搜索剧名" maxlength="80" autocomplete="off" required>
+          <button type="submit">搜索</button>
+        </form>
+      </header>
+      <main id="main" tabindex="-1"></main>
+    </div>
+  </div>
+</body>
+</html>

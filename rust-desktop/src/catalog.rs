@@ -1,0 +1,473 @@
+// SPDX-License-Identifier: GPL-3.0-only
+use std::{collections::HashSet, time::Duration};
+
+use anyhow::{Context, Result, ensure};
+use reqwest::{Client, Response, Url, header, redirect};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+const SITE: &str = "https://hongguoduanju.com/";
+const WEBSITE_LIMIT: usize = 6 * 1024 * 1024;
+// Use an ordinary browser profile for the site's desktop HTML and JSON routes.
+const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
+
+#[derive(Debug)]
+pub(crate) struct PreviewUnavailable;
+
+impl std::fmt::Display for PreviewUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("本集暂无公开试看，可在官网播放")
+    }
+}
+
+impl std::error::Error for PreviewUnavailable {}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Series {
+    pub id: String,
+    pub title: String,
+    pub cover: String,
+    pub description: String,
+    pub badge: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CatalogPage {
+    pub items: Vec<Series>,
+    pub page: u32,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Episode {
+    pub id: String,
+    pub number: usize,
+    pub available: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Detail {
+    pub series: Series,
+    pub episodes: Vec<Episode>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Category {
+    Real,
+    Comic,
+    Ai,
+}
+
+impl Category {
+    fn path(self) -> &'static str {
+        match self {
+            Self::Real => "category/real-drama",
+            Self::Comic => "category/comic-drama",
+            Self::Ai => "category/ai-drama",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Site {
+    client: Client,
+    pub(crate) media_client: Client,
+    base: Url,
+}
+
+impl Site {
+    pub fn new() -> Result<Self> {
+        let base = Url::parse(SITE)?;
+        let client = Client::builder()
+            .user_agent(USER_AGENT)
+            .cookie_store(true)
+            .connect_timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(18))
+            .redirect(redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() < 5 && official_origin(attempt.url()) {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            }))
+            .build()?;
+        // A different client keeps web session cookies out of playback requests.
+        let media_client = Client::builder()
+            .user_agent(USER_AGENT)
+            .no_gzip()
+            .no_brotli()
+            .connect_timeout(Duration::from_secs(8))
+            .read_timeout(Duration::from_secs(15))
+            .redirect(redirect::Policy::none())
+            .build()?;
+        Ok(Self {
+            client,
+            media_client,
+            base,
+        })
+    }
+
+    pub async fn discover(&self, category: Category, page: u32) -> Result<CatalogPage> {
+        let mut url = self.base.join(category.path())?;
+        url.query_pairs_mut().append_pair("page", &page.to_string());
+        let root = router_data(&self.text(url).await?)?;
+        let section = root["loaderData"]
+            .get("category_$")
+            .filter(|row| row.is_object())
+            .or_else(|| root["loaderData"].get("category_page"))
+            .context("分类内容暂不可用")?;
+        let rows = section["recommendList"]
+            .as_array()
+            .context("分类列表格式已变化")?;
+        let total_pages = number(&section["pagination"]["totalPages"]).unwrap_or(100);
+        Ok(CatalogPage {
+            items: cards(rows),
+            page,
+            has_more: !rows.is_empty() && u64::from(page) < total_pages.min(100),
+        })
+    }
+
+    pub async fn search(&self, query: &str, page: u32) -> Result<CatalogPage> {
+        let mut url = self.base.join("api/search/result")?;
+        url.query_pairs_mut()
+            .append_pair("query", query)
+            .append_pair("page", &page.to_string());
+        let root: Value = serde_json::from_str(&self.text(url).await?)
+            .map_err(|_| anyhow::anyhow!("搜索响应格式已变化"))?;
+        if let Some(actual) = number(&root["pageNum"]) {
+            ensure!(actual == u64::from(page), "搜索页码不匹配");
+        }
+        let rows = root["searchList"].as_array().context("搜索结果暂不可用")?;
+        let mut items = cards(rows);
+        let query = query.to_lowercase();
+        items.sort_by_key(|item| {
+            let title = item.title.to_lowercase();
+            if title == query {
+                0
+            } else if title.contains(&query) {
+                1
+            } else {
+                2
+            }
+        });
+        let has_more = root["hasMore"]
+            .as_bool()
+            .unwrap_or_else(|| u64::from(page) < number(&root["totalPages"]).unwrap_or(100));
+        Ok(CatalogPage {
+            items,
+            page,
+            has_more: !rows.is_empty() && has_more && page < 100,
+        })
+    }
+
+    pub async fn detail(&self, id: &str) -> Result<Detail> {
+        ensure!(valid_id(id), "剧集编号无效");
+        let mut url = self.base.join("detail")?;
+        url.query_pairs_mut().append_pair("series_id", id);
+        let root = router_data(&self.text(url).await?)?;
+        parse_detail(&root["loaderData"]["detail_page"]["seriesDetail"], id)
+    }
+
+    pub async fn public_media(&self, series: &str, episode: &str) -> Result<(Url, Url)> {
+        ensure!(valid_id(series) && valid_id(episode), "分集编号无效");
+        let page = self.base.join(&format!("player/{series}/{episode}"))?;
+        let html = self.text(page.clone()).await?;
+        let root = router_data(&html)?;
+        let video = root["loaderData"]
+            .as_object()
+            .and_then(|routes| {
+                routes
+                    .values()
+                    .find_map(|route| route.get("publicVideoSeo"))
+            })
+            .ok_or(PreviewUnavailable)?;
+        if video["available"].as_bool() != Some(true)
+            || string(&video["seriesId"]).as_deref() != Some(series)
+            || string(&video["itemId"]).as_deref() != Some(episode)
+        {
+            return Err(PreviewUnavailable.into());
+        }
+        Ok((preview_url(&html, &self.base, episode)?, page))
+    }
+
+    async fn text(&self, url: Url) -> Result<String> {
+        let response = self
+            .client
+            .get(url)
+            .header(header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9")
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("连接官网失败，请检查网络后重试"))?;
+        ensure!(
+            response.status().is_success(),
+            "官网请求失败（HTTP {}）",
+            response.status().as_u16()
+        );
+        let bytes = read_limited(response, WEBSITE_LIMIT).await?;
+        String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("官网响应格式异常"))
+    }
+}
+
+fn official_origin(url: &Url) -> bool {
+    url.scheme() == "https"
+        && matches!(
+            url.host_str(),
+            Some("hongguoduanju.com" | "www.hongguoduanju.com")
+        )
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+}
+
+#[cfg(any(
+    test,
+    all(feature = "desktop", any(target_os = "macos", target_os = "windows"))
+))]
+pub fn is_official_player_url(raw: &str) -> bool {
+    let Ok(url) = Url::parse(raw) else {
+        return false;
+    };
+    official_origin(&url)
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && matches!(url.path().split('/').collect::<Vec<_>>().as_slice(),
+            ["", "player", series, episode] if valid_id(series) && valid_id(episode))
+}
+
+fn preview_url(html: &str, base: &Url, episode: &str) -> Result<Url> {
+    let prefix = format!("/video/public/{episode}/");
+    let video_object = html
+        .split("<script")
+        .filter_map(|element| {
+            let (tag, content) = element.split_once('>')?;
+            if !tag.contains("application/ld+json") {
+                return None;
+            }
+            let (body, _) = content.split_once("</script>")?;
+            serde_json::from_str::<Value>(body.trim()).ok()
+        })
+        .find(|data| data["@type"] == "VideoObject")
+        .ok_or(PreviewUnavailable)?;
+    let raw = video_object["contentUrl"]
+        .as_str()
+        .ok_or(PreviewUnavailable)?;
+    let url = base
+        .join(raw)
+        .map_err(|_| anyhow::anyhow!("官网播放地址格式异常"))?;
+    let filename = url.path().strip_prefix(&prefix).unwrap_or_default();
+    ensure!(
+        official_origin(&url)
+            && filename.strip_suffix("p.mp4").is_some_and(|quality| {
+                !quality.is_empty()
+                    && quality.len() <= 4
+                    && quality.bytes().all(|b| b.is_ascii_digit())
+            }),
+        "官网播放地址格式异常"
+    );
+    Ok(url)
+}
+
+pub(crate) async fn read_limited(mut response: Response, max: usize) -> Result<Vec<u8>> {
+    ensure!(
+        response
+            .content_length()
+            .is_none_or(|size| size <= max as u64),
+        "响应超过大小限制"
+    );
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| anyhow::anyhow!("读取响应失败，请重试"))?
+    {
+        ensure!(
+            chunk.len() <= max.saturating_sub(bytes.len()),
+            "响应超过大小限制"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn router_data(html: &str) -> Result<Value> {
+    for (offset, _) in html.match_indices("_ROUTER_DATA") {
+        let Some(tail) = html
+            .get(offset + "_ROUTER_DATA".len()..)
+            .and_then(|value| value.trim_start().strip_prefix('='))
+        else {
+            continue;
+        };
+        let mut values = serde_json::Deserializer::from_str(tail).into_iter::<Value>();
+        if let Some(Ok(root)) = values.next()
+            && root["loaderData"].is_object()
+        {
+            return Ok(root);
+        }
+    }
+    anyhow::bail!("官网页面未返回剧集数据")
+}
+
+pub(crate) fn valid_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 30 && value.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn number(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| value.as_str()?.parse().ok())
+}
+
+fn string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => {
+            let text = text.trim();
+            (!text.is_empty()).then(|| text.to_owned())
+        }
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+fn series_from(row: &Value) -> Option<Series> {
+    let source = row["video_data"]
+        .as_object()
+        .map_or(row, |_| &row["video_data"]);
+    let id = string(&source["series_id"])?;
+    if !valid_id(&id) {
+        return None;
+    }
+    let title = string(&source["series_name"])
+        .or_else(|| string(&source["series_title"]))
+        .or_else(|| string(&row["name"]))?;
+    let raw_cover = string(&source["series_cover"])
+        .unwrap_or_default()
+        .replace("&amp;", "&");
+    let cover = Url::parse(&raw_cover)
+        .ok()
+        .filter(|url| {
+            url.scheme() == "https" && url.username().is_empty() && url.password().is_none()
+        })
+        .map(|url| url.to_string());
+    let count = number(&source["episode_cnt"])
+        .or_else(|| number(&source["series_episode_info"]["episode_cnt"]));
+    let tags = source["tags"]
+        .as_array()
+        .or_else(|| source["category_list"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|tag| string(&tag["name"]).or_else(|| string(tag)))
+        .take(5)
+        .collect();
+    Some(Series {
+        id,
+        title,
+        cover: cover.unwrap_or_default(),
+        description: string(&source["series_intro"]).unwrap_or_default(),
+        badge: string(&source["episode_right_text"])
+            .or_else(|| {
+                count
+                    .filter(|count| *count > 0)
+                    .map(|count| format!("全 {count} 集"))
+            })
+            .unwrap_or_default(),
+        tags,
+    })
+}
+
+fn cards(rows: &[Value]) -> Vec<Series> {
+    let mut seen = HashSet::new();
+    rows.iter()
+        .filter_map(series_from)
+        .filter(|row| seen.insert(row.id.clone()))
+        .collect()
+}
+
+fn parse_detail(source: &Value, id: &str) -> Result<Detail> {
+    let series = series_from(source).context("官网未返回剧集详情")?;
+    ensure!(series.id == id, "剧集详情与请求不匹配");
+    let rows = source["vid_list"]
+        .as_array()
+        .context("官网未返回分集列表")?;
+    ensure!(!rows.is_empty() && rows.len() <= 2000, "分集列表格式异常");
+    // The website marks a prefix of the published episodes as accessible in this web session.
+    let accessible = number(&source["accessible_episode_cnt"]).unwrap_or(0);
+    let mut seen = HashSet::new();
+    let mut episodes = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        let id = string(row)
+            .filter(|value| valid_id(value))
+            .context("分集编号格式异常")?;
+        ensure!(seen.insert(id.clone()), "官网分集编号重复");
+        let number = index + 1;
+        episodes.push(Episode {
+            id,
+            number,
+            available: number as u64 <= accessible,
+        });
+    }
+    Ok(Detail { series, episodes })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn reads_router_data_without_running_scripts() {
+        let html = r#"window._ROUTER_DATA ; window._ROUTER_DATA = {"loaderData":{"detail_page":{"a":"}"}}};"#;
+        assert_eq!(
+            router_data(html).unwrap()["loaderData"]["detail_page"]["a"],
+            "}"
+        );
+    }
+
+    #[test]
+    fn keeps_large_ids_and_explicit_web_availability() {
+        let raw = json!({
+            "series_id": "7706512650816982040", "series_name": "测试剧集",
+            "accessible_episode_cnt": 1, "vid_list": [7706514645208534041_u64, "02"]
+        });
+        let detail = parse_detail(&raw, "7706512650816982040").unwrap();
+        assert_eq!(detail.episodes[0].id, "7706514645208534041");
+        assert!(detail.episodes[0].available);
+        assert!(!detail.episodes[1].available);
+        assert!(parse_detail(&raw, "2").is_err());
+    }
+
+    #[test]
+    fn accepts_only_public_media_for_the_requested_episode() {
+        let base = Url::parse(SITE).unwrap();
+        let element = |src: &str| {
+            format!(
+                "<script type=\"application/ld+json\">{{\"@type\":\"VideoObject\",\"contentUrl\":\"{src}\"}}</script>"
+            )
+        };
+        assert!(preview_url(&element("/video/public/12/360p.mp4"), &base, "12").is_ok());
+        assert!(preview_url(&element("/video/public/13/360p.mp4"), &base, "12").is_err());
+        assert!(
+            preview_url(
+                &element("https://example.test/video/public/12/360p.mp4"),
+                &base,
+                "12"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn external_navigation_is_limited_to_official_episode_pages() {
+        assert!(is_official_player_url(
+            "https://hongguoduanju.com/player/42/100"
+        ));
+        assert!(!is_official_player_url(
+            "https://hongguoduanju.com.evil.test/player/42/100"
+        ));
+        assert!(!is_official_player_url(
+            "https://hongguoduanju.com/player/42/100?redirect=other"
+        ));
+        assert!(!is_official_player_url(
+            "https://hongguoduanju.com/player/42/abc"
+        ));
+    }
+}

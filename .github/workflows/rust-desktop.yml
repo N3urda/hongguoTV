@@ -1,0 +1,54 @@
+name: Verify Rust desktop
+
+on:
+  push:
+    branches: [main, codex/rust-desktop]
+    paths: ['rust-desktop/**', '.github/workflows/rust-desktop.yml', 'assets/brand/logo-pixel.png']
+  pull_request:
+    paths: ['rust-desktop/**', '.github/workflows/rust-desktop.yml', 'assets/brand/logo-pixel.png']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust-desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - run: cargo +stable fmt --check
+      - run: cargo +stable clippy --locked --no-default-features --all-targets -- -D warnings
+      - run: cargo +stable test --locked --no-default-features
+      - run: node --check ui/app.js
+
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: windows-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: rustup toolchain install stable --profile minimal
+      - run: rustup target add --toolchain stable ${{ matrix.target }}
+      - run: cargo +stable test --manifest-path rust-desktop/Cargo.toml --locked
+      - run: python rust-desktop/package.py --target ${{ matrix.target }}
+        env:
+          RUSTUP_TOOLCHAIN: stable
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Hongguo-Rust-${{ matrix.artifact }}
+          path: outputs/rust-desktop/*
+          if-no-files-found: error

@@ -28,6 +28,8 @@
 
 [发布版本](https://github.com/N3urda/hongguoTV/releases) · [构建说明](kotlin-tv/README.md) · [更新与发布](kotlin-tv/AUTO_UPDATES.md)
 
+Rust 桌面试用版可在 Windows/macOS 浏览、搜索、收藏和续播官网公开试看。完整分集可在官网播放。[桌面构建和使用说明](rust-desktop/README.md)
+
 本次功能集成保留包名 `com.hongguotv.nativeapp`、原签名配置和主线 Android 5.0（API 21）兼容目标。具体测试结果见 [集成记录](kotlin-tv/MAIN_INTEGRATION.md)，最低 SDK 配置不代表所有实体电视已验收。开发签名预览包不能覆盖原签名包，请勿为更新先卸载。
 
 账户预约每类当前最多读取最近 20 部，云端历史读取最近 50 部；以手机账号数据核对为准。旧「稍后看」与备份底层数据保留，新界面暂不提供入口。Mac 客户端与伴机服务端未纳入本次交付。

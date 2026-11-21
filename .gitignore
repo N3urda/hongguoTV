@@ -36,3 +36,6 @@ keystore.properties
 .externalNativeBuild/
 /ios/Pods/
 /ios/build/
+
+# Rust desktop build output
+/rust-desktop/target/
