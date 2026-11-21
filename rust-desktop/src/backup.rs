@@ -188,9 +188,9 @@ pub(crate) fn encode(library: &Library) -> Result<Vec<u8>> {
                 episode_index: row.number.saturating_sub(1),
                 position: row.position,
                 duration: row.duration,
-                completed: row.from_tv && row.completed,
+                completed: row.full_source && row.completed,
                 updated_at: row.updated_at,
-                desktop_preview_completed: (!row.from_tv).then_some(row.completed),
+                desktop_preview_completed: (!row.full_source).then_some(row.completed),
             })
             .collect(),
         later: library.later.iter().map(Into::into).collect(),
@@ -257,7 +257,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Imported> {
             duration: row.duration,
             completed: row.desktop_preview_completed.unwrap_or(row.completed),
             updated_at: row.updated_at,
-            from_tv: row.desktop_preview_completed.is_none(),
+            full_source: row.desktop_preview_completed.is_none(),
         });
     }
     Ok(Imported {
@@ -327,8 +327,8 @@ impl Imported {
         for row in self.history {
             if let Some(index) = indices.get(&row.series.id) {
                 let prior = &mut library.history[*index];
-                if (row.from_tv && !prior.from_tv)
-                    || (row.from_tv == prior.from_tv && row.updated_at > prior.updated_at)
+                if (row.full_source && !prior.full_source)
+                    || (row.full_source == prior.full_source && row.updated_at > prior.updated_at)
                 {
                     *prior = row;
                 }

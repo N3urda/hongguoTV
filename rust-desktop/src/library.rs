@@ -6,6 +6,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
+use hongguo_playback::source::PlaybackScope;
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::Series;
@@ -116,8 +117,8 @@ pub struct History {
     pub completed: bool,
     #[serde(default)]
     pub(crate) updated_at: u64,
-    #[serde(default)]
-    pub(crate) from_tv: bool,
+    #[serde(default, rename = "from_tv")]
+    pub(crate) full_source: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -276,18 +277,20 @@ impl LibraryStore {
         episode: &str,
         number: usize,
         progress: &WatchPosition,
+        scope: PlaybackScope,
     ) -> Result<()> {
         if progress.position == 0 {
             return Ok(());
         }
         let completed = progress.completed && progress.duration - progress.position <= 2000;
+        let full_source = scope == PlaybackScope::Full;
         self.update(|library| {
-            // A short website preview must not replace progress from the full TV episode.
-            if library.history.iter().any(|row| {
-                row.series.id == series.id
-                    && row.from_tv
-                    && (row.number != number || row.duration > progress.duration + 2000)
-            }) {
+            if !full_source
+                && library
+                    .history
+                    .iter()
+                    .any(|row| row.series.id == series.id && row.full_source)
+            {
                 return;
             }
             library.history.retain(|row| row.series.id != series.id);
@@ -301,7 +304,7 @@ impl LibraryStore {
                     duration: progress.duration,
                     completed,
                     updated_at: now_ms(),
-                    from_tv: false,
+                    full_source,
                 },
             );
             library.history.truncate(MAX_HISTORY);
@@ -370,6 +373,21 @@ mod tests {
                         completed: false,
                         sequence: 1,
                     },
+                    PlaybackScope::Full,
+                )
+                .unwrap();
+            store
+                .record(
+                    &series,
+                    "2",
+                    1,
+                    &WatchPosition {
+                        position: 1000,
+                        duration: 10000,
+                        completed: false,
+                        sequence: 1,
+                    },
+                    PlaybackScope::Preview,
                 )
                 .unwrap();
             assert!(LibraryStore::open(directory.path()).is_err());

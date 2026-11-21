@@ -10,7 +10,10 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use hongguo_playback::{Rendition, resume_target, select_rendition};
+use hongguo_playback::resume_target;
+use hongguo_playback::source::{
+    AuthorizedSources, PlaybackScope, RemoteMp4, authorized_media_client,
+};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Semaphore};
@@ -22,7 +25,7 @@ use crate::account::{Account, AccountStatus};
 use crate::backup;
 use crate::catalog::{Category, Detail, PreviewUnavailable, RankBoard, Series, Site, valid_id};
 use crate::library::{LibraryStore, Preferences, WatchPosition};
-use crate::media::RemoteVideo;
+use crate::media;
 use crate::updates;
 
 const MAX_SESSIONS: usize = 4;
@@ -68,7 +71,8 @@ struct Session {
     series: Series,
     episode: String,
     number: usize,
-    media: Arc<RemoteVideo>,
+    media: Arc<RemoteMp4>,
+    scope: PlaybackScope,
     cancel: CancellationToken,
     last_sequence: u64,
     last_used: Instant,
@@ -85,6 +89,8 @@ struct App {
     site: Site,
     account: Arc<Account>,
     store: Arc<LibraryStore>,
+    sources: Arc<AuthorizedSources>,
+    full_media: reqwest::Client,
     sessions: Arc<Mutex<VecDeque<Session>>>,
     readers: Arc<Semaphore>,
     prepares: Arc<Semaphore>,
@@ -93,6 +99,15 @@ struct App {
 impl App {
     async fn account_site(&self) -> Site {
         self.site.with_cookie(self.account.authorization().await.1)
+    }
+
+    async fn detail(&self, site: &Site, id: &str) -> Result<Detail> {
+        let mut detail = site.detail(id).await?;
+        for episode in &mut detail.episodes {
+            episode.full = self.sources.for_episode(id, &episode.id).is_some();
+            episode.available |= episode.full;
+        }
+        Ok(detail)
     }
 }
 
@@ -116,10 +131,16 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
     let route = format!("/{}", Uuid::new_v4().simple());
     let scope = format!("{origin}{route}/");
     let url = format!("{scope}index.html");
+    let sources = std::env::var_os("HONGGUO_PLAYBACK_MANIFEST")
+        .map(|path| AuthorizedSources::load(Path::new(&path)))
+        .transpose()?
+        .unwrap_or_default();
     let app = App {
         site: Site::new().context("无法初始化官网连接")?,
         store: Arc::new(LibraryStore::open(data_dir)?),
         account: Arc::new(Account::new(data_dir)?),
+        sources: Arc::new(sources),
+        full_media: authorized_media_client()?,
         sessions: Arc::new(Mutex::new(VecDeque::new())),
         readers: Arc::new(Semaphore::new(6)),
         prepares: Arc::new(Semaphore::new(4)),
@@ -409,17 +430,14 @@ async fn detail(
     if !valid_id(&id) {
         return Err(ApiError::bad_request("剧集编号无效"));
     }
-    let detail = app
-        .account_site()
-        .await
-        .detail(&id)
-        .await
-        .map_err(ApiError::upstream)?;
+    let site = app.account_site().await;
+    let detail = app.detail(&site, &id).await.map_err(ApiError::upstream)?;
     let history = app.store.history_for(&id).map_err(ApiError::storage)?;
+    let has_full = detail.episodes.iter().any(|episode| episode.full);
     let available: Vec<_> = detail
         .episodes
         .iter()
-        .filter(|episode| episode.available)
+        .filter(|episode| episode.available && (!has_full || episode.full))
         .collect();
     let matched = history.as_ref().and_then(|entry| {
         let saved = detail
@@ -428,12 +446,12 @@ async fn detail(
             .find(|episode| episode.id == entry.episode);
         let episode = match saved {
             Some(episode) => episode,
-            None if entry.from_tv => detail.episodes.get(entry.number.checked_sub(1)?)?,
+            None if entry.full_source => detail.episodes.get(entry.number.checked_sub(1)?)?,
             None => return None,
         };
         available
             .iter()
-            .position(|candidate| candidate.id == episode.id)
+            .position(|candidate| candidate.id == episode.id && candidate.full == entry.full_source)
     });
     let position = history
         .as_ref()
@@ -559,6 +577,7 @@ struct Selection {
     series: String,
     episode: String,
     quality: Option<u16>,
+    scope: Option<PlaybackScope>,
 }
 
 #[derive(Serialize)]
@@ -566,6 +585,7 @@ struct Playback {
     token: Uuid,
     quality: u16,
     qualities: Vec<u16>,
+    scope: PlaybackScope,
 }
 
 async fn play(
@@ -583,8 +603,8 @@ async fn play(
     })?;
     let (authorization, cookie) = app.account.authorization().await;
     let site = app.site.with_cookie(cookie);
-    let detail = site
-        .detail(&selection.series)
+    let detail = app
+        .detail(&site, &selection.series)
         .await
         .map_err(ApiError::upstream)?;
     let episode = detail
@@ -592,32 +612,31 @@ async fn play(
         .into_iter()
         .find(|row| row.id == selection.episode && row.available)
         .ok_or_else(|| ApiError::upstream(PreviewUnavailable.into()))?;
-    let mut sources = site
-        .public_media(&selection.series, &episode.id)
-        .await
-        .map_err(ApiError::upstream)?;
-    let qualities: Vec<u16> = sources.urls.keys().copied().collect();
-    let quality = if let Some(requested) = selection.quality {
-        requested
+    let scope = selection.scope.unwrap_or(if episode.full {
+        PlaybackScope::Full
     } else {
-        let maximum = app.store.preferences().map_err(ApiError::storage)?.quality;
-        let rows: Vec<_> = qualities
-            .iter()
-            .map(|quality| Rendition {
-                quality: i32::from(*quality),
-                avc: false,
-                supported: true,
-            })
-            .collect();
-        let index = select_rendition(&rows, i32::from(maximum))
-            .ok_or_else(|| ApiError::upstream(PreviewUnavailable.into()))?;
-        qualities[index]
+        PlaybackScope::Preview
+    });
+    let sources = match scope {
+        PlaybackScope::Full => app
+            .sources
+            .for_episode(&selection.series, &episode.id)
+            .cloned()
+            .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "本集暂未接入正式播放源".to_owned()))?,
+        PlaybackScope::Preview => site
+            .public_media(&selection.series, &episode.id)
+            .await
+            .map_err(ApiError::upstream)?,
     };
-    let url = sources
-        .urls
-        .remove(&quality)
+    let maximum = app.store.preferences().map_err(ApiError::storage)?.quality;
+    let source = sources
+        .select(maximum, selection.quality)
         .ok_or_else(|| ApiError::bad_request("本集暂未提供所选清晰度"))?;
-    let media = RemoteVideo::open(app.site.media_client.clone(), url, sources.page)
+    let client = match source.scope {
+        PlaybackScope::Full => app.full_media.clone(),
+        PlaybackScope::Preview => app.site.media_client.clone(),
+    };
+    let media = RemoteMp4::open(client, source.url, source.referer)
         .await
         .map_err(ApiError::upstream)?;
     let token = Uuid::new_v4();
@@ -635,14 +654,16 @@ async fn play(
         episode: episode.id,
         number: episode.number,
         media: Arc::new(media),
+        scope: source.scope,
         cancel: CancellationToken::new(),
         last_sequence: 0,
         last_used: Instant::now(),
     });
     Ok(Json(Playback {
         token,
-        quality,
-        qualities,
+        quality: source.quality,
+        qualities: source.qualities,
+        scope: source.scope,
     }))
 }
 
@@ -671,16 +692,20 @@ async fn progress(
         .validate()
         .map_err(|error| ApiError::bad_request(error.to_string()))?;
     let sequence = position.sequence;
-    let (series, episode, number) = (
+    let (series, episode, number, scope) = (
         session.series.clone(),
         session.episode.clone(),
         session.number,
+        session.scope,
     );
-    tokio::task::spawn_blocking(move || app.store.record(&series, &episode, number, &position))
-        .await
-        .context("无法保存播放进度")
-        .map_err(ApiError::storage)?
-        .map_err(ApiError::storage)?;
+    tokio::task::spawn_blocking(move || {
+        app.store
+            .record(&series, &episode, number, &position, scope)
+    })
+    .await
+    .context("无法保存播放进度")
+    .map_err(ApiError::storage)?
+    .map_err(ApiError::storage)?;
     session.last_sequence = sequence;
     session.last_used = Instant::now();
     Ok(StatusCode::NO_CONTENT)
@@ -707,8 +732,7 @@ async fn video(
             "视频缓冲繁忙，请重试".to_owned(),
         )
     })?;
-    media
-        .serve(method, headers, cancel, permit)
+    media::serve(&media, method, headers, cancel, permit)
         .await
         .map_err(ApiError::upstream)
 }

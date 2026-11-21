@@ -5,17 +5,19 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use reqwest::{Client, Response, Url, header, redirect};
+use reqwest::{Client, Url, header, redirect};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub(crate) const WEBSITE: &str = "https://hongguoduanju.com/";
+pub use crate::source::{read_limited, valid_id};
+
+pub const WEBSITE: &str = "https://hongguoduanju.com/";
 const WEBSITE_LIMIT: usize = 6 * 1024 * 1024;
 // Use an ordinary browser profile for the site's desktop HTML and JSON routes.
-pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
+pub const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
 
 #[derive(Debug)]
-pub(crate) struct PreviewUnavailable;
+pub struct PreviewUnavailable;
 
 impl std::fmt::Display for PreviewUnavailable {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -24,11 +26,6 @@ impl std::fmt::Display for PreviewUnavailable {
 }
 
 impl std::error::Error for PreviewUnavailable {}
-
-pub(crate) struct PreviewSources {
-    pub(crate) urls: BTreeMap<u16, Url>,
-    pub(crate) page: Url,
-}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Series {
@@ -52,6 +49,7 @@ pub struct Episode {
     pub id: String,
     pub number: usize,
     pub available: bool,
+    pub full: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,7 +68,7 @@ pub struct Review {
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum RankBoard {
+pub enum RankBoard {
     All,
     Real,
     Comic,
@@ -95,14 +93,14 @@ impl RankBoard {
 }
 
 #[derive(Serialize)]
-pub(crate) struct RankRow {
+pub struct RankRow {
     rank: u64,
     series: Series,
     metric: String,
 }
 
 #[derive(Serialize)]
-pub(crate) struct RankPage {
+pub struct RankPage {
     items: Vec<RankRow>,
     updated: String,
     has_more: bool,
@@ -131,7 +129,7 @@ pub struct Site {
     client: Client,
     account_client: Client,
     cookie: Option<header::HeaderValue>,
-    pub(crate) media_client: Client,
+    pub media_client: Client,
     base: Url,
 }
 
@@ -170,13 +168,8 @@ impl Site {
             }))
             .build()?;
         // A different client keeps web session cookies out of playback requests.
-        let media_client = Client::builder()
+        let media_client = crate::source::media_client_builder()
             .user_agent(USER_AGENT)
-            .no_gzip()
-            .no_brotli()
-            .connect_timeout(Duration::from_secs(8))
-            .read_timeout(Duration::from_secs(15))
-            .redirect(redirect::Policy::none())
             .build()?;
         Ok(Self {
             client,
@@ -187,7 +180,7 @@ impl Site {
         })
     }
 
-    pub(crate) fn with_cookie(&self, cookie: Option<header::HeaderValue>) -> Self {
+    pub fn with_cookie(&self, cookie: Option<header::HeaderValue>) -> Self {
         Self {
             cookie,
             ..self.clone()
@@ -284,7 +277,7 @@ impl Site {
         Ok(detail)
     }
 
-    pub(crate) async fn rank(&self, board: RankBoard, page: u32) -> Result<RankPage> {
+    pub async fn rank(&self, board: RankBoard, page: u32) -> Result<RankPage> {
         let slug = board.slug();
         let mut url = self.base.join(&format!("rank/{slug}"))?;
         url.query_pairs_mut().append_pair("page", &page.to_string());
@@ -341,7 +334,7 @@ impl Site {
         })
     }
 
-    pub(crate) async fn public_media(&self, series: &str, episode: &str) -> Result<PreviewSources> {
+    pub async fn public_media(&self, series: &str, episode: &str) -> Result<crate::source::Ladder> {
         ensure!(valid_id(series) && valid_id(episode), "分集编号无效");
         let page = self.base.join(&format!("player/{series}/{episode}"))?;
         let html = self.text(page.clone()).await?;
@@ -360,10 +353,10 @@ impl Site {
         {
             return Err(PreviewUnavailable.into());
         }
-        Ok(PreviewSources {
-            urls: preview_urls(&html, &self.base, episode)?,
+        Ok(crate::source::Ladder::preview(
+            preview_urls(&html, &self.base, episode)?,
             page,
-        })
+        ))
     }
 
     async fn text(&self, url: Url) -> Result<String> {
@@ -399,10 +392,6 @@ fn official_origin(url: &Url) -> bool {
         && url.password().is_none()
 }
 
-#[cfg(any(
-    test,
-    all(feature = "desktop", any(target_os = "macos", target_os = "windows"))
-))]
 pub fn is_official_player_url(raw: &str) -> bool {
     let Ok(url) = Url::parse(raw) else {
         return false;
@@ -461,28 +450,6 @@ fn preview_urls(html: &str, base: &Url, episode: &str) -> Result<BTreeMap<u16, U
     Ok(urls)
 }
 
-pub(crate) async fn read_limited(mut response: Response, max: usize) -> Result<Vec<u8>> {
-    ensure!(
-        response
-            .content_length()
-            .is_none_or(|size| size <= max as u64),
-        "响应超过大小限制"
-    );
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| anyhow::anyhow!("读取响应失败，请重试"))?
-    {
-        ensure!(
-            chunk.len() <= max.saturating_sub(bytes.len()),
-            "响应超过大小限制"
-        );
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
-}
-
 fn router_data(html: &str) -> Result<Value> {
     for (offset, _) in html.match_indices("_ROUTER_DATA") {
         let Some(tail) = html
@@ -499,10 +466,6 @@ fn router_data(html: &str) -> Result<Value> {
         }
     }
     anyhow::bail!("官网页面未返回剧集数据")
-}
-
-pub(crate) fn valid_id(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 30 && value.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn number(value: &Value) -> Option<u64> {
@@ -595,6 +558,7 @@ fn parse_detail(source: &Value, id: &str) -> Result<Detail> {
             id,
             number,
             available: number as u64 <= accessible,
+            full: false,
         });
     }
     Ok(Detail {

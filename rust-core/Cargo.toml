@@ -10,9 +10,14 @@ crate-type = ["rlib", "cdylib"]
 
 [features]
 android-jni = ["dep:jni"]
+web = ["dep:anyhow", "dep:reqwest", "dep:serde", "dep:serde_json"]
 
 [dependencies]
+anyhow = { version = "1.0", optional = true }
 jni = { version = "0.21.1", optional = true }
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "cookies", "gzip", "brotli", "stream"], optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
 
 [profile.release]
 lto = "thin"

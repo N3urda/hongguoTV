@@ -100,7 +100,8 @@ function formatTime(milliseconds) {
 
 function historyLabel(history) {
   const episode = `第 ${history.number} 集`;
-  return history.completed ? `${episode}试看完毕` : `${episode} · ${formatTime(history.position)}`;
+  const watched = history.from_tv ? "已看完" : "试看完毕";
+  return history.completed ? episode + watched : `${episode} · ${formatTime(history.position)}`;
 }
 
 function card(series, key, history) {
@@ -156,7 +157,7 @@ function spotlight(series, history) {
   if (meta) copy.append(node("p", "meta", meta));
   if (!history && series.description) copy.append(node("p", "summary clamp", series.description));
   const actions = node("div", "actions");
-  const play = button(history ? "继续试看" : "开始试看", () => openDetail(series.id, true), "primary", "play");
+  const play = button(history ? "继续观看" : "打开剧集", () => openDetail(series.id, true), "primary", "play");
   const details = button("查看详情", () => openDetail(series.id), "quiet");
   play.dataset.key = "spotlight-play";
   details.dataset.key = "spotlight-detail";
@@ -449,7 +450,7 @@ async function openDetail(id, play = false) {
     const selected = detail.episodes.find((episode) => episode.id === detail.resume?.episode);
     const position = detail.resume?.position || 0;
     outlet.replaceChildren(renderDetail(detail, selected, position));
-    if (play && selected) openPlayer(selected, position);
+    if (play && selected?.full) openPlayer(selected, position);
   } catch (error) {
     if (!signal.aborted) outlet.replaceChildren(status(error.message, () => openDetail(id, play)));
   }
@@ -476,7 +477,12 @@ function renderDetail(detail, selected, position) {
   copy.append(node("h2", "", series.title));
   copy.append(node("p", "meta", [`全 ${episodes.length} 集`, ...series.tags].join(" · ")));
   const actions = node("div", "actions");
-  const play = button(position > 0 ? "继续试看" : selected ? `试看第 ${selected.number} 集` : "暂无试看", () => openPlayer(selected, position), "primary", "play");
+  let playLabel = "暂无可播分集";
+  if (selected) {
+    const verb = selected.full ? "播放" : "试看";
+    playLabel = position > 0 ? "继续" + verb : `${verb}第 ${selected.number} 集`;
+  }
+  const play = button(playLabel, () => openPlayer(selected, position), "primary", "play");
   play.disabled = !selected;
   const note = node("p", "history-line", history ? historyLabel(history) : "");
   note.hidden = !history;
@@ -555,10 +561,11 @@ function episodePicker(episodes, current, history, showJump) {
     const cells = entries.map((episode) => {
       const playing = episode.id === current.id;
       const label = playing ? "当前" : history?.episode === episode.id
-        ? (history.completed ? "已看" : "上次") : episode.available ? "" : "官网";
+        ? (history.completed ? "已看" : "上次") : episode.full ? "" : episode.available ? "试看" : "官网";
       const cell = button(String(episode.number), () => openPlayer(episode), episode.available ? "" : "external-episode");
       cell.dataset.episode = episode.id;
-      cell.setAttribute("aria-label", `第 ${episode.number} 集${episode.available ? "" : "，在官网播放"}`);
+      const availability = episode.full ? "" : episode.available ? "，公开试看" : "，在官网播放";
+      cell.setAttribute("aria-label", `第 ${episode.number} 集${availability}`);
       if (playing) cell.setAttribute("aria-current", "true");
       if (label) cell.append(node("span", "episode-flag", label));
       return cell;
@@ -674,6 +681,11 @@ function seekTo(seconds) {
 function shiftEpisode(direction) {
   const current = state.player;
   const episode = current?.detail.episodes[current.index + direction];
+  if (episode && state.playing?.playback.scope === "full" && !episode.full) {
+    current.episodeLabel.textContent = "所选分集暂未接入正式播放源";
+    showControls();
+    return;
+  }
   if (episode) openPlayer(episode);
 }
 
@@ -974,7 +986,7 @@ async function switchQuality(view) {
   let playback;
   let candidate;
   try {
-    playback = await post("api/play", { series: view.detail.series.id, episode: episode.id, quality });
+    playback = await post("api/play", { series: view.detail.series.id, episode: episode.id, quality, scope: current.playback.scope });
     if (controller.signal.aborted || state.playing !== current) return;
     candidate = node("video");
     candidate.preload = "auto";
@@ -1039,7 +1051,9 @@ async function openPlayer(episode, position = 0, prepared) {
       return;
     }
     // Read the reply even after navigating away so the abandoned media session can be released.
-    const playback = prepared?.playback || await post("api/play", { series: detail.series.id, episode: episode.id });
+    const playback = prepared?.playback || await post("api/play", {
+      series: detail.series.id, episode: episode.id, scope: episode.full ? "full" : "preview",
+    });
     if (controller.signal.aborted) {
       release(playback.token);
       return;
@@ -1086,7 +1100,8 @@ async function openPlayer(episode, position = 0, prepared) {
         return;
       }
       const next = detail.episodes[view.index + 1];
-      if (!view.sleepStopped && state.preferences.auto_next && next?.available && view.panel.hidden && view.more.hidden) openPlayer(next);
+      const sameScope = next?.full === (playback.scope === "full");
+      if (!view.sleepStopped && state.preferences.auto_next && next?.available && sameScope && view.panel.hidden && view.more.hidden) openPlayer(next);
     });
     video.addEventListener("error", () => {
       if (state.playing !== session) return;
@@ -1099,7 +1114,8 @@ async function openPlayer(episode, position = 0, prepared) {
     view.stage.prepend(video);
     if (!view.sleepStopped) {
       const source = playback.qualities.length === 1 ? "仅提供 " : "";
-      view.episodeLabel.textContent = `${label}公开试看 · ${source}${playback.quality}P`;
+      const mode = playback.scope === "full" ? "正片" : "公开试看";
+      view.episodeLabel.textContent = `${label}${mode} · ${source}${playback.quality}P`;
     }
     qualityOptions(view, playback);
     if (!prepared) video.src = `media/${playback.token}`;

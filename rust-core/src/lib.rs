@@ -3,6 +3,11 @@ use std::cmp::Reverse;
 
 pub mod range;
 
+#[cfg(feature = "web")]
+pub mod source;
+#[cfg(feature = "web")]
+pub mod web;
+
 #[cfg(feature = "android-jni")]
 mod android_jni;
 

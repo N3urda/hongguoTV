@@ -32,7 +32,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
       - run: cargo +stable fmt --manifest-path ../rust-core/Cargo.toml --check
-      - run: cargo +stable clippy --manifest-path ../rust-core/Cargo.toml --locked --all-targets --features android-jni -- -D warnings
+      - run: cargo +stable clippy --manifest-path ../rust-core/Cargo.toml --locked --all-targets --features web,android-jni -- -D warnings
+      - run: cargo +stable test --manifest-path ../rust-core/Cargo.toml --locked --features web
       - run: cargo +stable test --manifest-path ../rust-core/Cargo.toml --locked --features android-jni
       - run: cargo +stable fmt --check
       - run: cargo +stable clippy --locked --no-default-features --all-targets -- -D warnings

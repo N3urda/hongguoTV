@@ -4,7 +4,7 @@
 
 「设置 → 账户」可使用红果 App 扫码登录官网。勾选「记住登录」后，macOS 通过钥匙串保存登录态，Windows 通过当前用户 DPAPI 加密保存。电视端的账号收藏、观看历史和预约云同步仍待接入。
 
-应用内播放官网公开试看。「设置 → 播放」可以选默认清晰度上限、倍速、画面模式、旋转、常驻进度和自动连播。播放器列出本集实际提供的清晰度。有多个档位时，切换会保留当前位置及暂停状态。单档试看会显示唯一可用的清晰度。「在官网播放」用默认浏览器打开对应分集。
+应用内可直连已配置的授权正片源。影片详情显示当前分集的可用播放方式，官网公开试看可在详情中手动选择。「设置 → 播放」可以选默认清晰度上限、倍速、画面模式、旋转、常驻进度和自动连播。播放器列出本集实际提供的清晰度。有多个档位时，切换会保留当前位置及暂停状态。「在官网播放」用默认浏览器打开对应分集。
 
 「外观与操作」可配置主题、启动页面、随心看自动播放和播放时钟。播放器支持选集、定时停止、从头播放和窗口内调整画面。播放画面获得焦点时上下键切集、左右键跳转，空格键暂停或继续。`Esc` 返回，`Ctrl/⌘ + K` 打开搜索。
 
@@ -36,4 +36,24 @@ python rust-desktop/package.py --target x86_64-pc-windows-msvc --webview2-bootst
 
 本机收藏和试看进度保存在 macOS 的 `~/Library/Application Support/HongguoRust/` 或 Windows 的 `%LOCALAPPDATA%\HongguoRust\`，测试可用 `HONGGUO_RUST_DATA_DIR` 指向独立目录。关闭播放器和打开下一集会保存已读进度。
 
-本应用与 Android 手机及 Android TV 共用 `rust-core` 的续播和视频分段规则。Android 安装包使用 [Android 构建入口](../kotlin-tv/README.md#构建)。
+`rust-core` 负责目录和分集查询、取源结果、选档和远端 MP4 分段读取。桌面负责窗口、会话、账号凭据和本机资料。Android 手机及 Android TV 通过 JNI 共用续播、选档和视频分段规则，继续使用 Android 播放适配。Android 安装包使用 [Android 构建入口](../kotlin-tv/README.md#构建)。
+
+## 授权正片源
+
+运行时可以将 `HONGGUO_PLAYBACK_MANIFEST` 指向运营方提供的本机 JSON 清单。清单将授权地址与剧集和分集编号对应，地址须在清单列出的 HTTPS 来源内，视频服务须支持字节范围请求。授权地址由内容方提供。分集有匹配的正式源时，桌面普通播放和自动连播会使用该源。
+
+```json
+{
+  "version": 1,
+  "origins": ["https://media.example"],
+  "episodes": [
+    {
+      "series": "100",
+      "episode": "200",
+      "sources": [
+        {"quality": 720, "url": "https://media.example/episode-200-720.mp4"}
+      ]
+    }
+  ]
+}
+```
