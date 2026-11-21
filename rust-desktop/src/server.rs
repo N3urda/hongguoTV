@@ -145,6 +145,17 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
                 )
             }),
         )
+        .route(
+            "/brand.png",
+            get(|| async {
+                asset(
+                    "image/png",
+                    include_bytes!(
+                        "../../kotlin-tv/app/src/main/res/drawable-nodpi/brand_mark.png"
+                    ),
+                )
+            }),
+        )
         .route("/api/catalog", get(catalog))
         .route("/api/detail/{id}", get(detail))
         .route("/api/library", get(library))

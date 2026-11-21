@@ -69,13 +69,15 @@ fn desktop(runtime: tokio::runtime::Runtime, server: server::RunningServer) -> R
         dpi::LogicalSize,
         event::{Event, WindowEvent},
         event_loop::{ControlFlow, EventLoop},
-        window::WindowBuilder,
+        window::{Theme, WindowBuilder},
     };
     use wry::{NewWindowResponse, WebViewBuilder};
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_title("红果 · 短剧")
+        .with_title("hongguoTV")
+        .with_theme(Some(Theme::Dark))
+        .with_background_color((17, 19, 23, 255))
         .with_inner_size(LogicalSize::new(1180.0, 800.0))
         .with_min_inner_size(LogicalSize::new(700.0, 525.0))
         .build(&event_loop)
@@ -86,6 +88,7 @@ fn desktop(runtime: tokio::runtime::Runtime, server: server::RunningServer) -> R
         .unwrap_or(&server.url)
         .to_owned();
     let webview = WebViewBuilder::new()
+        .with_background_color((17, 19, 23, 255))
         .with_url(&server.url)
         .with_navigation_handler(move |url| url.starts_with(&scope))
         .with_new_window_req_handler(|url, _| {

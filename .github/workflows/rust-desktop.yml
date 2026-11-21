@@ -3,9 +3,19 @@ name: Verify Rust desktop
 on:
   push:
     branches: [main, codex/rust-desktop]
-    paths: ['rust-core/**', 'rust-desktop/**', '.github/workflows/rust-desktop.yml', 'assets/brand/logo-pixel.png']
+    paths:
+      - 'rust-core/**'
+      - 'rust-desktop/**'
+      - '.github/workflows/rust-desktop.yml'
+      - 'assets/brand/logo-pixel.png'
+      - 'kotlin-tv/app/src/main/res/drawable-nodpi/brand_mark.png'
   pull_request:
-    paths: ['rust-core/**', 'rust-desktop/**', '.github/workflows/rust-desktop.yml', 'assets/brand/logo-pixel.png']
+    paths:
+      - 'rust-core/**'
+      - 'rust-desktop/**'
+      - '.github/workflows/rust-desktop.yml'
+      - 'assets/brand/logo-pixel.png'
+      - 'kotlin-tv/app/src/main/res/drawable-nodpi/brand_mark.png'
   workflow_dispatch:
 
 permissions:
