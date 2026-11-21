@@ -9,7 +9,9 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::{Series, valid_id};
-use crate::library::{FrameMode, History, Library, MAX_FAVORITES, MAX_HISTORY, MAX_LATER, now_ms};
+use crate::library::{
+    FrameMode, History, Library, MAX_FAVORITES, MAX_HISTORY, MAX_LATER, Preferences, now_ms,
+};
 
 const FORMAT: &str = "hongguotv.library";
 pub(crate) const MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -29,8 +31,7 @@ struct Backup {
     watched: Vec<String>,
     #[serde(skip_deserializing)]
     searches: Vec<()>,
-    #[serde(skip_deserializing)]
-    settings: Option<BackupSettings>,
+    settings: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -77,6 +78,7 @@ pub(crate) struct Imported {
     favorites: Vec<Series>,
     history: Vec<History>,
     later: Vec<Series>,
+    settings: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -84,6 +86,8 @@ pub(crate) struct ImportCounts {
     favorites: usize,
     history: usize,
     later: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) preferences: Option<Preferences>,
 }
 
 fn text_len(value: &str, max: usize) -> bool {
@@ -192,8 +196,8 @@ pub(crate) fn encode(library: &Library) -> Result<Vec<u8>> {
         later: library.later.iter().map(Into::into).collect(),
         watched: Vec::new(),
         searches: Vec::new(),
-        settings: Some(BackupSettings {
-            quality: 1080,
+        settings: Some(serde_json::to_value(BackupSettings {
+            quality: preferences.quality,
             speed: f32::from(preferences.speed) / 100.0,
             auto_next: preferences.auto_next,
             content_type: "short".to_owned(),
@@ -205,7 +209,7 @@ pub(crate) fn encode(library: &Library) -> Result<Vec<u8>> {
             .to_owned(),
             rotation: preferences.rotation,
             always_show_progress: preferences.show_progress,
-        }),
+        })?),
     };
     let bytes = serde_json::to_vec(&backup)?;
     ensure!(bytes.len() <= MAX_BYTES, "备份超过 2 MB 限制");
@@ -260,6 +264,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Imported> {
         favorites,
         history,
         later,
+        settings: backup.settings,
     })
 }
 
@@ -274,11 +279,39 @@ fn decode_series(rows: Vec<BackupSeries>) -> Result<Vec<Series>> {
 }
 
 impl Imported {
+    pub(crate) fn playback_preferences(&self) -> Result<Preferences> {
+        let Some(settings) = &self.settings else {
+            anyhow::bail!("此备份没有可导入的播放设置");
+        };
+        let settings: BackupSettings = serde_json::from_value(settings.clone())
+            .map_err(|_| anyhow::anyhow!("备份中的播放设置无效"))?;
+        let frame = match settings.frame.as_str() {
+            "FIT" => FrameMode::Fit,
+            "ZOOM" => FrameMode::Crop,
+            "FILL" => FrameMode::Stretch,
+            _ => anyhow::bail!("备份中的画面模式无效"),
+        };
+        let speed = settings.speed * 100.0;
+        ensure!(speed.fract() == 0.0, "备份中的倍速无效");
+        let preferences = Preferences {
+            quality: settings.quality,
+            speed: speed as u16,
+            frame,
+            rotation: settings.rotation,
+            auto_next: settings.auto_next,
+            show_progress: settings.always_show_progress,
+            ..Preferences::default()
+        };
+        preferences.validate()?;
+        Ok(preferences)
+    }
+
     pub(crate) fn counts(&self) -> ImportCounts {
         ImportCounts {
             favorites: self.favorites.len(),
             history: self.history.len(),
             later: self.later.len(),
+            preferences: None,
         }
     }
 

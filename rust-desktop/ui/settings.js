@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 export const speedSteps = [75, 100, 125, 150, 175, 200, 300];
+export const frameOptions = [["fit", "完整画面"], ["crop", "等比铺满"], ["stretch", "拉伸铺满"]];
+export const rotationOptions = [0, 90, 180, 270].map(degrees => [degrees, degrees + "°"]);
 
 export function settingsPage(signal, ui) {
   const { node, button } = ui;
@@ -8,25 +10,73 @@ export function settingsPage(signal, ui) {
   navigation.setAttribute("aria-label", "设置分类");
   const panel = node("section", "settings-panel");
   const choices = [
-    ["账户", accountPanel],
-    ["外观与操作", (pane, scope) => preferencePanel(pane, scope, ui, "appearance")],
-    ["播放", (pane, scope) => preferencePanel(pane, scope, ui, "playback")],
-    ["资料备份", backupPanel],
+    ["updates", "检查更新", updatePanel],
+    ["playback", "播放", (pane, scope) => preferencePanel(pane, scope, ui, "playback")],
+    ["appearance", "外观与操作", (pane, scope) => preferencePanel(pane, scope, ui, "appearance")],
+    ["account", "账户", accountPanel],
+    ["backup", "资料备份", backupPanel],
+    ["about", "关于应用", aboutPanel],
   ];
   let section;
-  const buttons = choices.map(([label, render], index) => button(label, () => select(index, render), "settings-nav-item"));
-  function select(index, render) {
+  const buttons = choices.map(([, label], index) => button(label, () => select(index), "settings-nav-item"));
+  function select(index) {
     section?.abort();
     section = new AbortController();
     buttons.forEach((item, indexOfItem) => item.setAttribute("aria-pressed", String(index === indexOfItem)));
     panel.replaceChildren();
-    render(panel, section.signal, ui);
+    choices[index][2](panel, section.signal, ui);
   }
   signal.addEventListener("abort", () => section?.abort(), { once: true });
   navigation.append(...buttons);
   layout.append(navigation, panel);
-  select(0, accountPanel);
+  select(Math.max(0, choices.findIndex(([key]) => key === ui.initialTab)));
   return layout;
+}
+
+function externalLink(node, label, href) {
+  const link = node("a", "action-link", label);
+  link.href = href;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  return link;
+}
+
+function updatePanel(panel, signal, ui) {
+  const { node, button, request } = ui;
+  const version = node("p", "meta settings-version");
+  const notice = node("p", "settings-note");
+  notice.setAttribute("role", "status");
+  const download = node("div");
+  const check = button("检查更新", async () => {
+    check.disabled = true;
+    notice.textContent = "正在检查…";
+    download.replaceChildren();
+    try {
+      const update = await request("api/update", { signal });
+      if (signal.aborted) return;
+      notice.textContent = update ? "发现桌面版 " + update.version : "当前版本已是最新";
+      if (update) download.append(externalLink(node, "查看更新", update.page));
+    } catch (error) {
+      if (!signal.aborted) notice.textContent = error.message;
+    } finally {
+      check.disabled = false;
+    }
+  }, "primary");
+  panel.append(node("h2", "", "检查更新"), version, check, notice, download);
+  request("api/app", { signal }).then(app => {
+    if (!signal.aborted) version.textContent = "当前版本 · " + app.version;
+  }).catch(() => {});
+}
+
+function aboutPanel(panel, signal, ui) {
+  const { node, request } = ui;
+  panel.append(node("h2", "", "关于 hongguoTV"), node("p", "meta settings-version", "红果短剧非官方桌面客户端"));
+  request("api/app", { signal }).then(app => {
+    if (!signal.aborted) {
+      panel.append(node("p", "meta settings-version", "版本 " + app.version + " · GPL-3.0"),
+        externalLink(node, "项目与开源许可", app.project));
+    }
+  }).catch(() => {});
 }
 
 function accountPanel(panel, signal, ui) {
@@ -135,7 +185,7 @@ function accountPanel(panel, signal, ui) {
 }
 
 function preferencePanel(panel, signal, ui, section) {
-  const { node, post, preferences, applyPreferences } = ui;
+  const { node, preferences, savePreference } = ui;
   const appearance = section === "appearance";
   panel.append(node("h2", "", appearance ? "外观与操作" : "播放设置"));
   const rows = node("div", "settings-rows");
@@ -150,8 +200,7 @@ function preferencePanel(panel, signal, ui, section) {
     const controls = [...rows.querySelectorAll("input, select")];
     for (const control of controls) control.disabled = true;
     try {
-      const next = await post("api/preferences", { ...preferences(), [key]: value }, { signal });
-      applyPreferences(next);
+      await savePreference(key, value);
       if (!signal.aborted) notice.textContent = "已保存";
     } catch (error) {
       if (!signal.aborted) notice.textContent = error.message;
@@ -190,17 +239,23 @@ function preferencePanel(panel, signal, ui, section) {
 
   if (appearance) {
     row("theme", "界面主题", [["dark", "经典黑"], ["light", "纯净白"], ["sand", "暖米色"], ["forest", "森林绿"], ["ocean", "深海蓝"]]);
+    row("startup", "启动页面", [["home", "首页"], ["browse", "找剧"], ["rank", "排行榜"], ["favorites", "收藏"],
+      ["history", "观看历史"], ["settings", "设置"], ["search", "搜索"], ["feed", "随心看"]]);
+    row("feed_autoplay", "随心看自动播放");
+    row("clock", "播放时钟", [["off", "关闭"], ["controls", "操作时显示"], ["always", "始终显示"]]);
   } else {
+    row("quality", "默认清晰度", [480, 720, 1080].map(quality => [quality, quality + "P"]));
+    rows.append(node("p", "meta quality-hint", "播放器根据官网为该分集提供的档位选流。"));
     row("speed", "默认播放倍速", speedSteps.map(rate => [rate, `${rate / 100}×`]));
-    row("frame", "画面模式", [["fit", "完整画面"], ["crop", "等比铺满"], ["stretch", "拉伸铺满"]]);
-    row("rotation", "画面旋转", [0, 90, 180, 270].map(deg => [deg, `${deg}°`]));
+    row("frame", "画面模式", frameOptions);
+    row("rotation", "画面旋转", rotationOptions);
     row("show_progress", "常驻播放进度");
-    row("auto_next", "自动播放下一集");
+    row("auto_next", "自动连播");
   }
 }
 
 function backupPanel(panel, signal, ui) {
-  const { node, button, request } = ui;
+  const { node, button, request, applyPreferences } = ui;
   const download = node("a", "action-link", "导出备份");
   download.href = "api/library/backup";
   download.download = "hongguotv-library.json";
@@ -209,6 +264,10 @@ function backupPanel(panel, signal, ui) {
   filePicker.accept = ".json,application/json";
   filePicker.hidden = true;
   const upload = button("导入并合并备份", () => filePicker.click(), "primary");
+  const restore = node("label", "settings-toggle backup-options");
+  const restoreSettings = node("input");
+  restoreSettings.type = "checkbox";
+  restore.append(restoreSettings, document.createTextNode("同时恢复电视端的播放设置"));
   const notice = node("p", "settings-note");
   notice.setAttribute("role", "status");
   filePicker.addEventListener("change", async () => {
@@ -222,7 +281,9 @@ function backupPanel(panel, signal, ui) {
     upload.disabled = true;
     notice.textContent = "正在合并备份…";
     try {
-      const counts = await request("api/library/backup", { method: "POST", body: file, signal });
+      const query = restoreSettings.checked ? "?restore_settings=true" : "";
+      const counts = await request("api/library/backup" + query, { method: "POST", body: file, signal });
+      if (counts.preferences) applyPreferences(counts.preferences);
       notice.textContent = `备份已处理 · ${counts.favorites} 部收藏 · ${counts.history} 条历史 · ${counts.later} 部稍后看`;
     } catch (error) {
       if (!signal.aborted) notice.textContent = error.message;
@@ -234,5 +295,5 @@ function backupPanel(panel, signal, ui) {
   actions.append(upload, download);
   panel.append(node("h2", "", "资料备份"),
     node("p", "meta backup-description", "电视端和桌面端可通过备份文件迁移本机收藏、观看记录和稍后看。"),
-    actions, filePicker, notice);
+    actions, restore, filePicker, notice);
 }

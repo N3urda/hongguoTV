@@ -5,4 +5,5 @@ pub mod catalog;
 pub mod library;
 pub mod media;
 pub mod server;
+pub mod updates;
 mod vault;

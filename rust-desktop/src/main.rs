@@ -92,8 +92,10 @@ fn desktop(runtime: tokio::runtime::Runtime, server: server::RunningServer) -> R
         .with_url(&server.url)
         .with_navigation_handler(move |url| url.starts_with(&scope))
         .with_new_window_req_handler(|url, _| {
-            if hongguo_desktop::catalog::is_official_player_url(&url) {
-                std::thread::spawn(move || open_official_episode(&url));
+            if hongguo_desktop::catalog::is_official_player_url(&url)
+                || hongguo_desktop::updates::is_project_url(&url)
+            {
+                std::thread::spawn(move || open_external(&url));
             }
             NewWindowResponse::Deny
         })
@@ -113,7 +115,7 @@ fn desktop(runtime: tokio::runtime::Runtime, server: server::RunningServer) -> R
 }
 
 #[cfg(all(feature = "desktop", any(target_os = "macos", target_os = "windows")))]
-fn open_official_episode(url: &str) {
+fn open_external(url: &str) {
     #[cfg(target_os = "macos")]
     let command = "/usr/bin/open";
     #[cfg(target_os = "windows")]
@@ -123,7 +125,7 @@ fn open_official_episode(url: &str) {
         .status()
         .is_err()
     {
-        eprintln!("无法打开官网播放页");
+        eprintln!("无法打开外部页面");
     }
 }
 

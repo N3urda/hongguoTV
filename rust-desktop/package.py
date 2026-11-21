@@ -97,6 +97,25 @@ def package_windows(binary, artifact, loader):
         )
 
 
+def package_installer(binary, artifact, staging, loader, bootstrapper, version):
+    shutil.copy2(binary, staging / "app.exe")
+    shutil.copyfile(bootstrapper, staging / "MicrosoftEdgeWebview2Setup.exe")
+    shutil.copyfile(REPO / "LICENSE", staging / "LICENSE.txt")
+    shutil.copyfile(ROOT / "windows-installer.nsi", staging / "windows-installer.nsi")
+    option = "/" if platform.system() == "Windows" else "-"
+    args = [
+        "makensis",
+        f"{option}WX",
+        f"{option}DSETUP_NAME={artifact.name}",
+        f"{option}DAPP_VERSION={version}",
+        f"{option}DFILE_VERSION={version.split('-', 1)[0]}.0",
+    ]
+    if loader:
+        shutil.copyfile(loader, staging / "WebView2Loader.dll")
+        args.append(f"{option}DINCLUDE_LOADER")
+    subprocess.run([*args, "windows-installer.nsi"], cwd=staging, check=True)
+
+
 def build(target):
     args = [
         "cargo", "build", "--manifest-path", str(ROOT / "Cargo.toml"),
@@ -123,10 +142,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", choices=TARGETS, required=True)
     parser.add_argument("--output", type=Path, default=REPO / "outputs" / "rust-desktop")
+    parser.add_argument(
+        "--webview2-bootstrapper", type=Path,
+        help="Build a Windows Setup EXE with the verified Microsoft Evergreen bootstrapper",
+    )
     options = parser.parse_args()
     is_mac = "apple" in options.target
     if is_mac and platform.system() != "Darwin":
         parser.error("macOS packaging needs a macOS host")
+    bootstrapper = options.webview2_bootstrapper
+    if bootstrapper:
+        if is_mac or not bootstrapper.is_file():
+            parser.error("a WebView2 bootstrapper file is required for Windows Setup")
+        if not shutil.which("makensis"):
+            parser.error("Windows Setup requires the NSIS makensis command")
     loader = build(options.target)
     name = "hongguo-desktop" if is_mac else "hongguo-desktop.exe"
     binary = TARGET_DIR / options.target / "release" / name
@@ -136,11 +165,15 @@ def main():
     out = options.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     basename = f"Hongguo-Rust-{version}-{TARGETS[options.target]}.zip"
+    if bootstrapper:
+        basename = f"Hongguo-Rust-{version}-{TARGETS[options.target]}-setup.exe"
     with tempfile.TemporaryDirectory(prefix=".hongguo-", dir=out) as scratch:
         stage = Path(scratch)
         artifact = stage / basename
         if is_mac:
             package_mac(binary, artifact, stage, version)
+        elif bootstrapper:
+            package_installer(binary, artifact, stage, loader, bootstrapper, version)
         else:
             package_windows(binary, artifact, loader)
         with artifact.open("rb") as stream:

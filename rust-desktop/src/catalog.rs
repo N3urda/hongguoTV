@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, ensure};
 use reqwest::{Client, Response, Url, header, redirect};
@@ -21,6 +24,11 @@ impl std::fmt::Display for PreviewUnavailable {
 }
 
 impl std::error::Error for PreviewUnavailable {}
+
+pub(crate) struct PreviewSources {
+    pub(crate) urls: BTreeMap<u16, Url>,
+    pub(crate) page: Url,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Series {
@@ -333,7 +341,7 @@ impl Site {
         })
     }
 
-    pub async fn public_media(&self, series: &str, episode: &str) -> Result<(Url, Url)> {
+    pub(crate) async fn public_media(&self, series: &str, episode: &str) -> Result<PreviewSources> {
         ensure!(valid_id(series) && valid_id(episode), "分集编号无效");
         let page = self.base.join(&format!("player/{series}/{episode}"))?;
         let html = self.text(page.clone()).await?;
@@ -352,7 +360,10 @@ impl Site {
         {
             return Err(PreviewUnavailable.into());
         }
-        Ok((preview_url(&html, &self.base, episode)?, page))
+        Ok(PreviewSources {
+            urls: preview_urls(&html, &self.base, episode)?,
+            page,
+        })
     }
 
     async fn text(&self, url: Url) -> Result<String> {
@@ -403,37 +414,51 @@ pub fn is_official_player_url(raw: &str) -> bool {
             ["", "player", series, episode] if valid_id(series) && valid_id(episode))
 }
 
-fn preview_url(html: &str, base: &Url, episode: &str) -> Result<Url> {
+fn preview_urls(html: &str, base: &Url, episode: &str) -> Result<BTreeMap<u16, Url>> {
     let prefix = format!("/video/public/{episode}/");
-    let video_object = html
-        .split("<script")
-        .filter_map(|element| {
-            let (tag, content) = element.split_once('>')?;
-            if !tag.contains("application/ld+json") {
-                return None;
+    let mut urls = BTreeMap::new();
+    for element in html.split("<script") {
+        let Some((tag, content)) = element.split_once('>') else {
+            continue;
+        };
+        if !tag.contains("application/ld+json") {
+            continue;
+        }
+        let Some((body, _)) = content.split_once("</script>") else {
+            continue;
+        };
+        let Ok(data) = serde_json::from_str::<Value>(body.trim()) else {
+            continue;
+        };
+        if data["@type"] != "VideoObject" {
+            continue;
+        }
+        let content = &data["contentUrl"];
+        let values = content
+            .as_array()
+            .map_or_else(|| std::slice::from_ref(content), Vec::as_slice);
+        for raw in values.iter().filter_map(Value::as_str) {
+            let Ok(url) = base.join(raw) else { continue };
+            if !official_origin(&url) || url.fragment().is_some() {
+                continue;
             }
-            let (body, _) = content.split_once("</script>")?;
-            serde_json::from_str::<Value>(body.trim()).ok()
-        })
-        .find(|data| data["@type"] == "VideoObject")
-        .ok_or(PreviewUnavailable)?;
-    let raw = video_object["contentUrl"]
-        .as_str()
-        .ok_or(PreviewUnavailable)?;
-    let url = base
-        .join(raw)
-        .map_err(|_| anyhow::anyhow!("官网播放地址格式异常"))?;
-    let filename = url.path().strip_prefix(&prefix).unwrap_or_default();
-    ensure!(
-        official_origin(&url)
-            && filename.strip_suffix("p.mp4").is_some_and(|quality| {
-                !quality.is_empty()
-                    && quality.len() <= 4
-                    && quality.bytes().all(|b| b.is_ascii_digit())
-            }),
-        "官网播放地址格式异常"
-    );
-    Ok(url)
+            let Some(quality) = url
+                .path()
+                .strip_prefix(&prefix)
+                .and_then(|filename| filename.strip_suffix("p.mp4"))
+                .filter(|quality| quality.len() <= 4 && quality.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|quality| quality.parse::<u16>().ok())
+                .filter(|quality| *quality > 0)
+            else {
+                continue;
+            };
+            urls.entry(quality).or_insert(url);
+        }
+    }
+    if urls.is_empty() {
+        return Err(PreviewUnavailable.into());
+    }
+    Ok(urls)
 }
 
 pub(crate) async fn read_limited(mut response: Response, max: usize) -> Result<Vec<u8>> {
@@ -615,15 +640,29 @@ mod tests {
                 "<script type=\"application/ld+json\">{{\"@type\":\"VideoObject\",\"contentUrl\":\"{src}\"}}</script>"
             )
         };
-        assert!(preview_url(&element("/video/public/12/360p.mp4"), &base, "12").is_ok());
-        assert!(preview_url(&element("/video/public/13/360p.mp4"), &base, "12").is_err());
+        assert!(preview_urls(&element("/video/public/12/360p.mp4"), &base, "12").is_ok());
+        assert!(preview_urls(&element("/video/public/13/360p.mp4"), &base, "12").is_err());
         assert!(
-            preview_url(
+            preview_urls(
                 &element("https://example.test/video/public/12/360p.mp4"),
                 &base,
                 "12"
             )
             .is_err()
+        );
+        let html = [
+            element("/video/public/12/720p.mp4"),
+            element("/video/public/13/1080p.mp4"),
+            element("/video/public/12/480p.mp4"),
+            element("/video/public/12/480p.mp4"),
+        ]
+        .join("");
+        assert_eq!(
+            preview_urls(&html, &base, "12")
+                .unwrap()
+                .into_keys()
+                .collect::<Vec<_>>(),
+            [480, 720]
         );
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "hongguo-desktop"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.92"
 license = "GPL-3.0-only"
@@ -17,6 +17,7 @@ axum = "0.8.9"
 base64 = "0.22"
 hongguo-playback = { path = "../rust-core" }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "cookies", "gzip", "brotli", "stream"] }
+semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"

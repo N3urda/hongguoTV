@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use hongguo_playback::resume_target;
+use hongguo_playback::{Rendition, resume_target, select_rendition};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Semaphore};
@@ -23,6 +23,7 @@ use crate::backup;
 use crate::catalog::{Category, Detail, PreviewUnavailable, RankBoard, Series, Site, valid_id};
 use crate::library::{LibraryStore, Preferences, WatchPosition};
 use crate::media::RemoteVideo;
+use crate::updates;
 
 const MAX_SESSIONS: usize = 4;
 
@@ -180,6 +181,16 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
         .route("/api/catalog", get(catalog))
         .route("/api/rank", get(rank))
         .route("/api/preferences", get(preferences).post(save_preferences))
+        .route(
+            "/api/app",
+            get(|| async {
+                Json(serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "project": updates::PROJECT,
+                }))
+            }),
+        )
+        .route("/api/update", get(check_update))
         .route("/api/account", get(account_status).delete(account_logout))
         .route(
             "/api/account/qr",
@@ -299,6 +310,13 @@ async fn rank(
 
 async fn preferences(State(app): State<App>) -> ApiResult<Json<Preferences>> {
     app.store.preferences().map(Json).map_err(ApiError::storage)
+}
+
+async fn check_update(State(app): State<App>) -> ApiResult<Json<Option<updates::Update>>> {
+    updates::check(&app.site.media_client)
+        .await
+        .map(Json)
+        .map_err(ApiError::upstream)
 }
 
 async fn save_preferences(
@@ -448,18 +466,43 @@ async fn export_backup(State(app): State<App>) -> ApiResult<impl IntoResponse> {
     ))
 }
 
+#[derive(Deserialize)]
+struct ImportOptions {
+    #[serde(default)]
+    restore_settings: bool,
+}
+
 async fn import_backup(
     State(app): State<App>,
+    Query(options): Query<ImportOptions>,
     bytes: Bytes,
 ) -> ApiResult<Json<backup::ImportCounts>> {
     let imported =
         backup::decode(&bytes).map_err(|error| ApiError::bad_request(error.to_string()))?;
-    let counts = imported.counts();
-    tokio::task::spawn_blocking(move || app.store.update(|library| imported.merge(library)))
-        .await
-        .context("无法导入备份")
-        .map_err(ApiError::storage)?
-        .map_err(ApiError::storage)?;
+    let mut counts = imported.counts();
+    let playback = options
+        .restore_settings
+        .then(|| imported.playback_preferences())
+        .transpose()
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    counts.preferences = tokio::task::spawn_blocking(move || {
+        app.store.update(|library| {
+            imported.merge(library);
+            if let Some(settings) = playback {
+                library.preferences.quality = settings.quality;
+                library.preferences.speed = settings.speed;
+                library.preferences.frame = settings.frame;
+                library.preferences.rotation = settings.rotation;
+                library.preferences.auto_next = settings.auto_next;
+                library.preferences.show_progress = settings.show_progress;
+            }
+        })?;
+        playback.map(|_| app.store.preferences()).transpose()
+    })
+    .await
+    .context("无法导入备份")
+    .map_err(ApiError::storage)?
+    .map_err(ApiError::storage)?;
     Ok(Json(counts))
 }
 
@@ -515,12 +558,14 @@ async fn save_series(
 struct Selection {
     series: String,
     episode: String,
+    quality: Option<u16>,
 }
 
 #[derive(Serialize)]
 struct Playback {
     token: Uuid,
-    quality: String,
+    quality: u16,
+    qualities: Vec<u16>,
 }
 
 async fn play(
@@ -547,18 +592,32 @@ async fn play(
         .into_iter()
         .find(|row| row.id == selection.episode && row.available)
         .ok_or_else(|| ApiError::upstream(PreviewUnavailable.into()))?;
-    let (url, referer) = site
+    let mut sources = site
         .public_media(&selection.series, &episode.id)
         .await
         .map_err(ApiError::upstream)?;
-    let quality = url
-        .path()
-        .rsplit('/')
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches(".mp4")
-        .to_owned();
-    let media = RemoteVideo::open(app.site.media_client.clone(), url, referer)
+    let qualities: Vec<u16> = sources.urls.keys().copied().collect();
+    let quality = if let Some(requested) = selection.quality {
+        requested
+    } else {
+        let maximum = app.store.preferences().map_err(ApiError::storage)?.quality;
+        let rows: Vec<_> = qualities
+            .iter()
+            .map(|quality| Rendition {
+                quality: i32::from(*quality),
+                avc: false,
+                supported: true,
+            })
+            .collect();
+        let index = select_rendition(&rows, i32::from(maximum))
+            .ok_or_else(|| ApiError::upstream(PreviewUnavailable.into()))?;
+        qualities[index]
+    };
+    let url = sources
+        .urls
+        .remove(&quality)
+        .ok_or_else(|| ApiError::bad_request("本集暂未提供所选清晰度"))?;
+    let media = RemoteVideo::open(app.site.media_client.clone(), url, sources.page)
         .await
         .map_err(ApiError::upstream)?;
     let token = Uuid::new_v4();
@@ -580,7 +639,11 @@ async fn play(
         last_sequence: 0,
         last_used: Instant::now(),
     });
-    Ok(Json(Playback { token, quality }))
+    Ok(Json(Playback {
+        token,
+        quality,
+        qualities,
+    }))
 }
 
 async fn stop(State(app): State<App>, RoutePath(token): RoutePath<Uuid>) -> StatusCode {

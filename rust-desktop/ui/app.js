@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-import { settingsPage, speedSteps } from "./settings.js";
+import { frameOptions, rotationOptions, settingsPage, speedSteps } from "./settings.js";
 
 const shell = document.querySelector("#shell");
 const main = document.querySelector("#main");
@@ -13,9 +13,10 @@ const state = {
   section: "home", category: "real", page: 1, query: "", libraryTab: "history",
   library: { favorites: [], history: [], later: [] }, detail: null, returnPoint: null,
   navigation: null, player: null, playing: null, prepare: null,
-  stopping: Promise.resolve(), autoplay: true,
+  stopping: Promise.resolve(), savingPreferences: Promise.resolve(),
   board: "all", suggestion: null,
-  preferences: { theme: "dark", speed: 100, frame: "fit", rotation: 0, show_progress: false, auto_next: true },
+  preferences: { theme: "dark", quality: 1080, speed: 100, frame: "fit", rotation: 0,
+    show_progress: false, auto_next: true, startup: "home", feed_autoplay: true, clock: "controls" },
 };
 
 function node(tag, className, text) {
@@ -248,8 +249,16 @@ function openLibrary(tab) {
 
 function applyPreferences(preferences) {
   state.preferences = preferences;
-  state.autoplay = preferences.auto_next;
   document.documentElement.dataset.theme = preferences.theme;
+}
+
+function savePreference(key, value) {
+  const write = state.savingPreferences.then(async () => {
+    const next = await post("api/preferences", { ...state.preferences, [key]: value });
+    applyPreferences(next);
+  });
+  state.savingPreferences = write.catch(() => {});
+  return write;
 }
 
 function pagination(section, page, hasMore, focus) {
@@ -295,6 +304,7 @@ async function renderFeed(outlet, signal, restore) {
   next.dataset.key = "feed-next";
   panel.querySelector(".actions").append(next);
   outlet.replaceChildren(panel);
+  if (!restore && state.preferences.feed_autoplay) await openDetail(state.suggestion.id, true);
 }
 
 function restorePoint(point) {
@@ -309,7 +319,7 @@ function focusKey(key) {
   [...main.querySelectorAll("[data-key]")].find((item) => item.dataset.key === key)?.focus({ preventScroll: true });
 }
 
-async function openSection(section, { page = 1, restore = false, focus } = {}) {
+async function openSection(section, { page = 1, restore = false, focus, settingsTab } = {}) {
   const signal = nextNavigation();
   const stopped = leavePlayer();
   state.detail = null;
@@ -325,7 +335,7 @@ async function openSection(section, { page = 1, restore = false, focus } = {}) {
     const heading = node("header", "page-heading");
     heading.append(node("h1", "", sectionNames[section]));
     if (section === "library") {
-      heading.append(button("红果账户", () => openSection("settings"), "quiet"));
+      heading.append(button("红果账户", () => openSection("settings", { settingsTab: "account" }), "quiet"));
     }
     frame.append(heading);
   }
@@ -344,7 +354,10 @@ async function openSection(section, { page = 1, restore = false, focus } = {}) {
   main.replaceChildren(frame);
   main.scrollTop = 0;
   if (section === "settings") {
-    outlet.append(settingsPage(signal, { node, button, request, post, preferences: () => state.preferences, applyPreferences }));
+    outlet.append(settingsPage(signal, {
+      node, button, request, post, preferences: () => state.preferences, applyPreferences,
+      savePreference, initialTab: settingsTab,
+    }));
     return;
   }
   if (focus === "query") {
@@ -615,6 +628,7 @@ function release(token) {
 function stopPlayback() {
   state.prepare?.abort();
   state.prepare = null;
+  state.player?.qualityChange?.abort();
   const session = state.playing;
   state.playing = null;
   if (session) {
@@ -632,6 +646,7 @@ function leavePlayer() {
   if (state.player) {
     clearTimeout(state.player.hideTimer);
     clearTimeout(state.player.sleepTimer);
+    clearInterval(state.player.clockTimer);
     state.player = null;
     if (document.fullscreenElement === watch) document.exitFullscreen().catch(() => {});
     watch.hidden = true;
@@ -663,6 +678,7 @@ function shiftEpisode(direction) {
 }
 
 function toggleEpisodes(view, open, restoreFocus = false) {
+  if (open) toggleMore(view, false);
   view.menu.setAttribute("aria-expanded", String(open));
   view.panel.hidden = !open;
   if (open) {
@@ -680,12 +696,72 @@ function showControls() {
   delete watch.dataset.idle;
   clearTimeout(view.hideTimer);
   const video = state.playing?.video;
-  if (!video || video.paused || video.ended || !view.panel.hidden) return;
+  if (!video || video.paused || video.ended || !view.panel.hidden || !view.more.hidden) return;
   view.hideTimer = setTimeout(() => {
     if (state.player === view && !watch.querySelector(".watch-header:hover, .watch-footer:hover, .watch-header:focus-within, .watch-footer:focus-within")) {
       watch.dataset.idle = "true";
     }
   }, 2800);
+}
+
+function toggleMore(view, open, restoreFocus = false) {
+  if (open) toggleEpisodes(view, false);
+  view.more.hidden = !open;
+  view.moreButton.setAttribute("aria-expanded", String(open));
+  if (open) view.more.querySelector("select")?.focus({ preventScroll: true });
+  else if (restoreFocus) view.moreButton.focus({ preventScroll: true });
+  showControls();
+}
+
+function playerPreference(view, control, key, apply) {
+  control.addEventListener("change", async () => {
+    const original = state.preferences[key];
+    const value = control.type === "checkbox" ? control.checked
+      : typeof original === "number" ? Number(control.value) : control.value;
+    control.disabled = true;
+    try {
+      await savePreference(key, value);
+      if (state.player === view) apply(value);
+    } catch (error) {
+      if (control.type === "checkbox") control.checked = state.preferences[key];
+      else control.value = String(state.preferences[key]);
+      if (state.player === view) view.episodeLabel.textContent = error.message;
+    } finally {
+      control.disabled = false;
+    }
+  });
+}
+
+function playerOptions(view) {
+  const panel = node("div", "watch-panel watch-options");
+  panel.id = "watch-options";
+  panel.hidden = true;
+  function row(label, key, options, apply) {
+    const line = node("label", "settings-row");
+    const control = node(options ? "select" : "input");
+    if (options) {
+      for (const [id, title] of options) {
+        const option = node("option", "", title);
+        option.value = id;
+        control.append(option);
+      }
+      control.value = state.preferences[key];
+    } else {
+      control.type = "checkbox";
+      control.checked = state.preferences[key];
+    }
+    line.append(node("span", "", label), control);
+    panel.append(line);
+    playerPreference(view, control, key, apply);
+  }
+  row("画面模式", "frame", frameOptions, value => { view.stage.dataset.frame = value; });
+  row("画面旋转", "rotation", rotationOptions, value => { view.stage.dataset.rotation = value; });
+  row("常驻播放进度", "show_progress", null, value => { view.ambient.hidden = !value; });
+  panel.append(button("从头播放", () => {
+    seekTo(0);
+    toggleMore(view, false, true);
+  }));
+  return panel;
 }
 
 function createPlayer(detail) {
@@ -735,15 +811,21 @@ function createPlayer(detail) {
   view.menu = button("选集", () => toggleEpisodes(view, view.panel.hidden, true));
   view.menu.setAttribute("aria-expanded", "false");
   view.menu.setAttribute("aria-controls", "watch-episodes");
+  view.moreButton = button("更多设置", () => toggleMore(view, view.more.hidden, true));
+  view.moreButton.setAttribute("aria-expanded", "false");
+  view.moreButton.setAttribute("aria-controls", "watch-options");
+  view.quality = namedControl(node("select"), "清晰度");
+  view.quality.disabled = true;
+  view.quality.addEventListener("change", () => switchQuality(view));
   const speed = namedControl(node("select"), "播放倍速");
   for (const step of speedSteps) {
     const option = node("option", "", `${step / 100}×`);
-    option.value = step / 100;
+    option.value = step;
     speed.append(option);
   }
-  speed.value = view.rate;
-  speed.addEventListener("change", () => {
-    view.rate = Number(speed.value);
+  speed.value = preferences.speed;
+  playerPreference(view, speed, "speed", value => {
+    view.rate = value / 100;
     const video = state.playing?.video;
     if (video) {
       video.defaultPlaybackRate = view.rate;
@@ -769,11 +851,12 @@ function createPlayer(detail) {
   const autoLabel = node("label", "autoplay");
   const auto = node("input");
   auto.type = "checkbox";
-  auto.checked = state.autoplay;
-  auto.addEventListener("change", () => { state.autoplay = auto.checked; });
+  auto.checked = preferences.auto_next;
+  playerPreference(view, auto, "auto_next", showControls);
   autoLabel.append(auto, document.createTextNode("自动连播"));
   view.sleep = namedControl(node("select"), "定时停止");
-  for (const [id, label] of [["off", "定时"], ["episode", "本集结束"], ["15", "15 分钟"], ["30", "30 分钟"], ["60", "60 分钟"]]) {
+  for (const [id, label] of [["off", "定时"], ["episode", "本集播完"], ["episodes-3", "再播完 3 集"],
+    ["episodes-5", "再播完 5 集"], ["15", "15 分钟"], ["30", "30 分钟"], ["60", "60 分钟"], ["90", "90 分钟"]]) {
     const option = node("option", "", label);
     option.value = id;
     view.sleep.append(option);
@@ -781,9 +864,10 @@ function createPlayer(detail) {
   view.sleep.addEventListener("change", () => {
     clearTimeout(view.sleepTimer);
     const minutes = Number(view.sleep.value);
+    view.episodesLeft = { episode: 1, "episodes-3": 3, "episodes-5": 5 }[view.sleep.value] || 0;
     if (minutes > 0) view.sleepTimer = setTimeout(() => stopForSleep(view), minutes * 60_000);
   });
-  settings.append(view.menu, speed, view.sleep, mute, volume, autoLabel);
+  settings.append(view.menu, view.quality, speed, view.sleep, view.moreButton, mute, volume, autoLabel);
   if (document.fullscreenEnabled && watch.requestFullscreen) {
     view.fullscreen = button("全屏", async () => {
       try {
@@ -797,19 +881,29 @@ function createPlayer(detail) {
   view.panel = node("div", "watch-panel");
   view.panel.id = "watch-episodes";
   view.panel.hidden = true;
-  footer.append(view.panel, heading, timeline, transport);
+  view.more = playerOptions(view);
+  footer.append(view.panel, view.more, heading, timeline, transport);
   watch.replaceChildren(header, view.stage, footer);
-  if (preferences.show_progress) {
-    view.ambient = node("progress", "watch-progress card-progress");
-    view.ambient.setAttribute("aria-hidden", "true");
-    watch.append(view.ambient);
+  view.ambient = node("progress", "watch-progress card-progress");
+  view.ambient.setAttribute("aria-hidden", "true");
+  view.ambient.hidden = !preferences.show_progress;
+  watch.append(view.ambient);
+  if (preferences.clock !== "off") {
+    const clock = node("time", "watch-clock");
+    clock.dataset.mode = preferences.clock;
+    const showTime = () => { clock.textContent = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }); };
+    showTime();
+    view.clockTimer = setInterval(showTime, 1000);
+    watch.append(clock);
   }
   return view;
 }
 
 function stopForSleep(view) {
   if (view !== state.player) return;
+  clearTimeout(view.sleepTimer);
   view.sleepStopped = true;
+  view.episodesLeft = 0;
   view.sleep.value = "off";
   state.playing?.video.pause();
   view.episodeLabel.textContent = "定时停止已生效";
@@ -835,7 +929,79 @@ function syncControls(view, video) {
   if (view.play.textContent !== label) view.play.replaceChildren(icon(playing ? "pause" : "play"), document.createTextNode(label));
 }
 
-async function openPlayer(episode, position = 0) {
+function qualityOptions(view, playback) {
+  view.quality.replaceChildren();
+  view.quality.disabled = !playback || playback.qualities.length <= 1;
+  if (!playback) return;
+  for (const quality of playback.qualities) {
+    const option = node("option", "", quality + "P");
+    option.value = quality;
+    view.quality.append(option);
+  }
+  view.quality.value = playback.quality;
+}
+
+function prepareVideo(video, source, signal) {
+  return new Promise((resolve, reject) => {
+    function finish(error) {
+      clearTimeout(timer);
+      video.removeEventListener("canplay", ready);
+      video.removeEventListener("error", failed);
+      signal.removeEventListener("abort", cancelled);
+      if (error) reject(error);
+      else resolve();
+    }
+    const ready = () => finish();
+    const failed = () => finish(new Error("所选清晰度暂时无法播放"));
+    const cancelled = () => finish(new DOMException("Aborted", "AbortError"));
+    const timer = setTimeout(failed, 15000);
+    video.addEventListener("canplay", ready);
+    video.addEventListener("error", failed);
+    signal.addEventListener("abort", cancelled);
+    video.src = source;
+  });
+}
+
+async function switchQuality(view) {
+  const current = state.playing;
+  if (!current || current.view !== view || view.qualityChange) return;
+  const quality = Number(view.quality.value);
+  if (quality === current.playback.quality) return;
+  const controller = new AbortController();
+  view.qualityChange = controller;
+  view.quality.disabled = true;
+  const episode = view.detail.episodes[view.index];
+  let playback;
+  let candidate;
+  try {
+    playback = await post("api/play", { series: view.detail.series.id, episode: episode.id, quality });
+    if (controller.signal.aborted || state.playing !== current) return;
+    candidate = node("video");
+    candidate.preload = "auto";
+    candidate.hidden = true;
+    view.stage.append(candidate);
+    await prepareVideo(candidate, "media/" + playback.token, controller.signal);
+    if (state.playing !== current) return;
+    const prepared = { playback, candidate, autoplay: !current.video.paused };
+    view.qualityChange = null;
+    playback = null;
+    candidate = null;
+    await openPlayer(episode, Math.round(current.video.currentTime * 1000), prepared);
+  } catch (error) {
+    if (!controller.signal.aborted && state.playing === current) view.episodeLabel.textContent = error.message;
+  } finally {
+    if (candidate) {
+      candidate.removeAttribute("src");
+      candidate.load();
+      candidate.remove();
+    }
+    if (playback) release(playback.token);
+    if (view.qualityChange === controller) view.qualityChange = null;
+    if (!controller.signal.aborted && state.playing === current) qualityOptions(view, current.playback);
+  }
+}
+
+async function openPlayer(episode, position = 0, prepared) {
   const detail = state.detail;
   if (!detail || !episode) return;
   const focusStage = !state.player || state.player.panel.contains(document.activeElement) || document.activeElement === state.player.play;
@@ -846,13 +1012,15 @@ async function openPlayer(episode, position = 0) {
   watch.hidden = false;
   view.index = detail.episodes.indexOf(episode);
   view.scrubbing = false;
-  view.sleepStopped = false;
+  if (!prepared) view.sleepStopped = false;
   const label = `第 ${episode.number} 集`;
   view.episodeLabel.textContent = label;
   view.official.href = episodeUrl(detail.series, episode);
   view.previous.disabled = view.index <= 0;
   view.next.disabled = view.index >= detail.episodes.length - 1;
+  qualityOptions(view);
   toggleEpisodes(view, false);
+  toggleMore(view, false);
   syncControls(view);
   if (focusStage || document.activeElement?.disabled) view.stage.focus({ preventScroll: true });
   if (!episode.available) {
@@ -866,14 +1034,18 @@ async function openPlayer(episode, position = 0) {
   view.stage.replaceChildren(loading);
   try {
     await stopped;
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted) {
+      if (prepared) release(prepared.playback.token);
+      return;
+    }
     // Read the reply even after navigating away so the abandoned media session can be released.
-    const playback = await post("api/play", { series: detail.series.id, episode: episode.id });
+    const playback = prepared?.playback || await post("api/play", { series: detail.series.id, episode: episode.id });
     if (controller.signal.aborted) {
       release(playback.token);
       return;
     }
-    const video = node("video");
+    const video = prepared?.candidate || node("video");
+    video.hidden = false;
     video.playsInline = true;
     video.preload = "auto";
     video.volume = view.volume;
@@ -881,17 +1053,20 @@ async function openPlayer(episode, position = 0) {
     video.defaultPlaybackRate = view.rate;
     video.playbackRate = view.rate;
     video.setAttribute("aria-label", `${label}视频`);
-    const session = { video, token: playback.token, view, sequence: 0, savedAt: 0, queue: Promise.resolve() };
+    const session = { video, playback, token: playback.token, view, sequence: 0, savedAt: 0, queue: Promise.resolve() };
     state.playing = session;
     video.addEventListener("click", toggleVideo);
-    video.addEventListener("loadedmetadata", () => {
+    const loaded = () => {
       if (state.playing !== session) return;
       if (position > 0 && Number.isFinite(video.duration)) {
         video.currentTime = Math.min(position / 1000, Math.max(0, video.duration - 1));
       }
       syncControls(view, video);
-    }, { once: true });
-    video.addEventListener("loadeddata", () => loading.remove(), { once: true });
+    };
+    if (video.readyState >= 1) loaded();
+    else video.addEventListener("loadedmetadata", loaded, { once: true });
+    if (video.readyState >= 2) loading.remove();
+    else video.addEventListener("loadeddata", () => loading.remove(), { once: true });
     for (const event of ["play", "pause", "seeked", "timeupdate", "durationchange"]) {
       video.addEventListener(event, () => {
         if (state.playing !== session) return;
@@ -906,12 +1081,12 @@ async function openPlayer(episode, position = 0) {
       syncControls(view, video);
       showControls();
       savePosition(session, true);
-      if (view.sleep.value === "episode") {
+      if (view.episodesLeft > 0 && --view.episodesLeft === 0) {
         stopForSleep(view);
         return;
       }
       const next = detail.episodes[view.index + 1];
-      if (state.autoplay && next?.available && view.panel.hidden) openPlayer(next);
+      if (!view.sleepStopped && state.preferences.auto_next && next?.available && view.panel.hidden && view.more.hidden) openPlayer(next);
     });
     video.addEventListener("error", () => {
       if (state.playing !== session) return;
@@ -923,11 +1098,13 @@ async function openPlayer(episode, position = 0) {
     });
     view.stage.prepend(video);
     if (!view.sleepStopped) {
-      view.episodeLabel.textContent = `${label}试看 · ${playback.quality}`;
+      const source = playback.qualities.length === 1 ? "仅提供 " : "";
+      view.episodeLabel.textContent = `${label}公开试看 · ${source}${playback.quality}P`;
     }
-    video.src = `media/${playback.token}`;
+    qualityOptions(view, playback);
+    if (!prepared) video.src = `media/${playback.token}`;
     syncControls(view, video);
-    if (!view.sleepStopped) video.play().catch(() => {});
+    if (!view.sleepStopped && (prepared?.autoplay ?? true)) video.play().catch(() => {});
   } catch (error) {
     if (controller.signal.aborted) return;
     view.stage.replaceChildren(status(error.message, error.status === 404 ? null : () => openPlayer(episode, position), "watch-status"));
@@ -974,7 +1151,8 @@ document.addEventListener("keydown", (event) => {
       event.preventDefault();
       document.exitFullscreen().catch(() => {});
     } else if (state.player) {
-      if (!state.player.panel.hidden) toggleEpisodes(state.player, false, true);
+      if (!state.player.more.hidden) toggleMore(state.player, false, true);
+      else if (!state.player.panel.hidden) toggleEpisodes(state.player, false, true);
       else openDetail(state.player.detail.series.id);
     } else if (shell.dataset.view === "detail") backToSection();
     return;
@@ -999,4 +1177,8 @@ document.addEventListener("fullscreenchange", () => {
 window.addEventListener("pagehide", () => {
   if (state.playing) savePosition(state.playing, state.playing.video.ended);
 });
-request("api/preferences").then(applyPreferences, () => {}).finally(() => openSection("home"));
+request("api/preferences").then(applyPreferences, () => {}).finally(() => {
+  const startup = state.preferences.startup;
+  if (startup === "favorites" || startup === "history") openLibrary(startup);
+  else openSection(startup || "home", { focus: startup === "search" ? "query" : null });
+});

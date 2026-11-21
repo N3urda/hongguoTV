@@ -58,9 +58,42 @@ jobs:
       - run: rustup toolchain install stable --profile minimal
       - run: rustup target add --toolchain stable ${{ matrix.target }}
       - run: cargo +stable test --manifest-path rust-desktop/Cargo.toml --locked
-      - run: python rust-desktop/package.py --target ${{ matrix.target }}
+      - if: runner.os == 'macOS'
+        run: python rust-desktop/package.py --target ${{ matrix.target }}
         env:
           RUSTUP_TOOLCHAIN: stable
+      - name: Build Windows Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          choco install nsis --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PATH += ";$(Join-Path ${env:ProgramFiles(x86)} 'NSIS')"
+          $bootstrapper = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
+          Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $bootstrapper
+          $signature = Get-AuthenticodeSignature $bootstrapper
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') {
+            throw 'WebView2 bootstrapper is missing a valid Microsoft signature'
+          }
+          python rust-desktop/package.py --target ${{ matrix.target }} --webview2-bootstrapper $bootstrapper
+      - name: Install and verify Windows Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem 'outputs/rust-desktop/*-setup.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'Windows Setup artifact is missing' }
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\hongguoTV'
+          $install = Start-Process $setup.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Setup failed ($($install.ExitCode))" }
+          $app = Join-Path $installDir 'Hongguo Rust.exe'
+          $uninstaller = Join-Path $installDir 'Uninstall.exe'
+          if (-not (Test-Path $app) -or -not (Test-Path $uninstaller)) { throw 'Setup payload is missing' }
+          $version = Start-Process $app -ArgumentList '--version' -Wait -PassThru
+          if ($version.ExitCode -ne 0) { throw "Installed app failed ($($version.ExitCode))" }
+          Start-Process $uninstaller -ArgumentList '/S' -Wait
+          if (Test-Path $app) { throw 'Uninstall left the application executable' }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: Hongguo-Rust-${{ matrix.artifact }}

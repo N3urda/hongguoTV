@@ -13,6 +13,7 @@ use crate::catalog::Series;
 pub(crate) const MAX_HISTORY: usize = 200;
 pub(crate) const MAX_FAVORITES: usize = 500;
 pub(crate) const MAX_LATER: usize = 100;
+pub(crate) const DEFAULT_QUALITIES: [u16; 3] = [480, 720, 1080];
 const MAX_DATA_BYTES: u64 = 3 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -35,32 +36,64 @@ pub(crate) enum FrameMode {
     Stretch,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StartPage {
+    #[default]
+    Home,
+    Browse,
+    Rank,
+    Favorites,
+    History,
+    Settings,
+    Search,
+    Feed,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ClockMode {
+    Off,
+    #[default]
+    Controls,
+    Always,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct Preferences {
     pub(crate) theme: Theme,
+    pub(crate) quality: u16,
     pub(crate) speed: u16,
     pub(crate) frame: FrameMode,
     pub(crate) rotation: u16,
     pub(crate) auto_next: bool,
     pub(crate) show_progress: bool,
+    pub(crate) startup: StartPage,
+    pub(crate) feed_autoplay: bool,
+    pub(crate) clock: ClockMode,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             theme: Theme::Dark,
+            quality: 1080,
             speed: 100,
             frame: FrameMode::Fit,
             rotation: 0,
             auto_next: true,
             show_progress: false,
+            startup: StartPage::Home,
+            feed_autoplay: true,
+            clock: ClockMode::Controls,
         }
     }
 }
 
 impl Preferences {
     pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(DEFAULT_QUALITIES.contains(&self.quality), "默认清晰度无效");
         ensure!(
             [75, 100, 125, 150, 175, 200, 300].contains(&self.speed),
             "播放倍速无效"
