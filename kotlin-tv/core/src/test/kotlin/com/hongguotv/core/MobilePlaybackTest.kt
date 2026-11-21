@@ -107,6 +107,64 @@ class MobilePlaybackTest {
         }
     }
 
+    @Test fun bothEmptyModelsRetainResponseDiagnosticsForRecovery() {
+        val requests = mutableListOf<Request>()
+        val repository = repositoryWithModels("", "", requests)
+
+        val error = assertThrows(EmptyPlaybackResponseException::class.java) {
+            repository.streamLadderWithCompatibility("123")
+        }
+
+        assertTrue(error.allPlaybackModelsEmpty)
+        assertEquals("stage=mobile-model", error.detail)
+        val primary = error.suppressed.filterIsInstance<EmptyPlaybackResponseException>().single()
+        assertEquals("mobile-model=200/0B", (primary.suppressed.single() as PlaybackDiagnosticException).detail)
+        val tab = error.suppressed.filterIsInstance<PlaybackDiagnosticException>().single()
+        assertTrue(tab.detail.startsWith("video-tab-empty ") && tab.detail.contains("200/0B"))
+        assertEquals(listOf("POST", "GET"), requests.map { it.method })
+    }
+
+    @Test fun emptyPrimaryDefersBackgroundWorkAcrossRepositoriesUntilRecoveryOrExpiry() {
+        val session = PlaybackDeviceSession { DeviceRegister.Registered("123456", "654321") }
+        var now = 1000L
+        val empty = repositoryWithModels("", "", mutableListOf(), session = session, clock = { now })
+        val healthy = repositoryWithModels(model(), requests = mutableListOf(), session = session, clock = { now })
+
+        assertFalse(healthy.shouldDeferPlaybackPrefetch())
+        assertThrows(EmptyPlaybackResponseException::class.java) { empty.streamLadderWithCompatibility("123") }
+        assertTrue(healthy.shouldDeferPlaybackPrefetch())
+        now += 4_999
+        assertTrue(healthy.shouldDeferPlaybackPrefetch())
+        now++
+        assertFalse(healthy.shouldDeferPlaybackPrefetch())
+
+        assertThrows(EmptyPlaybackResponseException::class.java) {
+            empty.streamLadderWithCompatibility("123", speculative = true)
+        }
+        assertTrue(healthy.shouldDeferPlaybackPrefetch())
+        assertEquals(1, healthy.streamLadderWithCompatibility("123").renditions.size)
+        assertFalse(empty.shouldDeferPlaybackPrefetch())
+    }
+
+    @Test fun tabTimeoutPreservesTheEmptyPrimaryResponse() {
+        val requests = mutableListOf<Request>()
+        val timeout = java.io.InterruptedIOException("deadline reached")
+        val repository = repositoryWithModels("", requests = requests, tabFailure = timeout)
+
+        val error = assertThrows(java.io.InterruptedIOException::class.java) {
+            repository.streamLadderWithCompatibility("123")
+        }
+
+        assertSame(timeout, error)
+        val primary = error.suppressed.filterIsInstance<EmptyPlaybackResponseException>().single()
+        assertFalse(primary.allPlaybackModelsEmpty)
+        assertEquals("stage=mobile-model", primary.detail)
+        assertEquals("mobile-model=200/0B", (primary.suppressed.single() as PlaybackDiagnosticException).detail)
+        val tab = error.suppressed.filterIsInstance<PlaybackDiagnosticException>().single()
+        assertTrue(tab.detail.startsWith("video-tab ") && tab.detail.endsWith("=timeout"))
+        assertEquals(listOf("POST", "GET"), requests.map { it.method })
+    }
+
     @Test fun tabFallbackDoesNotSelectAnotherEpisode() {
         val requests = mutableListOf<Request>()
         val repository = repositoryWithModels("", model(id = "456"), requests)
@@ -115,6 +173,7 @@ class MobilePlaybackTest {
             repository.streamLadderWithCompatibility("123")
         }
         assertEquals("stage=mobile-model", error.detail)
+        assertFalse(error.allPlaybackModelsEmpty)
         assertEquals(listOf("POST", "GET"), requests.map { it.method })
     }
 
@@ -134,17 +193,20 @@ class MobilePlaybackTest {
         tab: String = model(),
         requests: MutableList<Request>,
         retryAfter: String? = null,
+        session: PlaybackDeviceSession = PlaybackDeviceSession { DeviceRegister.Registered("123456", "654321") },
+        clock: () -> Long = System::currentTimeMillis,
+        tabFailure: IOException? = null,
     ): ContentRepository {
         val client = OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
             requests += request
+            if (request.method == "GET" && tabFailure != null) throw tabFailure
             val body = if (request.method == "POST") mobile else tab
             Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
                 .code(200).message("OK").body(body.toResponseBody()).apply {
                     retryAfter?.let { header("Retry-After", it) }
                 }.build()
         }.build()
-        val session = PlaybackDeviceSession { DeviceRegister.Registered("123456", "654321") }
-        return ContentRepository(http = client, playbackSession = session)
+        return ContentRepository(http = client, clock = clock, playbackSession = session)
     }
 }

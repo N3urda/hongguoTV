@@ -160,12 +160,14 @@ class MainActivity : Activity() {
             .build()
     }
     private val preparedNext =
-        PreparedSlot<RemoteVideo>({ android.os.SystemClock.elapsedRealtime() })
+        PreparedSlot<OpenedStream>({ android.os.SystemClock.elapsedRealtime() })
+    private val recentPlaybackSources = PlaybackSourceCache()
     private var prefetchJob: java.util.concurrent.Future<*>? = null
     private var prefetchScope: RequestScope? = null
 
     private data class PendingEpisodePreparation(
         val key: String,
+        val ticket: Long,
         val job: java.util.concurrent.Future<*>,
         val scope: RequestScope,
         val http: okhttp3.OkHttpClient,
@@ -175,7 +177,7 @@ class MainActivity : Activity() {
     private var lastPlaybackFailure = ""
     private var lastPlaybackDetail: String? = null
     private var autoRecoveredPlay = false
-    private var queuedNext: RemoteVideo? = null
+    private var queuedNext: OpenedStream? = null
     private var queuedHttp: okhttp3.OkHttpClient? = null
     private var queuedEpisode = -1
     private var episodeDuration = 0L
@@ -296,6 +298,9 @@ class MainActivity : Activity() {
     private val sleepTimer = SleepTimer { android.os.SystemClock.elapsedRealtime() }
     private var sleepStopped = false
     private var playerView: PlayerView? = null
+    private val bufferingIndicator = PlaybackBufferingIndicator(main) { visible ->
+        playerView?.setShowBuffering(if (visible) PlayerView.SHOW_BUFFERING_ALWAYS else PlayerView.SHOW_BUFFERING_NEVER)
+    }
     private val social by lazy {
         TvSocial(
             this,
@@ -345,6 +350,8 @@ class MainActivity : Activity() {
     private var hideAutoplayOverlay = false
     private var recoveryDisplayActive = false
     private var allowSlowRecovery = false
+    private var waitForEmptyPlaybackModels = false
+    private val slowRecoveryAllowed get() = allowSlowRecovery || waitForEmptyPlaybackModels
     private var playbackPreparationUntil = 0L
     private var recoveryAction: TextView? = null
     private var retryAutoplay = true
@@ -385,7 +392,7 @@ class MainActivity : Activity() {
         retryPending = false
         if (foreground && screen == "player" && playError && autoRecovery) {
             if (!networkAvailable()) scheduleRecovery()
-            else if (!allowSlowRecovery && android.os.SystemClock.elapsedRealtime() >= playbackPreparationUntil) scheduleRecovery()
+            else if (!slowRecoveryAllowed && android.os.SystemClock.elapsedRealtime() >= playbackPreparationUntil) scheduleRecovery()
             else if (recovery.consume()) {
                 android.util.Log.i(
                     "HongguoTV",
@@ -440,8 +447,7 @@ class MainActivity : Activity() {
     private var playbackReady = false
     private var pausedForLifecycle = false
     private lateinit var hud: LinearLayout
-    private var persistentProgress: LinearLayout? = null
-    private var persistentTime: TextView? = null
+    private var seekHint: TextView? = null
     private var persistentBar: ProgressBar? = null
     private lateinit var playbackText: TextView
     private lateinit var progressBar: ProgressBar
@@ -1131,6 +1137,7 @@ class MainActivity : Activity() {
                         library.maxQuality,
                         account = cloudAccount.recommendationCredentials(),
                         startupCache = cloudAccount.recommendationStartupCache(),
+                        recentSources = recentPlaybackSources,
                     ),
                     Media3TrialPlayback(this, library.playbackSpeed, library.frameMode),
                     autoPreview = library.homeAutoplay,
@@ -2562,6 +2569,11 @@ class MainActivity : Activity() {
         fromHome: Boolean = false,
         fromPhone: Boolean = false,
     ) {
+        val trial = if (fromHome && resume) homeFeed?.currentPlayback(series.id) else null
+        val trialEpisodeId = trial?.episodeId
+        val trialSource = trial?.video?.preparedSource()
+        val trialCapturedAt = android.os.SystemClock.elapsedRealtime()
+        val trialMaxQuality = trialSource?.let { library.maxQuality }
         if (!fromRelated) detailTrail.clear()
         relatedSection = null
         val accountScope = cloudAccount.historyScope
@@ -2607,8 +2619,21 @@ class MainActivity : Activity() {
                     )
                 episodeIndex = target.index
                 group = episodeIndex / 20
-                if (resume) playEpisode(target.index, target.position, autoplay = detailAutoplay)
-                else showDetail(false)
+                if (!resume) {
+                    showDetail(false)
+                    return@work
+                }
+                val episodeId = result.episodes.getOrNull(target.index)
+                if (trial != null && trialSource != null && episodeId != null && episodeId == trialEpisodeId &&
+                    trialMaxQuality == library.maxQuality &&
+                    android.os.SystemClock.elapsedRealtime() - trialCapturedAt in 0..15_000
+                ) {
+                    cancelPrefetch()
+                    val key = "$episodeId:$trialMaxQuality"
+                    val opened = OpenedStream(trialSource.open(repository.http), trial.rendition, trial.tiers, trial.track)
+                    preparedNext.complete(preparedNext.begin(key), key, opened)
+                }
+                playEpisode(target.index, target.position, autoplay = detailAutoplay)
             },
             { problem ->
                 error(body, problem) {
@@ -2935,11 +2960,11 @@ class MainActivity : Activity() {
             return
         }
         val prepareKey = "${data.episodes[selectedIndex]}:${library.maxQuality}"
-        // 切到正在准备的下一集时接管原任务，不能先 take/clear 再取消，否则会重新请求同一集。
+        // Retain a nearly completed prefetch while keeping most of the foreground deadline available.
         val pending =
             if (position == 0L && !recovering) claimPendingPreparation(prepareKey) else null
         val prefetched =
-            if (position == 0L && !recovering && pending == null) preparedNext.take(prepareKey)
+            if (!recovering && pending == null) preparedNext.take(prepareKey)
             else null
         val claimedHttp =
             if (prefetched != null) prefetchHttp.also { prefetchHttp = null } else null
@@ -2967,18 +2992,20 @@ class MainActivity : Activity() {
             video = null
             closeTransport(playbackHttp)
             playbackHttp = null
+            hideSeekHint()
             main.removeCallbacks(hideHud)
             main.removeCallbacks(seekRunnable)
             pendingSeek = null
         } else releasePlayer(keepPrepared = pending != null)
         artwork.cancelPage(clearMemory = true)
         playbackHttp = claimedHttp
-        video = prefetched
+        video = prefetched?.video
         var firstReady = true
         var firstFrame = true
         if (!recovering) {
             recovery.reset()
             allowSlowRecovery = false
+            waitForEmptyPlaybackModels = false
             playbackPreparationUntil = android.os.SystemClock.elapsedRealtime() + 20_000
             autoRecoveredPlay = false
         }
@@ -3022,23 +3049,26 @@ class MainActivity : Activity() {
                     isFocusable = false
                     setKeepContentOnPlayerReset(true)
                     setShutterBackgroundColor(Color.BLACK)
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                 }
             playerView = view
             root.addView(view, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
             view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyVideoRotation() }
             view.post { if (playerView === view) applyVideoRotation() }
-            persistentTime = text("", 12f, Color.WHITE)
-            persistentBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000; progressTintList = android.content.res.ColorStateList.valueOf(accent) }
-            persistentProgress = column().apply {
+            persistentBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = 1000
+                progressTintList = android.content.res.ColorStateList.valueOf(accent)
                 isFocusable = false
-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                setPadding(dp(12), dp(4), dp(12), dp(6))
-                setBackgroundColor(Color.argb(160, 0, 0, 0))
-                addView(persistentTime); addView(persistentBar, lp(-1, dp(3)))
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 visibility = View.GONE
             }
-            root.addView(persistentProgress, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+            root.addView(persistentBar, FrameLayout.LayoutParams(-1, dp(3), Gravity.BOTTOM))
+            seekHint = text("", 18f, Color.WHITE).apply {
+                setPadding(dp(10), dp(4), dp(10), dp(4))
+                background = rounded(Color.argb(150, 11, 15, 21))
+                visibility = View.GONE
+            }
+            root.addView(seekHint, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
             social.attach(root)
             playbackClock = TextClock(this).apply {
                 format12Hour = "HH:mm"
@@ -3129,7 +3159,7 @@ class MainActivity : Activity() {
         var usedPending = false
         work(
             {
-                val remaining = if (allowSlowRecovery) 20_000L else
+                val remaining = if (slowRecoveryAllowed) 20_000L else
                     playbackPreparationUntil - android.os.SystemClock.elapsedRealtime()
                 if (remaining <= 0) throw java.net.SocketTimeoutException("播放准备超时")
                 RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(remaining)) {
@@ -3138,13 +3168,14 @@ class MainActivity : Activity() {
                             ?: pending?.let {
                                 awaitPreparedEpisode(it, remaining).also { ready -> usedPending = ready != null }
                             }
-                    prepared?.let { OpenedStream(it, null, emptyList(), it.trackInfo()) }
+                    prepared
                         ?: openStream(
                             repository.http,
                             repository,
                             requestedId,
                             maxQuality,
                             CodecCapabilities::supports,
+                            recentPlaybackSources,
                             metadataAhead = data.episodes.drop(selectedIndex + 1).take(2),
                         ) {
                             it == null || CodecCapabilities.supports(it)
@@ -3159,11 +3190,7 @@ class MainActivity : Activity() {
                 }
                 val remote = opened.video
                 video = remote
-                quality = playedQualityLabel(opened, maxQuality)
-                attemptedQuality = opened.rendition?.quality ?: 0
-                currentTrack = opened.track
-                currentRendition = opened.rendition
-                currentTiers = opened.tiers
+                applyOpenedStream(opened, maxQuality)
                 val p =
                     ensurePlayer()
                 p.setPlaybackSpeed(library.playbackSpeed)
@@ -3303,41 +3330,44 @@ class MainActivity : Activity() {
     private fun claimPendingPreparation(key: String): PendingEpisodePreparation? {
         if (prefetchedFor != key || preparedNext.isFresh(key)) return null
         val job = prefetchJob?.takeIf { !it.isDone } ?: return null
+        val ticket = preparedNext.ticketFor(key) ?: return null
         val scope = prefetchScope ?: return null
         val http = prefetchHttp ?: return null
         prefetchJob = null
         prefetchScope = null
         prefetchHttp = null
         prefetchedFor = ""
-        return PendingEpisodePreparation(key, job, scope, http)
+        return PendingEpisodePreparation(key, ticket, job, scope, http)
     }
 
-    private fun awaitPreparedEpisode(pending: PendingEpisodePreparation, remainingMillis: Long): RemoteVideo? {
+    private fun awaitPreparedEpisode(pending: PendingEpisodePreparation, remainingMillis: Long): OpenedStream? {
         try {
-            pending.job.get(remainingMillis.coerceAtLeast(1), java.util.concurrent.TimeUnit.MILLISECONDS)
+            pending.job.get(minOf(400L, remainingMillis), java.util.concurrent.TimeUnit.MILLISECONDS)
         } catch (_: java.util.concurrent.TimeoutException) {
-            pending.scope.cancel()
-            pending.job.cancel(true)
-            closeTransport(pending.http)
-            throw java.net.SocketTimeoutException("预加载等待超时")
+            cancelPreparedWork(pending)
+            return null
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             throw java.io.InterruptedIOException("播放准备已取消")
         } catch (_: java.util.concurrent.ExecutionException) {
-            // 预加载失败只影响本次投机任务；正式播放仍可正常重新获取一次。
+            // A failed background request leaves the foreground path available.
         } catch (_: java.util.concurrent.CancellationException) {
-            throw java.io.InterruptedIOException("播放准备已取消")
+            // Check the foreground scope below before using the network again.
         }
-        if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放准备已取消")
-        return preparedNext.take(pending.key)
+        RequestScope.ensureActive()
+        return preparedNext.take(pending.key, pending.ticket)
+    }
+
+    private fun cancelPreparedWork(pending: PendingEpisodePreparation) {
+        preparedNext.take(pending.key, pending.ticket)?.close()
+        pending.scope.cancel()
+        pending.job.cancel(true)
     }
 
     private fun cancelPromotedPreparation() {
         val pending = promotedPreparation ?: return
         promotedPreparation = null
-        pending.scope.cancel()
-        pending.job.cancel(true)
-        preparedNext.clear()
+        cancelPreparedWork(pending)
         closeTransport(pending.http)
     }
 
@@ -3401,6 +3431,7 @@ class MainActivity : Activity() {
         if (
             prefetchAttempts >= 3 ||
                 (prefetchAttempts > 0 && now - prefetchAttemptAt < 15_000) ||
+                repository.shouldDeferPlaybackPrefetch() ||
                 connectivity.isActiveNetworkMetered ||
                 !networkAvailable()
         )
@@ -3416,25 +3447,24 @@ class MainActivity : Activity() {
         prefetchScope = scope
         prefetchJob =
             prefetchWorker.submit {
-                var remote: RemoteVideo? = null
                 try {
                     val prepared =
                         scope.run {
-                            val opened =
-                                // 播放地址复用当前 Repository 的设备身份和会话；仅视频传输独立取消。
+                            RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(5)) {
                                 openStream(
                                     http,
                                     repository,
                                     id,
                                     quality,
                                     CodecCapabilities::supports,
+                                    recentPlaybackSources,
                                     initialBytes = 32 * 1024,
                                     metadataAhead = metadataAhead,
                                     speculative = true,
                                 ) {
                                     it == null || CodecCapabilities.supports(it)
                                 } ?: throw java.io.IOException("没有电视可播放的清晰度")
-                            opened.video.also { remote = it }
+                            }
                         }
                     if (preparedNext.complete(ticket, key, prepared)) {
                         android.util.Log.i(
@@ -3444,7 +3474,6 @@ class MainActivity : Activity() {
                         main.post { queuePreparedEpisode(key) }
                     }
                 } catch (problem: Exception) {
-                    remote?.close()
                     android.util.Log.i(
                         "HongguoTV",
                         "Next episode preparation unavailable: ${problem.javaClass.simpleName}",
@@ -3488,12 +3517,12 @@ class MainActivity : Activity() {
                 p.currentMediaItem?.mediaId != data.episodes[episodeIndex]
         )
             return
-        val remote = preparedNext.take(key) ?: return
-        queuedNext = remote
+        val prepared = preparedNext.take(key) ?: return
+        queuedNext = prepared
         queuedHttp = prefetchHttp
         prefetchHttp = null
         queuedEpisode = next
-        p.addMediaSource(episodeSource(remote, data.episodes[next]))
+        p.addMediaSource(episodeSource(prepared.video, data.episodes[next]))
         android.util.Log.i("HongguoTV", "Next episode added to playback queue target=${next+1}")
     }
 
@@ -3544,7 +3573,7 @@ class MainActivity : Activity() {
         val previous = video
         val previousHttp = playbackHttp
         social.reset()
-        video = next
+        video = next.video
         playbackHttp = queuedHttp
         if (completed) {
             automaticEpisodeFrom = episodeIndex
@@ -3558,7 +3587,9 @@ class MainActivity : Activity() {
         if (p.currentMediaItemIndex > 0) p.removeMediaItems(0, p.currentMediaItemIndex)
         previous?.close()
         closeTransport(previousHttp)
-        quality = next.info.quality
+        hideSeekHint()
+        applyOpenedStream(next, library.maxQuality)
+        autoDowngrades = 0
         pendingSeek = null
         startPosition = 0
         playbackReady = p.playbackState == Player.STATE_READY
@@ -3606,7 +3637,7 @@ class MainActivity : Activity() {
                 autoplay = retryAutoplay,
                 slow = recovery.slow,
                 attempt = recovery.attempts + 1,
-                total = if (allowSlowRecovery) recovery.total else RecoveryBudget.FAST_ATTEMPTS,
+                total = if (slowRecoveryAllowed) recovery.total else recovery.fastAttempts,
                 remainingMillis = remainingMillis,
                 positionText = formatTime(retryPosition),
             )
@@ -3614,7 +3645,7 @@ class MainActivity : Activity() {
 
     private fun scheduleRecovery() {
         if (!foreground || !playError || !autoRecovery || retryPending) return
-        if (!recovery.remaining || (!allowSlowRecovery &&
+        if (!recovery.remaining || (!slowRecoveryAllowed &&
             (recovery.slow || android.os.SystemClock.elapsedRealtime() >= playbackPreparationUntil))) {
             autoRecovery = false
             playbackText.text = (if (recovery.remaining)
@@ -3632,7 +3663,7 @@ class MainActivity : Activity() {
             return
         }
         val plannedDelay = recovery.delayMillis ?: return
-        val delay = if (allowSlowRecovery) plannedDelay else minOf(plannedDelay,
+        val delay = if (slowRecoveryAllowed) plannedDelay else minOf(plannedDelay,
             (playbackPreparationUntil - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0))
         recoveryScheduledAt = android.os.SystemClock.uptimeMillis()
         recoveryDelayMillis = delay
@@ -3719,6 +3750,14 @@ class MainActivity : Activity() {
         return if (ideal != null && rendition.quality < ideal) label + "（自动降清）" else label
     }
 
+    private fun applyOpenedStream(opened: OpenedStream, maxQuality: Int) {
+        quality = playedQualityLabel(opened, maxQuality)
+        attemptedQuality = opened.rendition?.quality ?: 0
+        currentTrack = opened.track
+        currentRendition = opened.rendition
+        currentTiers = opened.tiers
+    }
+
     /** 懒建播放器（正式路径与伴机路径共用）；已存在则原样返回。 */
     private fun ensurePlayer(): ExoPlayer =
         player
@@ -3739,6 +3778,7 @@ class MainActivity : Activity() {
                     playbackRenderers(this)
                 ExoPlayer.Builder(this, renderers).setLoadControl(load).build().also {
                     player = it
+                    it.addListener(bufferingIndicator)
                     playerView?.player = it
                     it.setAudioAttributes(
                         AudioAttributes.Builder()
@@ -4113,6 +4153,7 @@ class MainActivity : Activity() {
             allowSlowRecovery = false
             recovery.reset()
         }
+        waitForEmptyPlaybackModels = hasEmptyPlaybackModels(problem)
         lastPlaybackFailure = playbackFailureSummary(problem)
         lastPlaybackDetail = diagnosticDetail(problem)
         retryPosition = currentPosition().coerceAtLeast(0)
@@ -4243,6 +4284,7 @@ class MainActivity : Activity() {
         waitingForFirstFrame = false
         recoveryDisplayActive = false
         allowSlowRecovery = false
+        waitForEmptyPlaybackModels = false
         if (!panel) {
             controls.removeAllViews()
             controls.visibility = View.GONE
@@ -4280,6 +4322,7 @@ class MainActivity : Activity() {
 
     private fun showHud() {
         if (screen != "player") return
+        hideSeekHint()
         hideAutoplayOverlay = false
         hud.visibility = View.VISIBLE
         updateClock()
@@ -4500,15 +4543,20 @@ class MainActivity : Activity() {
         }, onBack = if (anchor.tag == "playback-settings") ({ showPlaybackSettings(anchor) }) else null)
     }
     private fun updatePersistentProgress() {
-        if (persistentProgress == null || !library.isLoaded) return
-        val visible=PlaybackProgressDisplay.visible(library.alwaysShowProgress,screen=="player",hud.visibility==View.VISIBLE,playError)
-        persistentProgress?.visibility=if(visible) View.VISIBLE else View.GONE
-        if(!visible) return
-        val duration=player?.duration?.coerceAtLeast(0) ?: 0L
-        val position=currentPosition().coerceAtLeast(0)
-        persistentTime?.text=if(playbackReady) "${formatTime(position)} / ${if(duration>0) formatTime(duration) else "--:--"}" else "正在准备…"
-        persistentBar?.progress=PlaybackProgressDisplay.value(position,duration)
+        val bar = persistentBar ?: return
+        if (!library.isLoaded) return
+        val visible = PlaybackProgressDisplay.visible(library.alwaysShowProgress, screen == "player", hud.visibility == View.VISIBLE, playError)
+        bar.visibility = if (visible) View.VISIBLE else View.GONE
+        if (visible) bar.progress = PlaybackProgressDisplay.value(currentPosition(), player?.duration ?: 0L)
     }
+
+    private fun hideSeekHint() {
+        seekHint?.apply {
+            animate().cancel()
+            visibility = View.GONE
+        }
+    }
+
     private fun frameResizeMode() =
         when (library.frameMode) {
             VideoFrameMode.FIT -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -4538,15 +4586,27 @@ class MainActivity : Activity() {
         val duration = p.duration
         if (duration <= 0) return
         val step = if (repeat > 4) 30000 else 10000
-        pendingSeek =
+        val target =
             ((pendingSeek ?: p.currentPosition) + direction * step).coerceIn(
                 0,
                 (duration - 500).coerceAtLeast(0),
             )
         main.removeCallbacks(seekRunnable)
+        pendingSeek = target
         main.postDelayed(seekRunnable, 250)
-        updatePlaybackText()
-        showHud()
+        if (hud.visibility == View.VISIBLE) {
+            updatePlaybackText()
+            return
+        }
+        updatePersistentProgress()
+        seekHint?.apply {
+            animate().cancel()
+            alpha = 1f
+            text = formatTime(target)
+            visibility = View.VISIBLE
+            animate().alpha(0f).setStartDelay(900).setDuration(180)
+                .withEndAction { visibility = View.GONE }.start()
+        }
     }
 
     private fun showPanel() {
@@ -4843,6 +4903,7 @@ class MainActivity : Activity() {
         episodePanel = null
         oldPanel?.dismiss()
         foreground = wasForeground
+        hideSeekHint()
         main.removeCallbacks(hideHud)
         main.removeCallbacks(seekRunnable)
         pendingSeek = null
@@ -4850,10 +4911,11 @@ class MainActivity : Activity() {
         playerListener = null
         video?.close()
         video = null
+        player?.removeListener(bufferingIndicator)
+        bufferingIndicator.clear()
         playerView?.player = null
         playerView = null
-        persistentProgress = null
-        persistentTime = null
+        seekHint = null
         persistentBar = null
         player?.release()
         player = null

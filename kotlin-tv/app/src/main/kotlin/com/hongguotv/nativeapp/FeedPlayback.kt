@@ -23,6 +23,8 @@ internal data class TrialClip(
     val track: VideoTracks.Track? = null,
     // 实际试播集的集内序号（1 起）：bytevc2 锁定集后移换集后 >1，界面据此改文案。
     val trialEpisodeIndex: Int = 1,
+    val rendition: Rendition? = null,
+    val tiers: List<Rendition> = emptyList(),
 ) : Closeable {
     val episodeId
         get() = detail.episodes.first()
@@ -65,6 +67,8 @@ internal interface FeedBackend : Closeable {
 
     fun preload(series: Series): TrialClip = prefetch(detail(series))
 
+    fun shouldDeferPlaybackPrefetch(): Boolean = false
+
     fun prefetchEpisode(series: Series, index: Int): TrialClip = episode(series, index)
 
     /** 首页展示过一部作品时通知后端，供下次冷启动跳过重复内容。 */
@@ -88,6 +92,7 @@ internal class PublicFeedBackend(
     account: AccountCredentials? = null,
     private val startupCache: FeedStartupCache? = null,
     private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared,
+    private val recentSources: PlaybackSourceCache = PlaybackSourceCache(),
 ) : FeedBackend {
     companion object {
         // Reuse idle public TLS connections across homepage visits. Dispatchers remain per backend,
@@ -106,12 +111,17 @@ internal class PublicFeedBackend(
                 .digest(it.cookie.toByteArray(Charsets.UTF_8))
                 .joinToString("") { b -> "%02x".format(b.toInt() and 255) }
         } ?: "guest"
-    private val trialHints = linkedMapOf<String, TrialHint>()
+    private data class CachedTrialHint(val hint: TrialHint, val verifiedAt: Long? = null)
+    private val trialHints = linkedMapOf<String, CachedTrialHint>()
     private val startupPages = mutableMapOf<String, CatalogPage>()
 
     private fun rememberHints(page: CatalogPage): CatalogPage {
         synchronized(trialHints) {
-            trialHints.putAll(page.trialHints)
+            for ((id, hint) in page.trialHints) {
+                val previous = trialHints[id]
+                val verifiedAt = previous?.verifiedAt?.takeIf { previous.hint.episodeId == hint.episodeId }
+                trialHints[id] = CachedTrialHint(hint, verifiedAt)
+            }
             while (trialHints.size > 72) trialHints.remove(trialHints.keys.first())
         }
         return page
@@ -213,6 +223,7 @@ internal class PublicFeedBackend(
             id,
             quality,
             CodecCapabilities::supports,
+            recentSources,
             initialBytes = 32 * 1024,
             speculative = speculative,
         ) {
@@ -245,80 +256,63 @@ internal class PublicFeedBackend(
         val found =
             firstPlayableEpisode(detail.episodes, 0) { open(it) }
                 ?: throw java.io.IOException("该剧暂无电视可解码的清晰度")
-        return TrialClip(
-            detail,
-            found.first.video,
-            track = found.first.track,
-            trialEpisodeIndex = found.second + 1,
-        )
+        return found.first.toTrialClip(detail, detail.episodes.size, found.second + 1)
     }
+
+    private fun OpenedStream.toTrialClip(detail: Detail, count: Int, index: Int) =
+        TrialClip(detail, video, count, track, index, rendition, tiers)
 
     override fun trial(series: Series): TrialClip = trial(series, speculative = false)
 
-    private fun trial(series: Series, speculative: Boolean): TrialClip {
-        val hint =
-            synchronized(trialHints) { trialHints[series.id] }
-                ?: run {
-                    val detail = detail(series)
-                    val first =
-                        detail.episodes.firstOrNull() ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
-                    val verified = TrialHint(first, detail.episodes.size)
-                    val updates =
-                        synchronized(trialHints) {
-                            trialHints[series.id] = verified
-                            startupPages
-                                .filterValues { page -> page.items.any { it.id == series.id } }
-                                .map { (key, page) ->
-                                    val updated =
-                                        page.copy(
-                                            trialHints = page.trialHints + (series.id to verified)
-                                        )
-                                    startupPages[key] = updated
-                                    key to updated
-                                }
-                        }
-                    updates.forEach { (source, page) ->
-                        startupCache?.save(cacheIdentity, source, page)
-                    }
-                    verified
+    private fun verifyTrialHint(series: Series): CachedTrialHint? {
+        val full = detail(series)
+        val first = full.episodes.firstOrNull() ?: return null
+        val hint = TrialHint(first, full.episodes.size)
+        val verified = CachedTrialHint(hint, android.os.SystemClock.elapsedRealtime())
+        val updates = synchronized(trialHints) {
+            trialHints[series.id] = verified
+            while (trialHints.size > 72) trialHints.remove(trialHints.keys.first())
+            startupPages.filterValues { page -> page.items.any { it.id == series.id } }
+                .map { (key, page) ->
+                    val updated = page.copy(trialHints = page.trialHints + (series.id to hint))
+                    startupPages[key] = updated
+                    key to updated
                 }
+        }
+        updates.forEach { (source, page) -> startupCache?.save(cacheIdentity, source, page) }
+        return verified
+    }
+
+    private fun trial(series: Series, speculative: Boolean): TrialClip {
+        val cached = synchronized(trialHints) { trialHints[series.id] }
+            ?: verifyTrialHint(series)
+            ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
+        val hint = cached.hint
         val openedTrial = try {
             openTrialEpisode(series, hint, speculative)
         } catch (problem: EmptyPlaybackResponseException) {
-            // Recommended/persisted first-episode hints are not authoritative. Repeating an
-            // obsolete id cannot recover; use the same detail lookup as full-screen playback.
-            if (speculative) throw problem
-            val full = detail(series)
-            val first = full.episodes.firstOrNull() ?: throw problem
-            if (first == hint.episodeId) throw problem
-            val verified = TrialHint(first, full.episodes.size)
-            val updates = synchronized(trialHints) {
-                trialHints[series.id] = verified
-                startupPages.filterValues { page -> page.items.any { it.id == series.id } }
-                    .map { (source, page) ->
-                        val updated = page.copy(trialHints = page.trialHints + (series.id to verified))
-                        startupPages[source] = updated
-                        source to updated
-                    }
-            }
-            updates.forEach { (source, page) -> startupCache?.save(cacheIdentity, source, page) }
+            // A catalog hint can be obsolete. Verify it once within the fast recovery window.
+            val now = android.os.SystemClock.elapsedRealtime()
+            val recentlyVerified = cached.verifiedAt?.let { now - it in 0 until 20_000L } == true
+            if (speculative || recentlyVerified) throw problem
+            val verified = verifyTrialHint(series)?.hint ?: throw problem
+            if (verified.episodeId == hint.episodeId) throw problem
             openTrialEpisode(series, verified, false)
         }
-        return TrialClip(
+        return openedTrial.opened.toTrialClip(
             Detail(series, listOf(openedTrial.episodeId)),
-            openedTrial.opened.video,
-            synchronized(trialHints) { trialHints[series.id] }?.episodeCount ?: hint.episodeCount,
-            openedTrial.opened.track,
+            synchronized(trialHints) { trialHints[series.id] }?.hint?.episodeCount ?: hint.episodeCount,
             openedTrial.displayIndex,
         )
     }
+
+    override fun shouldDeferPlaybackPrefetch(): Boolean = repository.shouldDeferPlaybackPrefetch()
 
     override fun episode(series: Series, index: Int): TrialClip {
         val full = detail(series)
         val id = full.episodes.getOrNull(index) ?: throw java.io.IOException("该集暂不可用")
         val opened = open(id)
-        return TrialClip(full.copy(episodes = listOf(id)), opened.video,
-            full.episodes.size, opened.track, index + 1)
+        return opened.toTrialClip(full.copy(episodes = listOf(id)), full.episodes.size, index + 1)
     }
 
     override fun prefetchEpisode(series: Series, index: Int): TrialClip {
@@ -327,8 +321,7 @@ internal class PublicFeedBackend(
         val opened = open(id, speculative = true)
         try {
             opened.video.warm(512 * 1024)
-            return TrialClip(full.copy(episodes = listOf(id)), opened.video,
-                full.episodes.size, opened.track, index + 1)
+            return opened.toTrialClip(full.copy(episodes = listOf(id)), full.episodes.size, index + 1)
         } catch (error: Throwable) { opened.video.close(); throw error }
     }
 

@@ -122,7 +122,7 @@ class PlaybackQueueTest {
             } as ExoPlayer
     }
 
-    private fun fixture(test: (MainActivity, QueuePlayer, Library, RemoteVideo) -> Unit) {
+    private fun fixture(test: (MainActivity, QueuePlayer, Library, OpenedStream) -> Unit) {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()
         try {
@@ -158,11 +158,14 @@ class PlaybackQueueTest {
             root.layout(0, 0, 960, 540)
             val remote =
                 RemoteVideo(OkHttpClient(), StreamInfo("https://example.com/next", null, "720P"))
+            val rendition = com.hongguotv.core.Rendition(720, "h264", 720, 1280, remote.info.url, null)
+            val lower = rendition.copy(quality = 480, width = 480, height = 854)
+            val opened = OpenedStream(remote, rendition, listOf(rendition, lower), null)
             @Suppress("UNCHECKED_CAST")
-            val slot = get(activity, "preparedNext") as PreparedSlot<RemoteVideo>
+            val slot = get(activity, "preparedNext") as PreparedSlot<OpenedStream>
             val key = "102:${library.maxQuality}"
-            slot.complete(slot.begin(key), key, remote)
-            test(activity, fake, library, remote)
+            slot.complete(slot.begin(key), key, opened)
+            test(activity, fake, library, opened)
         } finally {
             // No formal playback tick/network is started by these tests.
             set(activity, "foreground", false)
@@ -201,7 +204,9 @@ class PlaybackQueueTest {
 
     @Test
     fun automaticTransitionReusesPlayerAndUpdatesEpisodeProgress() =
-        fixture { activity, fake, library, remote ->
+        fixture { activity, fake, library, opened ->
+            set(activity, "attemptedQuality", 1080)
+            set(activity, "autoDowngrades", 2)
             invoke(activity, "queuePreparedEpisode", "102:${library.maxQuality}")
             assertEquals(listOf("101", "102"), fake.items.map { it.mediaId })
             fake.index = 1
@@ -212,7 +217,11 @@ class PlaybackQueueTest {
             activity.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_MENU))
             assertEquals(android.view.View.VISIBLE, (get(activity, "hud") as LinearLayout).visibility)
             assertEquals(1, get(activity, "episodeIndex"))
-            assertSame(remote, get(activity, "video"))
+            assertSame(opened.video, get(activity, "video"))
+            assertSame(opened.rendition, get(activity, "currentRendition"))
+            assertEquals(opened.tiers, get(activity, "currentTiers"))
+            assertEquals(720, get(activity, "attemptedQuality"))
+            assertEquals(0, get(activity, "autoDowngrades"))
             assertNull(get(activity, "queuedNext"))
             assertEquals(listOf("102"), fake.items.map { it.mediaId })
             assertEquals("102", library.progress("1")?.episodeId)
@@ -446,12 +455,12 @@ class PlaybackQueueTest {
 
     @Test
     fun cancellationDropsOnlyQueuedSourceAndClosesItsResource() =
-        fixture { activity, fake, library, remote ->
+        fixture { activity, fake, library, opened ->
             invoke(activity, "queuePreparedEpisode", "102:${library.maxQuality}")
             invoke(activity, "cancelPrefetch")
             assertEquals(listOf("101"), fake.items.map { it.mediaId })
             assertNull(get(activity, "queuedNext"))
-            assertThrows(java.io.IOException::class.java) { remote.read(0, 1) }
+            assertThrows(java.io.IOException::class.java) { opened.video.read(0, 1) }
             assertFalse(fake.calls.contains("stop"))
         }
 
@@ -467,12 +476,12 @@ class PlaybackQueueTest {
 
     @Test
     fun switchingToAnInFlightNextEpisodeDoesNotCancelAndRestartItsPreparation() =
-        fixture { activity, fake, library, remote ->
+        fixture { activity, fake, library, opened ->
             val metadataRequests = blockDuplicateMetadataRequests(activity)
             @Suppress("UNCHECKED_CAST")
-            val slot = get(activity, "preparedNext") as PreparedSlot<RemoteVideo>
+            val slot = get(activity, "preparedNext") as PreparedSlot<OpenedStream>
             val key = "102:${library.maxQuality}"
-            assertSame(remote, slot.take(key))
+            assertSame(opened, slot.take(key))
             val ticket = slot.begin(key)
             val started = CountDownLatch(1)
             val finish = CountDownLatch(1)
@@ -483,7 +492,7 @@ class PlaybackQueueTest {
                 worker.submit {
                     started.countDown()
                     finish.await(5, TimeUnit.SECONDS)
-                    slot.complete(ticket, key, remote)
+                    slot.complete(ticket, key, opened)
                 }
             try {
                 assertTrue(started.await(5, TimeUnit.SECONDS))
@@ -506,7 +515,8 @@ class PlaybackQueueTest {
                 ShadowLooper.idleMainLooper()
                 invoke(activity, "playbackFirstFrame")
                 assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
-                assertSame(remote, get(activity, "video"))
+                assertSame(opened.video, get(activity, "video"))
+                assertSame(opened.rendition, get(activity, "currentRendition"))
                 assertSame(http, get(activity, "playbackHttp"))
                 assertEquals(1, get(activity, "episodeIndex"))
                 assertEquals("102", fake.items.single().mediaId)
@@ -517,13 +527,42 @@ class PlaybackQueueTest {
         }
 
     @Test
-    fun manualSwitchKeepsOverlayHiddenDuringPreparationAndFirstFrame() =
-        fixture { activity, fake, library, remote ->
+    fun aSlowPrefetchLeavesTimeForForegroundPlayback() =
+        fixture { activity, _, library, opened ->
             val metadataRequests = blockDuplicateMetadataRequests(activity)
             @Suppress("UNCHECKED_CAST")
-            val slot = get(activity, "preparedNext") as PreparedSlot<RemoteVideo>
+            val slot = get(activity, "preparedNext") as PreparedSlot<OpenedStream>
             val key = "102:${library.maxQuality}"
-            assertSame(remote, slot.take(key))
+            assertSame(opened, slot.take(key))
+            val ticket = slot.begin(key)
+            val unfinished = java.util.concurrent.CompletableFuture<Unit>()
+            set(activity, "prefetchedFor", key)
+            set(activity, "prefetchJob", unfinished)
+            set(activity, "prefetchScope", RequestScope())
+            set(activity, "prefetchHttp", invoke(activity, "newPrefetchTransport"))
+            set(activity, "playerView", PlayerView(activity))
+            set(activity, "hud", LinearLayout(activity))
+            set(activity, "playbackText", TextView(activity))
+            set(activity, "progressBar", android.widget.ProgressBar(activity))
+
+            invoke(activity, "playEpisode", 1, 0L, true, false, false, false)
+            (get(activity, "workJob") as Future<*>).get(3, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+
+            assertTrue(unfinished.isCancelled)
+            assertEquals(1, metadataRequests.get())
+            assertFalse(slot.complete(ticket, key, opened))
+            assertThrows(java.io.IOException::class.java) { opened.video.read(0, 1) }
+        }
+
+    @Test
+    fun manualSwitchKeepsOverlayHiddenDuringPreparationAndFirstFrame() =
+        fixture { activity, fake, library, opened ->
+            val metadataRequests = blockDuplicateMetadataRequests(activity)
+            @Suppress("UNCHECKED_CAST")
+            val slot = get(activity, "preparedNext") as PreparedSlot<OpenedStream>
+            val key = "102:${library.maxQuality}"
+            assertSame(opened, slot.take(key))
             val ticket = slot.begin(key)
             val started = CountDownLatch(1)
             val finish = CountDownLatch(1)
@@ -534,7 +573,7 @@ class PlaybackQueueTest {
                 worker.submit {
                     started.countDown()
                     finish.await(5, TimeUnit.SECONDS)
-                    slot.complete(ticket, key, remote)
+                    slot.complete(ticket, key, opened)
                 }
             try {
                 assertTrue(started.await(5, TimeUnit.SECONDS))
@@ -557,7 +596,7 @@ class PlaybackQueueTest {
                 ShadowLooper.idleMainLooper()
                 invoke(activity, "playbackFirstFrame")
                 assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
-                assertSame(remote, get(activity, "video"))
+                assertSame(opened.video, get(activity, "video"))
                 assertSame(http, get(activity, "playbackHttp"))
                 assertEquals(1, get(activity, "episodeIndex"))
                 assertEquals("102", fake.items.single().mediaId)
@@ -607,13 +646,30 @@ class PlaybackQueueTest {
     }
 
     @Test
+    fun bothEmptyModelsKeepAutomaticRecoveryAfterTheFastAttempts() = fixture { activity, _, _, _ ->
+        val status = TextView(activity)
+        set(activity, "hud", LinearLayout(activity))
+        set(activity, "playbackText", status)
+        set(activity, "progressBar", android.widget.ProgressBar(activity))
+        set(activity, "waitingForFirstFrame", true)
+        val budget = get(activity, "recovery") as RecoveryBudget
+        repeat(budget.fastAttempts) { budget.consume() }
+
+        invoke(activity, "playerFailure", EmptyPlaybackResponseException("stage=mobile-model", allPlaybackModelsEmpty = true))
+
+        assertTrue(get(activity, "autoRecovery") as Boolean)
+        assertTrue(get(activity, "waitForEmptyPlaybackModels") as Boolean)
+        assertFalse(status.text.contains("快速恢复暂未成功"))
+    }
+
+    @Test
     fun leavingWhileWaitingCancelsPromotedRequestAndClosesALateResult() =
-        fixture { activity, _, library, remote ->
+        fixture { activity, _, library, opened ->
             val metadataRequests = blockDuplicateMetadataRequests(activity)
             @Suppress("UNCHECKED_CAST")
-            val slot = get(activity, "preparedNext") as PreparedSlot<RemoteVideo>
+            val slot = get(activity, "preparedNext") as PreparedSlot<OpenedStream>
             val key = "102:${library.maxQuality}"
-            assertSame(remote, slot.take(key))
+            assertSame(opened, slot.take(key))
             val ticket = slot.begin(key)
             val started = CountDownLatch(1)
             val finish = CountDownLatch(1)
@@ -629,7 +685,7 @@ class PlaybackQueueTest {
                         // 模拟取消时已经在返回途中的结果，确保迟到资源也会被关闭。
                         finish.await(5, TimeUnit.SECONDS)
                     }
-                    slot.complete(ticket, key, remote)
+                    slot.complete(ticket, key, opened)
                 }
             try {
                 assertTrue(started.await(5, TimeUnit.SECONDS))
@@ -653,7 +709,7 @@ class PlaybackQueueTest {
                     .get(5, TimeUnit.SECONDS)
                 ShadowLooper.idleMainLooper()
                 assertFalse(slot.isFresh(key))
-                assertThrows(java.io.IOException::class.java) { remote.read(0, 1) }
+                assertThrows(java.io.IOException::class.java) { opened.video.read(0, 1) }
                 assertTrue(http.dispatcher.executorService.isShutdown)
                 assertFalse(root.dispatcher.executorService.isShutdown)
                 assertEquals(0, metadataRequests.get())
