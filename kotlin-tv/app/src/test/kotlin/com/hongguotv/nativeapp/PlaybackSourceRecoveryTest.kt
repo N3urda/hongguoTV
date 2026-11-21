@@ -72,8 +72,8 @@ class PlaybackSourceRecoveryTest {
         ): OpenedStream =
             checkNotNull(openStream(http, repo, id, quality, { true }, recentSources, speculative = speculative) { true })
 
-        fun warm() {
-            open().close()
+        fun warm(quality: Int = 720) {
+            open(quality = quality).close()
             requests.clear()
             primaryEmpty = true
         }
@@ -111,7 +111,17 @@ class PlaybackSourceRecoveryTest {
     }
 
     @Test
-    fun neverUsesTheCacheForAnotherEpisodeBackgroundRetryOrAQualityAboveTheLimit() {
+    fun resumesAnAboveLimitCompatibleTierAtTheSameQualitySetting() {
+        val fixture = Fixture().apply { warm(quality = 480) }
+        fixture.open(quality = 480).use {
+            assertEquals("720P", it.video.info.quality)
+            assertEquals(720, it.rendition?.quality)
+        }
+        fixture.assertWarmRecoveryRequests()
+    }
+
+    @Test
+    fun skipsCacheForAnotherEpisodeBackgroundRetryOrAfterSelectingALowerQuality() {
         val fixture = Fixture().apply { warm() }
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open("10102") }
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open(speculative = true) }
