@@ -7,7 +7,7 @@
   <title>hongguoTV</title>
   <link rel="icon" href="logo.png">
   <link rel="stylesheet" href="style.css">
-  <script src="app.js" defer></script>
+  <script type="module" src="app.js"></script>
 </head>
 <body>
   <div id="shell" class="shell">
@@ -15,9 +15,12 @@
       <div class="mark"><img src="brand.png" alt="hongguoTV" width="64" height="59"></div>
       <nav aria-label="主导航">
         <button type="button" data-section="home" aria-current="page"><span class="icon icon-home" aria-hidden="true"></span><span>首页</span></button>
+        <button type="button" data-section="feed"><span class="icon icon-play" aria-hidden="true"></span><span>随心看</span></button>
         <button type="button" data-section="browse"><span class="icon icon-grid" aria-hidden="true"></span><span>找剧</span></button>
         <button type="button" data-section="search"><span class="icon icon-search" aria-hidden="true"></span><span>搜索</span></button>
+        <button type="button" data-section="rank"><span class="icon icon-rank" aria-hidden="true"></span><span>排行榜</span></button>
         <button type="button" data-section="library"><span class="icon icon-person" aria-hidden="true"></span><span>我的</span></button>
+        <button type="button" data-section="settings"><span class="icon icon-settings" aria-hidden="true"></span><span>设置</span></button>
       </nav>
     </aside>
     <main id="main" class="workspace" tabindex="-1"></main>

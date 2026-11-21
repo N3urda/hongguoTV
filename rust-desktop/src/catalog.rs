@@ -6,10 +6,10 @@ use reqwest::{Client, Response, Url, header, redirect};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const SITE: &str = "https://hongguoduanju.com/";
+pub(crate) const WEBSITE: &str = "https://hongguoduanju.com/";
 const WEBSITE_LIMIT: usize = 6 * 1024 * 1024;
 // Use an ordinary browser profile for the site's desktop HTML and JSON routes.
-const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
+pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
 
 #[derive(Debug)]
 pub(crate) struct PreviewUnavailable;
@@ -50,6 +50,54 @@ pub struct Episode {
 pub struct Detail {
     pub series: Series,
     pub episodes: Vec<Episode>,
+    pub related: Vec<Series>,
+    pub reviews: Vec<Review>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Review {
+    pub author: String,
+    pub content: String,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RankBoard {
+    All,
+    Real,
+    Comic,
+    Ai,
+    New,
+    Searched,
+    Favorites,
+}
+
+impl RankBoard {
+    fn slug(self) -> &'static str {
+        match self {
+            Self::All => "hot-drama",
+            Self::Real => "hot-real-drama",
+            Self::Comic => "hot-comic-drama",
+            Self::Ai => "hot-ai-drama",
+            Self::New => "new-drama",
+            Self::Searched => "hot-search-drama",
+            Self::Favorites => "followed-drama",
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct RankRow {
+    rank: u64,
+    series: Series,
+    metric: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct RankPage {
+    items: Vec<RankRow>,
+    updated: String,
+    has_more: bool,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -73,13 +121,15 @@ impl Category {
 #[derive(Clone)]
 pub struct Site {
     client: Client,
+    account_client: Client,
+    cookie: Option<header::HeaderValue>,
     pub(crate) media_client: Client,
     base: Url,
 }
 
 impl Site {
     pub fn new() -> Result<Self> {
-        let base = Url::parse(SITE)?;
+        let base = Url::parse(WEBSITE)?;
         let client = Client::builder()
             .user_agent(USER_AGENT)
             .cookie_store(true)
@@ -87,6 +137,24 @@ impl Site {
             .timeout(Duration::from_secs(18))
             .redirect(redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() < 5 && official_origin(attempt.url()) {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            }))
+            .build()?;
+        let account_client = Client::builder()
+            .user_agent(USER_AGENT)
+            .connect_timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(18))
+            .redirect(redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() < 5
+                    && attempt
+                        .previous()
+                        .first()
+                        .is_some_and(|url| url.origin() == attempt.url().origin())
+                    && official_origin(attempt.url())
+                {
                     attempt.follow()
                 } else {
                     attempt.stop()
@@ -104,9 +172,18 @@ impl Site {
             .build()?;
         Ok(Self {
             client,
+            account_client,
+            cookie: None,
             media_client,
             base,
         })
+    }
+
+    pub(crate) fn with_cookie(&self, cookie: Option<header::HeaderValue>) -> Self {
+        Self {
+            cookie,
+            ..self.clone()
+        }
     }
 
     pub async fn discover(&self, category: Category, page: u32) -> Result<CatalogPage> {
@@ -167,7 +244,93 @@ impl Site {
         let mut url = self.base.join("detail")?;
         url.query_pairs_mut().append_pair("series_id", id);
         let root = router_data(&self.text(url).await?)?;
-        parse_detail(&root["loaderData"]["detail_page"]["seriesDetail"], id)
+        let page = &root["loaderData"]["detail_page"];
+        let mut detail = parse_detail(&page["seriesDetail"], id)?;
+        if let Some(rows) = page["recommendations"]
+            .as_array()
+            .or_else(|| page["recommendations"]["recommendList"].as_array())
+        {
+            detail.related = cards(rows)
+                .into_iter()
+                .filter(|row| row.id != id)
+                .take(12)
+                .collect();
+        }
+        if let Some(rows) = page["seriesSocialInfo"]["reviews"]["reviews"].as_array() {
+            detail.reviews = rows
+                .iter()
+                .filter_map(|row| {
+                    let content = string(&row["content"])?;
+                    Some(Review {
+                        content: content.chars().take(800).collect(),
+                        author: string(&row["user_name"])
+                            .unwrap_or_else(|| "红果用户".to_owned())
+                            .chars()
+                            .take(100)
+                            .collect(),
+                    })
+                })
+                .take(30)
+                .collect();
+        }
+        Ok(detail)
+    }
+
+    pub(crate) async fn rank(&self, board: RankBoard, page: u32) -> Result<RankPage> {
+        let slug = board.slug();
+        let mut url = self.base.join(&format!("rank/{slug}"))?;
+        url.query_pairs_mut().append_pair("page", &page.to_string());
+        let root = router_data(&self.text(url).await?)?;
+        let data = &root["loaderData"][format!("rank_{slug}/page")];
+        let list = data["content"]["rankList"]
+            .as_array()
+            .context("官网排行榜暂不可用")?;
+        let mut seen = HashSet::new();
+        let items = list
+            .iter()
+            .filter_map(|row| {
+                let id = string(&row["seriesId"]).filter(|id| valid_id(id))?;
+                if row["reservationOnly"].as_bool() == Some(true) || !seen.insert(id.clone()) {
+                    return None;
+                }
+                let rank = number(&row["rank"]).filter(|rank| *rank > 0)?;
+                let count = number(&row["episodeCount"]).unwrap_or(0);
+                let series = Series {
+                    id,
+                    title: string(&row["title"])?,
+                    cover: string(&row["cover"]).unwrap_or_default(),
+                    description: string(&row["description"]).unwrap_or_default(),
+                    badge: if count > 0 {
+                        format!("全 {count} 集")
+                    } else {
+                        String::new()
+                    },
+                    tags: row["tags"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(string)
+                        .take(5)
+                        .collect(),
+                };
+                let metric = string(&row["primaryMetricText"])
+                    .or_else(|| string(&row["heatText"]))
+                    .unwrap_or_default();
+                Some(RankRow {
+                    rank,
+                    series,
+                    metric,
+                })
+            })
+            .collect();
+        let total_pages = number(&data["content"]["pagination"]["totalPages"])
+            .unwrap_or(1)
+            .min(100);
+        Ok(RankPage {
+            items,
+            updated: string(&data["updatedText"]).unwrap_or_default(),
+            has_more: u64::from(page) < total_pages,
+        })
     }
 
     pub async fn public_media(&self, series: &str, episode: &str) -> Result<(Url, Url)> {
@@ -193,9 +356,13 @@ impl Site {
     }
 
     async fn text(&self, url: Url) -> Result<String> {
-        let response = self
-            .client
-            .get(url)
+        let request = match &self.cookie {
+            Some(cookie) if url.origin() == self.base.origin() => {
+                self.account_client.get(url).header(header::COOKIE, cookie)
+            }
+            _ => self.client.get(url),
+        };
+        let response = request
             .header(header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9")
             .send()
             .await
@@ -405,7 +572,12 @@ fn parse_detail(source: &Value, id: &str) -> Result<Detail> {
             available: number as u64 <= accessible,
         });
     }
-    Ok(Detail { series, episodes })
+    Ok(Detail {
+        series,
+        episodes,
+        related: Vec::new(),
+        reviews: Vec::new(),
+    })
 }
 
 #[cfg(test)]
@@ -437,7 +609,7 @@ mod tests {
 
     #[test]
     fn accepts_only_public_media_for_the_requested_episode() {
-        let base = Url::parse(SITE).unwrap();
+        let base = Url::parse(WEBSITE).unwrap();
         let element = |src: &str| {
             format!(
                 "<script type=\"application/ld+json\">{{\"@type\":\"VideoObject\",\"contentUrl\":\"{src}\"}}</script>"

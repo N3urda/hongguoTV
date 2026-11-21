@@ -3,15 +3,75 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::Series;
 
-const MAX_HISTORY: usize = 200;
-const MAX_FAVORITES: usize = 500;
+pub(crate) const MAX_HISTORY: usize = 200;
+pub(crate) const MAX_FAVORITES: usize = 500;
+pub(crate) const MAX_LATER: usize = 100;
 const MAX_DATA_BYTES: u64 = 3 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Theme {
+    #[default]
+    Dark,
+    Light,
+    Sand,
+    Forest,
+    Ocean,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FrameMode {
+    #[default]
+    Fit,
+    Crop,
+    Stretch,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct Preferences {
+    pub(crate) theme: Theme,
+    pub(crate) speed: u16,
+    pub(crate) frame: FrameMode,
+    pub(crate) rotation: u16,
+    pub(crate) auto_next: bool,
+    pub(crate) show_progress: bool,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            theme: Theme::Dark,
+            speed: 100,
+            frame: FrameMode::Fit,
+            rotation: 0,
+            auto_next: true,
+            show_progress: false,
+        }
+    }
+}
+
+impl Preferences {
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            [75, 100, 125, 150, 175, 200, 300].contains(&self.speed),
+            "播放倍速无效"
+        );
+        ensure!(
+            [0, 90, 180, 270].contains(&self.rotation),
+            "画面旋转角度无效"
+        );
+        Ok(())
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct History {
@@ -21,6 +81,10 @@ pub struct History {
     pub position: u64,
     pub duration: u64,
     pub completed: bool,
+    #[serde(default)]
+    pub(crate) updated_at: u64,
+    #[serde(default)]
+    pub(crate) from_tv: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -28,6 +92,10 @@ pub struct Library {
     pub version: u32,
     pub favorites: Vec<Series>,
     pub history: Vec<History>,
+    #[serde(default)]
+    pub later: Vec<Series>,
+    #[serde(default)]
+    pub(crate) preferences: Preferences,
 }
 
 impl Default for Library {
@@ -36,6 +104,8 @@ impl Default for Library {
             version: 1,
             favorites: Vec::new(),
             history: Vec::new(),
+            later: Vec::new(),
+            preferences: Preferences::default(),
         }
     }
 }
@@ -90,6 +160,7 @@ impl LibraryStore {
                 let library: Library = serde_json::from_slice(&raw)
                     .map_err(|_| anyhow::anyhow!("本机资料库损坏，原文件保留在资料目录"))?;
                 ensure!(library.version == 1, "本机资料库版本不兼容");
+                library.preferences.validate()?;
                 library
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Library::default(),
@@ -112,6 +183,15 @@ impl LibraryStore {
         Ok(self.data()?.clone())
     }
 
+    pub(crate) fn preferences(&self) -> Result<Preferences> {
+        Ok(self.data()?.preferences)
+    }
+
+    pub(crate) fn set_preferences(&self, preferences: Preferences) -> Result<()> {
+        preferences.validate()?;
+        self.update(|library| library.preferences = preferences)
+    }
+
     pub fn history_for(&self, id: &str) -> Result<Option<History>> {
         Ok(self
             .data()?
@@ -121,7 +201,7 @@ impl LibraryStore {
             .cloned())
     }
 
-    fn update(&self, change: impl FnOnce(&mut Library)) -> Result<()> {
+    pub(crate) fn update(&self, change: impl FnOnce(&mut Library)) -> Result<()> {
         let mut current = self.data()?;
         let mut next = current.clone();
         change(&mut next);
@@ -147,6 +227,16 @@ impl LibraryStore {
         })
     }
 
+    pub(crate) fn set_later(&self, id: &str, series: Option<Series>) -> Result<()> {
+        self.update(|library| {
+            library.later.retain(|row| row.id != id);
+            if let Some(series) = series {
+                library.later.insert(0, series);
+                library.later.truncate(MAX_LATER);
+            }
+        })
+    }
+
     pub(crate) fn record(
         &self,
         series: &Series,
@@ -159,6 +249,14 @@ impl LibraryStore {
         }
         let completed = progress.completed && progress.duration - progress.position <= 2000;
         self.update(|library| {
+            // A short website preview must not replace progress from the full TV episode.
+            if library.history.iter().any(|row| {
+                row.series.id == series.id
+                    && row.from_tv
+                    && (row.number != number || row.duration > progress.duration + 2000)
+            }) {
+                return;
+            }
             library.history.retain(|row| row.series.id != series.id);
             library.history.insert(
                 0,
@@ -169,11 +267,19 @@ impl LibraryStore {
                     position: progress.position,
                     duration: progress.duration,
                     completed,
+                    updated_at: now_ms(),
+                    from_tv: false,
                 },
             );
             library.history.truncate(MAX_HISTORY);
         })
     }
+}
+
+pub(crate) fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as u64)
 }
 
 pub fn data_directory() -> Result<PathBuf> {

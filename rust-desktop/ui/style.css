@@ -285,3 +285,90 @@ input[type="range"] { margin: 0; accent-color: var(--accent); cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; }
 }
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --background: #f3f5f8;
+  --surface: #fff;
+  --raised: #e1e7f0;
+  --accent: #b83226;
+  --text: #172033;
+  --muted: #526078;
+  --outline: #bcc6d5;
+}
+:root[data-theme="sand"] {
+  color-scheme: light;
+  --background: #f4efe5;
+  --surface: #fffbf2;
+  --raised: #e8ddc9;
+  --accent: #984020;
+  --text: #332a20;
+  --muted: #6d604e;
+  --outline: #c7b89d;
+}
+:root[data-theme="forest"] {
+  --background: #101e1a;
+  --surface: #192d26;
+  --raised: #2a4539;
+  --accent: #88d5a7;
+  --text: #eff8f1;
+  --muted: #aac1b2;
+  --outline: #4b6858;
+}
+:root[data-theme="ocean"] {
+  --background: #101b2d;
+  --surface: #192b43;
+  --raised: #2a405e;
+  --accent: #87c7ff;
+  --text: #f0f6ff;
+  --muted: #adbdd3;
+  --outline: #49617f;
+}
+.icon-rank::before { content: ""; inset: 8px auto 2px 2px; width: 2px; background: currentColor; border-radius: 1px; box-shadow: 6px 0 currentColor, 12px 0 currentColor; }
+.icon-rank::after { content: ""; inset: 2px auto 4px 8px; width: 2px; background: currentColor; border-radius: 1px; }
+.icon-settings::before { content: ""; inset: 2px; border: 2px dashed currentColor; border-radius: 100%; }
+.icon-settings::after { content: ""; inset: 6px; border: 1.5px solid currentColor; border-radius: 100%; }
+.rank-number { position: absolute; top: 7px; left: 7px; min-width: 27px; padding: 4px 7px; border-radius: 5px; text-align: center; font-weight: 720; background: #111317e8; color: #ff806f; font-variant-numeric: tabular-nums; }
+.rank-updated { margin-bottom: 14px; }
+.rank-metric { color: var(--accent); }
+.reviews { margin-block: 26px; }
+.review { padding: 13px 0; border-bottom: 1px solid var(--outline); }
+.review .summary { margin-top: 5px; white-space: pre-wrap; }
+.settings-layout { display: grid; grid-template-columns: minmax(128px, 172px) minmax(0, 1fr); gap: 17px; max-width: 1030px; align-items: start; }
+.settings-nav { display: grid; gap: 6px; }
+.settings-nav-item { text-align: left; color: var(--muted); background: transparent; }
+.settings-nav-item[aria-pressed="true"] { background: var(--raised); color: var(--accent); font-weight: 650; }
+.settings-panel { padding: clamp(14px, 2.2vw, 24px); border-radius: var(--radius); background: var(--surface); overflow-wrap: anywhere; }
+.settings-panel h2 { margin-bottom: 15px; }
+.settings-rows { display: grid; }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding-block: 11px; border-bottom: 1px solid var(--outline); }
+.settings-row:last-child { border-bottom: 0; }
+.settings-row select { max-width: 52%; min-height: 39px; padding: 6px 9px; border: 1px solid var(--outline); border-radius: 8px; background: var(--raised); color: var(--text); }
+.settings-row input[type="checkbox"], .settings-toggle input { accent-color: var(--accent); }
+.settings-note { color: var(--muted); margin-top: 11px; min-height: 1.3em; font-size: 14px; }
+.backup-description { margin-bottom: 16px; }
+.account-body, .settings-stack { display: grid; gap: 10px; justify-items: start; }
+.account-name { font-size: 18px; }
+.settings-toggle { display: flex; gap: 7px; align-items: center; color: var(--muted); font-size: 14px; }
+.account-qr { display: block; max-width: 100%; height: auto; padding: 8px; background: white; border-radius: 6px; image-rendering: pixelated; }
+.watch {
+  color-scheme: dark;
+  --surface: #1d2026;
+  --raised: #2b2f36;
+  --outline: #40454e;
+  --text: #f3f4f6;
+  --muted: #a4acb9;
+  --accent: #ff705f;
+}
+.watch-stage[data-frame="crop"] video { object-fit: cover; }
+.watch-stage[data-frame="stretch"] video { object-fit: fill; }
+.watch-stage[data-rotation="180"] video { transform: rotate(180deg); }
+.watch-stage[data-rotation="90"] video, .watch-stage[data-rotation="270"] video { inset: 50% auto auto 50%; width: 100vh; height: 100vw; }
+.watch-stage[data-rotation="90"] video { transform: translate(-50%, -50%) rotate(90deg); }
+.watch-stage[data-rotation="270"] video { transform: translate(-50%, -50%) rotate(270deg); }
+.watch-progress { position: absolute; bottom: 0; left: 0; display: none; }
+.watch[data-idle] .watch-progress { display: block; }
+@media (max-width: 680px) {
+  .settings-layout { grid-template-columns: 1fr; gap: 10px; }
+  .settings-nav { display: flex; flex-wrap: wrap; }
+}

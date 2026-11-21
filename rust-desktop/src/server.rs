@@ -4,7 +4,7 @@ use std::{collections::VecDeque, net::Ipv4Addr, path::Path, sync::Arc, time::Ins
 use anyhow::{Context, Result};
 use axum::Json;
 use axum::Router;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path as RoutePath, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
@@ -18,8 +18,10 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::catalog::{Category, Detail, PreviewUnavailable, Series, Site, valid_id};
-use crate::library::{LibraryStore, WatchPosition};
+use crate::account::{Account, AccountStatus};
+use crate::backup;
+use crate::catalog::{Category, Detail, PreviewUnavailable, RankBoard, Series, Site, valid_id};
+use crate::library::{LibraryStore, Preferences, WatchPosition};
 use crate::media::RemoteVideo;
 
 const MAX_SESSIONS: usize = 4;
@@ -80,10 +82,17 @@ impl Drop for Session {
 #[derive(Clone)]
 struct App {
     site: Site,
+    account: Arc<Account>,
     store: Arc<LibraryStore>,
     sessions: Arc<Mutex<VecDeque<Session>>>,
     readers: Arc<Semaphore>,
     prepares: Arc<Semaphore>,
+}
+
+impl App {
+    async fn account_site(&self) -> Site {
+        self.site.with_cookie(self.account.authorization().await.1)
+    }
 }
 
 pub struct RunningServer {
@@ -109,10 +118,13 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
     let app = App {
         site: Site::new().context("无法初始化官网连接")?,
         store: Arc::new(LibraryStore::open(data_dir)?),
+        account: Arc::new(Account::new(data_dir)?),
         sessions: Arc::new(Mutex::new(VecDeque::new())),
         readers: Arc::new(Semaphore::new(6)),
         prepares: Arc::new(Semaphore::new(4)),
     };
+    let account = app.account.clone();
+    tokio::spawn(async move { account.restore().await });
     let routes = Router::new()
         .route(
             "/index.html",
@@ -129,6 +141,15 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
                 asset(
                     "text/javascript; charset=utf-8",
                     include_bytes!("../ui/app.js"),
+                )
+            }),
+        )
+        .route(
+            "/settings.js",
+            get(|| async {
+                asset(
+                    "text/javascript; charset=utf-8",
+                    include_bytes!("../ui/settings.js"),
                 )
             }),
         )
@@ -157,9 +178,22 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
             }),
         )
         .route("/api/catalog", get(catalog))
+        .route("/api/rank", get(rank))
+        .route("/api/preferences", get(preferences).post(save_preferences))
+        .route("/api/account", get(account_status).delete(account_logout))
+        .route(
+            "/api/account/qr",
+            post(account_start).delete(account_cancel),
+        )
+        .route("/api/account/qr/{id}", get(account_qr).post(account_poll))
         .route("/api/detail/{id}", get(detail))
         .route("/api/library", get(library))
+        .route(
+            "/api/library/backup",
+            get(export_backup).post(import_backup),
+        )
         .route("/api/favorite", post(favorite))
+        .route("/api/later", post(later))
         .route("/api/play", post(play))
         .route("/api/play/{token}", delete(stop))
         .route("/api/play/{token}/progress", post(progress))
@@ -232,14 +266,109 @@ async fn catalog(
     if keyword.chars().count() > 80 {
         return Err(ApiError::bad_request("搜索词最多 80 个字"));
     }
+    let site = app.account_site().await;
     let result = if keyword.is_empty() {
-        app.site
-            .discover(query.category.unwrap_or(Category::Real), page)
+        site.discover(query.category.unwrap_or(Category::Real), page)
             .await
     } else {
-        app.site.search(keyword, page).await
+        site.search(keyword, page).await
     };
     result.map(Json).map_err(ApiError::upstream)
+}
+
+#[derive(Deserialize)]
+struct RankQuery {
+    board: RankBoard,
+    page: Option<u32>,
+}
+
+async fn rank(
+    State(app): State<App>,
+    Query(query): Query<RankQuery>,
+) -> ApiResult<impl IntoResponse> {
+    let page = query.page.unwrap_or(1);
+    if !(1..=100).contains(&page) {
+        return Err(ApiError::bad_request("页码无效"));
+    }
+    app.site
+        .rank(query.board, page)
+        .await
+        .map(Json)
+        .map_err(ApiError::upstream)
+}
+
+async fn preferences(State(app): State<App>) -> ApiResult<Json<Preferences>> {
+    app.store.preferences().map(Json).map_err(ApiError::storage)
+}
+
+async fn save_preferences(
+    State(app): State<App>,
+    Json(preferences): Json<Preferences>,
+) -> ApiResult<Json<Preferences>> {
+    preferences
+        .validate()
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    tokio::task::spawn_blocking(move || app.store.set_preferences(preferences))
+        .await
+        .context("无法保存设置")
+        .map_err(ApiError::storage)?
+        .map_err(ApiError::storage)?;
+    Ok(Json(preferences))
+}
+
+async fn account_status(State(app): State<App>) -> Json<AccountStatus> {
+    Json(app.account.status().await)
+}
+
+#[derive(Deserialize)]
+struct AccountStart {
+    remember: bool,
+}
+
+async fn account_start(
+    State(app): State<App>,
+    Json(request): Json<AccountStart>,
+) -> ApiResult<Json<AccountStatus>> {
+    app.account
+        .start_qr(request.remember)
+        .await
+        .map(Json)
+        .map_err(ApiError::upstream)
+}
+
+async fn account_cancel(State(app): State<App>) -> Json<AccountStatus> {
+    Json(app.account.cancel().await)
+}
+
+async fn account_qr(State(app): State<App>, RoutePath(id): RoutePath<Uuid>) -> ApiResult<Response> {
+    let (format, image) = app
+        .account
+        .image(id)
+        .await
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "二维码已失效".to_owned()))?;
+    Ok((
+        [(header::CONTENT_TYPE, format)],
+        Body::from(axum::body::Bytes::from_owner(image)),
+    )
+        .into_response())
+}
+
+async fn account_poll(
+    State(app): State<App>,
+    RoutePath(id): RoutePath<Uuid>,
+) -> ApiResult<Json<AccountStatus>> {
+    app.account
+        .poll(id)
+        .await
+        .map(Json)
+        .map_err(ApiError::upstream)
+}
+
+async fn account_logout(State(app): State<App>) -> ApiResult<Json<AccountStatus>> {
+    let mut sessions = app.sessions.lock().await;
+    let status = app.account.logout().await.map_err(ApiError::storage)?;
+    sessions.clear();
+    Ok(Json(status))
 }
 
 #[derive(Serialize)]
@@ -262,7 +391,12 @@ async fn detail(
     if !valid_id(&id) {
         return Err(ApiError::bad_request("剧集编号无效"));
     }
-    let detail = app.site.detail(&id).await.map_err(ApiError::upstream)?;
+    let detail = app
+        .account_site()
+        .await
+        .detail(&id)
+        .await
+        .map_err(ApiError::upstream)?;
     let history = app.store.history_for(&id).map_err(ApiError::storage)?;
     let available: Vec<_> = detail
         .episodes
@@ -270,9 +404,18 @@ async fn detail(
         .filter(|episode| episode.available)
         .collect();
     let matched = history.as_ref().and_then(|entry| {
+        let saved = detail
+            .episodes
+            .iter()
+            .find(|episode| episode.id == entry.episode);
+        let episode = match saved {
+            Some(episode) => episode,
+            None if entry.from_tv => detail.episodes.get(entry.number.checked_sub(1)?)?,
+            None => return None,
+        };
         available
             .iter()
-            .position(|episode| episode.id == entry.episode)
+            .position(|candidate| candidate.id == episode.id)
     });
     let position = history
         .as_ref()
@@ -290,22 +433,68 @@ async fn library(State(app): State<App>) -> ApiResult<impl IntoResponse> {
     app.store.read().map(Json).map_err(ApiError::storage)
 }
 
+async fn export_backup(State(app): State<App>) -> ApiResult<impl IntoResponse> {
+    let library = app.store.read().map_err(ApiError::storage)?;
+    let bytes = backup::encode(&library).map_err(ApiError::storage)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"hongguotv-library.json\"",
+            ),
+        ],
+        bytes,
+    ))
+}
+
+async fn import_backup(
+    State(app): State<App>,
+    bytes: Bytes,
+) -> ApiResult<Json<backup::ImportCounts>> {
+    let imported =
+        backup::decode(&bytes).map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let counts = imported.counts();
+    tokio::task::spawn_blocking(move || app.store.update(|library| imported.merge(library)))
+        .await
+        .context("无法导入备份")
+        .map_err(ApiError::storage)?
+        .map_err(ApiError::storage)?;
+    Ok(Json(counts))
+}
+
 #[derive(Deserialize)]
-struct FavoriteChange {
+struct SavedSeriesChange {
     id: String,
     saved: bool,
 }
 
 async fn favorite(
     State(app): State<App>,
-    Json(change): Json<FavoriteChange>,
+    Json(change): Json<SavedSeriesChange>,
+) -> ApiResult<StatusCode> {
+    save_series(app, change, LibraryStore::set_favorite).await
+}
+
+async fn later(
+    State(app): State<App>,
+    Json(change): Json<SavedSeriesChange>,
+) -> ApiResult<StatusCode> {
+    save_series(app, change, LibraryStore::set_later).await
+}
+
+async fn save_series(
+    app: App,
+    change: SavedSeriesChange,
+    update: fn(&LibraryStore, &str, Option<Series>) -> Result<()>,
 ) -> ApiResult<StatusCode> {
     if !valid_id(&change.id) {
         return Err(ApiError::bad_request("剧集编号无效"));
     }
     let series = if change.saved {
         Some(
-            app.site
+            app.account_site()
+                .await
                 .detail(&change.id)
                 .await
                 .map_err(ApiError::upstream)?
@@ -314,9 +503,9 @@ async fn favorite(
     } else {
         None
     };
-    tokio::task::spawn_blocking(move || app.store.set_favorite(&change.id, series))
+    tokio::task::spawn_blocking(move || update(&app.store, &change.id, series))
         .await
-        .context("无法保存收藏")
+        .context("无法保存剧集")
         .map_err(ApiError::storage)?
         .map_err(ApiError::storage)?;
     Ok(StatusCode::NO_CONTENT)
@@ -347,8 +536,9 @@ async fn play(
             "正在打开其他分集，请稍后重试".to_owned(),
         )
     })?;
-    let detail = app
-        .site
+    let (authorization, cookie) = app.account.authorization().await;
+    let site = app.site.with_cookie(cookie);
+    let detail = site
         .detail(&selection.series)
         .await
         .map_err(ApiError::upstream)?;
@@ -357,8 +547,7 @@ async fn play(
         .into_iter()
         .find(|row| row.id == selection.episode && row.available)
         .ok_or_else(|| ApiError::upstream(PreviewUnavailable.into()))?;
-    let (url, referer) = app
-        .site
+    let (url, referer) = site
         .public_media(&selection.series, &episode.id)
         .await
         .map_err(ApiError::upstream)?;
@@ -374,6 +563,9 @@ async fn play(
         .map_err(ApiError::upstream)?;
     let token = Uuid::new_v4();
     let mut sessions = app.sessions.lock().await;
+    if authorization != app.account.authorization().await.0 {
+        return Err(ApiError::gone());
+    }
     sessions.retain(|row| row.last_used.elapsed().as_secs() < 3600);
     if sessions.len() == MAX_SESSIONS {
         sessions.pop_front();

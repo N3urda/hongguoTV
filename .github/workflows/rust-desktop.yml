@@ -37,7 +37,8 @@ jobs:
       - run: cargo +stable fmt --check
       - run: cargo +stable clippy --locked --no-default-features --all-targets -- -D warnings
       - run: cargo +stable test --locked --no-default-features
-      - run: node --check ui/app.js
+      - run: node --input-type=module --check < ui/app.js
+      - run: node --input-type=module --check < ui/settings.js
 
   package:
     strategy:

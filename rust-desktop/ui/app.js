@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-only
+import { settingsPage, speedSteps } from "./settings.js";
+
 const shell = document.querySelector("#shell");
 const main = document.querySelector("#main");
 const watch = document.querySelector("#watch");
 const nav = [...document.querySelectorAll("nav [data-section]")];
 const categories = [["real", "真人剧"], ["comic", "漫剧"], ["ai", "AI 剧"]];
-const sectionNames = { home: "首页", browse: "找剧", search: "搜索", library: "我的" };
+const sectionNames = { home: "首页", feed: "随心看", browse: "找剧", search: "搜索", rank: "排行榜", library: "我的", settings: "设置" };
+const boards = [["all", "热播榜"], ["real", "真人剧"], ["comic", "漫剧"], ["ai", "AI 剧"], ["new", "新剧榜"], ["searched", "热搜榜"], ["favorites", "收藏榜"]];
 const groupSize = 20;
 const state = {
   section: "home", category: "real", page: 1, query: "", libraryTab: "history",
-  library: { favorites: [], history: [] }, detail: null, returnPoint: null,
+  library: { favorites: [], history: [], later: [] }, detail: null, returnPoint: null,
   navigation: null, player: null, playing: null, prepare: null,
   stopping: Promise.resolve(), autoplay: true,
+  board: "all", suggestion: null,
+  preferences: { theme: "dark", speed: 100, frame: "fit", rotation: 0, show_progress: false, auto_next: true },
 };
 
 function node(tag, className, text) {
@@ -241,6 +246,57 @@ function openLibrary(tab) {
   openSection("library", { focus: `tab:${tab}` });
 }
 
+function applyPreferences(preferences) {
+  state.preferences = preferences;
+  state.autoplay = preferences.auto_next;
+  document.documentElement.dataset.theme = preferences.theme;
+}
+
+function pagination(section, page, hasMore, focus) {
+  const paging = node("div", "paging");
+  const previous = button("上一页", () => openSection(section, { page: page - 1, focus: "page" }));
+  const next = button("下一页", () => openSection(section, { page: page + 1, focus: "page" }));
+  previous.disabled = page === 1;
+  next.disabled = !hasMore;
+  paging.append(previous, node("span", "", `第 ${page} 页`), next);
+  if (focus === "page") requestAnimationFrame(() => (next.disabled ? previous : next).focus({ preventScroll: true }));
+  return paging;
+}
+
+async function renderRanks(outlet, signal, page, focus) {
+  const results = await request(`api/rank?board=${state.board}&page=${page}`, { signal });
+  if (signal.aborted) return;
+  const items = results.items.map(({ series, rank, metric }) => {
+    const item = card(series, "rank");
+    item.querySelector(".poster").append(node("span", "rank-number", String(rank)));
+    if (metric) item.querySelector(".card-copy").append(node("span", "card-meta rank-metric", metric));
+    return item;
+  });
+  outlet.replaceChildren();
+  if (results.updated) outlet.append(node("p", "meta rank-updated", results.updated));
+  outlet.append(items.length ? grid(items) : status("这页没有榜单作品"));
+  if (page > 1 || results.has_more) outlet.append(pagination("rank", page, results.has_more, focus));
+}
+
+async function renderFeed(outlet, signal, restore) {
+  if (!restore || !state.suggestion) {
+    const results = await request(`api/catalog?category=${state.category}&page=1`, { signal });
+    if (signal.aborted) return;
+    const candidates = results.items.filter((row) => row.id !== state.suggestion?.id);
+    const items = candidates.length ? candidates : results.items;
+    state.suggestion = items[Math.floor(Math.random() * items.length)];
+  }
+  if (!state.suggestion) {
+    outlet.replaceChildren(status("暂无可推荐的作品", () => openSection("feed")));
+    return;
+  }
+  const panel = spotlight(state.suggestion);
+  const next = button("换一部", () => openSection("feed", { focus: "feed-next" }));
+  next.dataset.key = "feed-next";
+  panel.querySelector(".actions").append(next);
+  outlet.replaceChildren(panel);
+}
+
 function restorePoint(point) {
   if (!point) return;
   for (const track of main.querySelectorAll("[data-shelf]")) track.scrollLeft = point.shelves.get(track.dataset.shelf) || 0;
@@ -268,18 +324,29 @@ async function openSection(section, { page = 1, restore = false, focus } = {}) {
   if (section !== "home") {
     const heading = node("header", "page-heading");
     heading.append(node("h1", "", sectionNames[section]));
+    if (section === "library") {
+      heading.append(button("红果账户", () => openSection("settings"), "quiet"));
+    }
     frame.append(heading);
   }
-  if (section === "browse") frame.append(tabs(categories, state.category, (category) => {
+  if (section === "browse" || section === "feed") frame.append(tabs(categories, state.category, (category) => {
     state.category = category;
-    openSection("browse", { focus: `tab:${category}` });
+    openSection(section, { focus: `tab:${category}` });
+  }));
+  if (section === "rank") frame.append(tabs(boards, state.board, (board) => {
+    state.board = board;
+    openSection("rank", { focus: `tab:${board}` });
   }));
   if (section === "search") frame.append(searchForm());
-  if (section === "library") frame.append(tabs([["history", "观看历史"], ["favorites", "收藏"]], state.libraryTab, openLibrary));
+  if (section === "library") frame.append(tabs([["history", "观看历史"], ["favorites", "收藏"], ["later", "稍后看"]], state.libraryTab, openLibrary));
   const outlet = node("div");
   frame.append(outlet);
   main.replaceChildren(frame);
   main.scrollTop = 0;
+  if (section === "settings") {
+    outlet.append(settingsPage(signal, { node, button, request, post, preferences: () => state.preferences, applyPreferences }));
+    return;
+  }
   if (focus === "query") {
     document.querySelector("#query").focus();
     document.querySelector("#query").select();
@@ -291,15 +358,25 @@ async function openSection(section, { page = 1, restore = false, focus } = {}) {
     if (signal.aborted) return;
     if (section === "home") {
       await renderHome(outlet, signal);
+    } else if (section === "rank") {
+      await renderRanks(outlet, signal, page, focus);
+    } else if (section === "feed") {
+      await renderFeed(outlet, signal, restore);
+      if (focus === "feed-next") focusKey(focus);
     } else if (section === "library") {
       const library = await request("api/library", { signal });
       if (signal.aborted) return;
       state.library = library;
-      const history = state.libraryTab === "history";
-      const cards = history
+      const tab = state.libraryTab;
+      const message = {
+        history: "观看记录会出现在这里",
+        favorites: "还没有收藏",
+        later: "稍后看的剧集会出现在这里",
+      };
+      const cards = tab === "history"
         ? state.library.history.map((entry) => card(entry.series, "history", entry))
-        : state.library.favorites.map((entry) => card(entry, "favorites"));
-      outlet.replaceChildren(cards.length ? grid(cards) : status(history ? "试看后可在这里继续观看" : "还没有收藏"));
+        : state.library[tab].map((entry) => card(entry, tab));
+      outlet.replaceChildren(cards.length ? grid(cards) : status(message[tab]));
     } else {
       const params = new URLSearchParams({ page: String(page), category: state.category });
       if (section === "search") params.set("q", state.query);
@@ -308,16 +385,7 @@ async function openSection(section, { page = 1, restore = false, focus } = {}) {
       outlet.replaceChildren();
       if (section === "search") outlet.append(node("h2", "result-heading", `“${state.query}”的搜索结果`));
       outlet.append(results.items.length ? grid(results.items.map((entry) => card(entry, section))) : status("没有找到匹配的剧集"));
-      if (page > 1 || results.has_more) {
-        const paging = node("div", "paging");
-        const previous = button("上一页", () => openSection(section, { page: page - 1, focus: "page" }));
-        const next = button("下一页", () => openSection(section, { page: page + 1, focus: "page" }));
-        previous.disabled = page === 1;
-        next.disabled = !results.has_more;
-        paging.append(previous, node("span", "", `第 ${page} 页`), next);
-        outlet.append(paging);
-        if (focus === "page") (next.disabled ? previous : next).focus({ preventScroll: true });
-      }
+      if (page > 1 || results.has_more) outlet.append(pagination(section, page, results.has_more, focus));
     }
     if (restore && !signal.aborted) restorePoint(state.returnPoint);
   } catch (error) {
@@ -400,23 +468,29 @@ function renderDetail(detail, selected, position) {
   const note = node("p", "history-line", history ? historyLabel(history) : "");
   note.hidden = !history;
   note.setAttribute("role", "status");
-  let saved = state.library.favorites.some((item) => item.id === series.id);
-  const favorite = button(saved ? "已收藏" : "收藏", async () => {
-    favorite.disabled = true;
-    try {
-      await post("api/favorite", { id: series.id, saved: !saved });
-      saved = !saved;
-      favorite.textContent = saved ? "已收藏" : "收藏";
-      favorite.setAttribute("aria-pressed", String(saved));
-    } catch (error) {
-      note.hidden = false;
-      note.textContent = error.message;
-    } finally {
-      favorite.disabled = false;
-    }
-  });
-  favorite.setAttribute("aria-pressed", String(saved));
+  function savedAction(field, endpoint, label, activeLabel) {
+    let saved = state.library[field].some((item) => item.id === series.id);
+    const item = button(saved ? activeLabel : label, async () => {
+      item.disabled = true;
+      try {
+        await post(endpoint, { id: series.id, saved: !saved });
+        saved = !saved;
+        item.textContent = saved ? activeLabel : label;
+        item.setAttribute("aria-pressed", String(saved));
+      } catch (error) {
+        note.hidden = false;
+        note.textContent = error.message;
+      } finally {
+        item.disabled = false;
+      }
+    });
+    item.setAttribute("aria-pressed", String(saved));
+    return item;
+  }
+  const favorite = savedAction("favorites", "api/favorite", "收藏", "已收藏");
+  const later = savedAction("later", "api/later", "稍后看", "已加入稍后看");
   const official = officialLink(series, selected || episodes[0]);
+  actions.append(play, official, favorite, later);
   if (series.description) {
     const summary = node("p", "summary clamp", series.description);
     summary.id = "synopsis";
@@ -428,11 +502,27 @@ function renderDetail(detail, selected, position) {
     toggle.setAttribute("aria-expanded", "false");
     toggle.setAttribute("aria-controls", summary.id);
     copy.append(summary);
-    actions.append(play, official, favorite, toggle);
-  } else actions.append(play, official, favorite);
+    actions.append(toggle);
+  }
   copy.append(actions, note);
   hero.append(poster(series, true), copy);
   layout.append(hero, episodePicker(episodes, selected || episodes[0], history, true));
+  if (detail.reviews.length) {
+    const reviews = node("section", "reviews");
+    const heading = node("div", "section-heading");
+    heading.append(node("h2", "", "剧评"));
+    reviews.append(heading);
+    for (const entry of detail.reviews) {
+      const review = node("article", "review");
+      review.append(node("strong", "", entry.author), node("p", "summary", entry.content));
+      reviews.append(review);
+    }
+    layout.append(reviews);
+  }
+  if (detail.related.length) {
+    const cards = detail.related.map((entry) => card(entry, "related"));
+    layout.append(shelf("相关剧集", "related", cards, null, state.navigation.signal));
+  }
   return layout;
 }
 
@@ -541,6 +631,7 @@ function leavePlayer() {
   const stopped = stopPlayback();
   if (state.player) {
     clearTimeout(state.player.hideTimer);
+    clearTimeout(state.player.sleepTimer);
     state.player = null;
     if (document.fullscreenElement === watch) document.exitFullscreen().catch(() => {});
     watch.hidden = true;
@@ -554,6 +645,7 @@ function toggleVideo() {
   const video = state.playing?.video;
   if (!video) return;
   if (video.paused) {
+    state.player.sleepStopped = false;
     if (video.ended) video.currentTime = 0;
     video.play().catch(() => {});
   } else video.pause();
@@ -597,7 +689,8 @@ function showControls() {
 }
 
 function createPlayer(detail) {
-  const view = { detail, index: 0, rate: 1, volume: 1, muted: false, scrubbing: false };
+  const preferences = state.preferences;
+  const view = { detail, index: 0, rate: preferences.speed / 100, volume: 1, muted: false, scrubbing: false };
   const header = node("header", "watch-header");
   const back = button("返回详情", () => openDetail(detail.series.id), "back", "left");
   const heading = node("div", "watch-heading");
@@ -609,6 +702,8 @@ function createPlayer(detail) {
   view.stage = namedControl(node("div", "watch-stage"), "视频画面");
   view.stage.setAttribute("role", "group");
   view.stage.tabIndex = 0;
+  view.stage.dataset.frame = preferences.frame;
+  view.stage.dataset.rotation = preferences.rotation;
   const footer = node("footer", "watch-footer");
   const timeline = node("div", "timeline");
   view.elapsed = node("span", "clock");
@@ -641,15 +736,19 @@ function createPlayer(detail) {
   view.menu.setAttribute("aria-expanded", "false");
   view.menu.setAttribute("aria-controls", "watch-episodes");
   const speed = namedControl(node("select"), "播放倍速");
-  for (const rate of [.75, 1, 1.25, 1.5, 2]) {
-    const option = node("option", "", `${rate}×`);
-    option.value = rate;
+  for (const step of speedSteps) {
+    const option = node("option", "", `${step / 100}×`);
+    option.value = step / 100;
     speed.append(option);
   }
   speed.value = view.rate;
   speed.addEventListener("change", () => {
     view.rate = Number(speed.value);
-    if (state.playing) state.playing.video.playbackRate = view.rate;
+    const video = state.playing?.video;
+    if (video) {
+      video.defaultPlaybackRate = view.rate;
+      video.playbackRate = view.rate;
+    }
   });
   const mute = button("静音", () => {
     view.muted = !view.muted;
@@ -673,7 +772,18 @@ function createPlayer(detail) {
   auto.checked = state.autoplay;
   auto.addEventListener("change", () => { state.autoplay = auto.checked; });
   autoLabel.append(auto, document.createTextNode("自动连播"));
-  settings.append(view.menu, speed, mute, volume, autoLabel);
+  view.sleep = namedControl(node("select"), "定时停止");
+  for (const [id, label] of [["off", "定时"], ["episode", "本集结束"], ["15", "15 分钟"], ["30", "30 分钟"], ["60", "60 分钟"]]) {
+    const option = node("option", "", label);
+    option.value = id;
+    view.sleep.append(option);
+  }
+  view.sleep.addEventListener("change", () => {
+    clearTimeout(view.sleepTimer);
+    const minutes = Number(view.sleep.value);
+    if (minutes > 0) view.sleepTimer = setTimeout(() => stopForSleep(view), minutes * 60_000);
+  });
+  settings.append(view.menu, speed, view.sleep, mute, volume, autoLabel);
   if (document.fullscreenEnabled && watch.requestFullscreen) {
     view.fullscreen = button("全屏", async () => {
       try {
@@ -689,7 +799,21 @@ function createPlayer(detail) {
   view.panel.hidden = true;
   footer.append(view.panel, heading, timeline, transport);
   watch.replaceChildren(header, view.stage, footer);
+  if (preferences.show_progress) {
+    view.ambient = node("progress", "watch-progress card-progress");
+    view.ambient.setAttribute("aria-hidden", "true");
+    watch.append(view.ambient);
+  }
   return view;
+}
+
+function stopForSleep(view) {
+  if (view !== state.player) return;
+  view.sleepStopped = true;
+  view.sleep.value = "off";
+  state.playing?.video.pause();
+  view.episodeLabel.textContent = "定时停止已生效";
+  showControls();
 }
 
 function syncControls(view, video) {
@@ -701,6 +825,10 @@ function syncControls(view, video) {
     view.elapsed.textContent = formatTime((video?.currentTime || 0) * 1000);
   }
   view.duration.textContent = formatTime(duration * 1000);
+  if (view.ambient) {
+    view.ambient.max = duration || 1;
+    view.ambient.value = video?.currentTime || 0;
+  }
   view.play.disabled = !video;
   const playing = video && !video.paused && !video.ended;
   const label = playing ? "暂停" : "播放";
@@ -718,6 +846,7 @@ async function openPlayer(episode, position = 0) {
   watch.hidden = false;
   view.index = detail.episodes.indexOf(episode);
   view.scrubbing = false;
+  view.sleepStopped = false;
   const label = `第 ${episode.number} 集`;
   view.episodeLabel.textContent = label;
   view.official.href = episodeUrl(detail.series, episode);
@@ -749,6 +878,7 @@ async function openPlayer(episode, position = 0) {
     video.preload = "auto";
     video.volume = view.volume;
     video.muted = view.muted;
+    video.defaultPlaybackRate = view.rate;
     video.playbackRate = view.rate;
     video.setAttribute("aria-label", `${label}视频`);
     const session = { video, token: playback.token, view, sequence: 0, savedAt: 0, queue: Promise.resolve() };
@@ -776,6 +906,10 @@ async function openPlayer(episode, position = 0) {
       syncControls(view, video);
       showControls();
       savePosition(session, true);
+      if (view.sleep.value === "episode") {
+        stopForSleep(view);
+        return;
+      }
       const next = detail.episodes[view.index + 1];
       if (state.autoplay && next?.available && view.panel.hidden) openPlayer(next);
     });
@@ -788,10 +922,12 @@ async function openPlayer(episode, position = 0) {
       view.stage.replaceChildren(status("视频读取失败", () => openPlayer(episode, retryPosition), "watch-status"));
     });
     view.stage.prepend(video);
-    view.episodeLabel.textContent = `${label}试看 · ${playback.quality}`;
+    if (!view.sleepStopped) {
+      view.episodeLabel.textContent = `${label}试看 · ${playback.quality}`;
+    }
     video.src = `media/${playback.token}`;
     syncControls(view, video);
-    video.play().catch(() => {});
+    if (!view.sleepStopped) video.play().catch(() => {});
   } catch (error) {
     if (controller.signal.aborted) return;
     view.stage.replaceChildren(status(error.message, error.status === 404 ? null : () => openPlayer(episode, position), "watch-status"));
@@ -863,4 +999,4 @@ document.addEventListener("fullscreenchange", () => {
 window.addEventListener("pagehide", () => {
   if (state.playing) savePosition(state.playing, state.playing.video.ended);
 });
-openSection("home");
+request("api/preferences").then(applyPreferences, () => {}).finally(() => openSection("home"));
