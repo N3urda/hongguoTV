@@ -24,7 +24,6 @@ import androidx.media3.common.*
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.hongguotv.core.*
 import java.util.concurrent.Executors
@@ -101,8 +100,7 @@ class MainActivity : Activity() {
                 else -> throw IllegalArgumentException("Unknown key")
             }
             for (event in listOf(KeyEvent(KeyEvent.ACTION_DOWN, key), KeyEvent(KeyEvent.ACTION_UP, key))) {
-                if (!tvTools.dispatchPhoneKey(event) && !cloudAccount.dispatchPhoneKey(event) &&
-                    episodePanel?.dispatchPhoneKey(event) != true) dispatchKeyEvent(event)
+                if (!tvTools.dispatchPhoneKey(event) && !cloudAccount.dispatchPhoneKey(event)) dispatchKeyEvent(event)
             }
             return JSONObject().put("message", "已发送遥控指令")
         }
@@ -162,12 +160,14 @@ class MainActivity : Activity() {
             .build()
     }
     private val preparedNext =
-        PreparedSlot<RemoteVideo>({ android.os.SystemClock.elapsedRealtime() })
+        PreparedSlot<OpenedStream>({ android.os.SystemClock.elapsedRealtime() })
+    private val recentPlaybackSources = PlaybackSourceCache()
     private var prefetchJob: java.util.concurrent.Future<*>? = null
     private var prefetchScope: RequestScope? = null
 
     private data class PendingEpisodePreparation(
         val key: String,
+        val ticket: Long,
         val job: java.util.concurrent.Future<*>,
         val scope: RequestScope,
         val http: okhttp3.OkHttpClient,
@@ -177,7 +177,7 @@ class MainActivity : Activity() {
     private var lastPlaybackFailure = ""
     private var lastPlaybackDetail: String? = null
     private var autoRecoveredPlay = false
-    private var queuedNext: RemoteVideo? = null
+    private var queuedNext: OpenedStream? = null
     private var queuedHttp: okhttp3.OkHttpClient? = null
     private var queuedEpisode = -1
     private var episodeDuration = 0L
@@ -298,6 +298,9 @@ class MainActivity : Activity() {
     private val sleepTimer = SleepTimer { android.os.SystemClock.elapsedRealtime() }
     private var sleepStopped = false
     private var playerView: PlayerView? = null
+    private val bufferingIndicator = PlaybackBufferingIndicator(main) { visible ->
+        playerView?.setShowBuffering(if (visible) PlayerView.SHOW_BUFFERING_ALWAYS else PlayerView.SHOW_BUFFERING_NEVER)
+    }
     private val social by lazy {
         TvSocial(
             this,
@@ -347,6 +350,8 @@ class MainActivity : Activity() {
     private var hideAutoplayOverlay = false
     private var recoveryDisplayActive = false
     private var allowSlowRecovery = false
+    private var waitForEmptyPlaybackModels = false
+    private val slowRecoveryAllowed get() = allowSlowRecovery || waitForEmptyPlaybackModels
     private var playbackPreparationUntil = 0L
     private var recoveryAction: TextView? = null
     private var retryAutoplay = true
@@ -387,7 +392,7 @@ class MainActivity : Activity() {
         retryPending = false
         if (foreground && screen == "player" && playError && autoRecovery) {
             if (!networkAvailable()) scheduleRecovery()
-            else if (!allowSlowRecovery && android.os.SystemClock.elapsedRealtime() >= playbackPreparationUntil) scheduleRecovery()
+            else if (!slowRecoveryAllowed && android.os.SystemClock.elapsedRealtime() >= playbackPreparationUntil) scheduleRecovery()
             else if (recovery.consume()) {
                 android.util.Log.i(
                     "HongguoTV",
@@ -442,13 +447,32 @@ class MainActivity : Activity() {
     private var playbackReady = false
     private var pausedForLifecycle = false
     private lateinit var hud: LinearLayout
-    private var persistentProgress: LinearLayout? = null
-    private var persistentTime: TextView? = null
+    private var seekHint: TextView? = null
     private var persistentBar: ProgressBar? = null
     private lateinit var playbackText: TextView
     private lateinit var progressBar: ProgressBar
     private lateinit var controls: LinearLayout
     private var panel = false
+    // Consume the entire shortcut press, even when ACTION_DOWN opens a focusable panel.
+    private val playerShortcutKeys = mutableSetOf<Int>()
+    private var pendingEpisodeTarget: Int? = null
+    private var pendingEpisodeSwitch: Runnable? = null
+    private var automaticEpisodeFrom = -1
+    private var automaticEpisodeAt = -1L
+
+    private fun cancelEpisodeSwitch() {
+        pendingEpisodeSwitch?.let(main::removeCallbacks)
+        pendingEpisodeSwitch = null
+        pendingEpisodeTarget = null
+    }
+
+    private fun playerModalOpen() =
+        tvTools.showing || relayDialog != null || social.showing
+
+    private fun playerControlsOpen() =
+        panel || playError || recoveryDisplayActive ||
+            (controls.visibility == View.VISIBLE && controls.childCount > 0)
+
     private var playbackClock: TextClock? = null
     private var transportPlay: TextView? = null
     private var sleepButton: TextView? = null
@@ -476,9 +500,17 @@ class MainActivity : Activity() {
                     maybePrepareSeason()
                     updateSeasonBanner()
                     val now = android.os.SystemClock.elapsedRealtime()
-                    if (android.util.Log.isLoggable("HGPlayback", android.util.Log.DEBUG) && now - lastPlaybackDiagnosticAt >= 5000) {
+                    if (android.util.Log.isLoggable("HGPlayback", android.util.Log.DEBUG) && now - lastPlaybackDiagnosticAt >= 1000) {
                         player?.let { p ->
-                            android.util.Log.d("HGPlayback", "state=${p.playbackState} playing=${p.isPlaying} suppressed=${p.playbackSuppressionReason} position=${p.currentPosition} buffered=${p.totalBufferedDuration} audio=${p.audioDecoderCounters?.renderedOutputBufferCount} audioQueued=${p.audioDecoderCounters?.queuedInputBufferCount} audioMime=${p.audioFormat?.sampleMimeType} audioRate=${p.audioFormat?.sampleRate} audioChannels=${p.audioFormat?.channelCount} video=${p.videoDecoderCounters?.renderedOutputBufferCount}")
+                            val video = p.videoDecoderCounters?.also { it.ensureUpdated() }
+                            val audio = p.audioDecoderCounters?.also { it.ensureUpdated() }
+                            android.util.Log.d("HGPlayback",
+                                "tMs=$now dropped=${video?.droppedBufferCount} skipped=${video?.skippedOutputBufferCount}" +
+                                    " size=${p.videoSize.width}x${p.videoSize.height} state=${p.playbackState} playing=${p.isPlaying}" +
+                                    " suppressed=${p.playbackSuppressionReason} position=${p.currentPosition} buffered=${p.totalBufferedDuration}" +
+                                    " audio=${audio?.renderedOutputBufferCount} audioQueued=${audio?.queuedInputBufferCount}" +
+                                    " audioMime=${p.audioFormat?.sampleMimeType} audioRate=${p.audioFormat?.sampleRate}" +
+                                    " audioChannels=${p.audioFormat?.channelCount} video=${video?.renderedOutputBufferCount}")
                         }
                         lastPlaybackDiagnosticAt = now
                     }
@@ -508,7 +540,7 @@ class MainActivity : Activity() {
             }
         }
     private val hideHud = Runnable {
-        if (screen == "player" && player?.isPlaying == true && !playError && !waitingForFirstFrame && root.hasWindowFocus())
+        if (screen == "player" && player?.isPlaying == true && !playerControlsOpen() && !playerModalOpen() && !waitingForFirstFrame && root.hasWindowFocus())
             hidePlaybackOverlay()
     }
     private val seekRunnable = Runnable {
@@ -770,6 +802,7 @@ class MainActivity : Activity() {
     }
 
     private fun invalidatePage() {
+        cancelEpisodeSwitch()
         cancelNextSeason()
         generation++
         cancelWork()
@@ -1104,6 +1137,7 @@ class MainActivity : Activity() {
                         library.maxQuality,
                         account = cloudAccount.recommendationCredentials(),
                         startupCache = cloudAccount.recommendationStartupCache(),
+                        recentSources = recentPlaybackSources,
                     ),
                     Media3TrialPlayback(this, library.playbackSpeed, library.frameMode),
                     autoPreview = library.homeAutoplay,
@@ -2365,6 +2399,8 @@ class MainActivity : Activity() {
                     qualityButton = setting("默认清晰度  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton, false) }
                     lateinit var speed: TextView
                     speed = setting("默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(speed, false) }
+                    lateinit var danmaku: TextView
+                    danmaku = setting("弹幕设置") { social.settings(danmaku) }
                     lateinit var frame: TextView
                     frame = setting("画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame, false) }
                     lateinit var rotationButton: TextView
@@ -2533,6 +2569,11 @@ class MainActivity : Activity() {
         fromHome: Boolean = false,
         fromPhone: Boolean = false,
     ) {
+        val trial = if (fromHome && resume) homeFeed?.currentPlayback(series.id) else null
+        val trialEpisodeId = trial?.episodeId
+        val trialSource = trial?.video?.preparedSource()
+        val trialCapturedAt = android.os.SystemClock.elapsedRealtime()
+        val trialMaxQuality = trialSource?.let { library.maxQuality }
         if (!fromRelated) detailTrail.clear()
         relatedSection = null
         val accountScope = cloudAccount.historyScope
@@ -2578,8 +2619,21 @@ class MainActivity : Activity() {
                     )
                 episodeIndex = target.index
                 group = episodeIndex / 20
-                if (resume) playEpisode(target.index, target.position, autoplay = detailAutoplay)
-                else showDetail(false)
+                if (!resume) {
+                    showDetail(false)
+                    return@work
+                }
+                val episodeId = result.episodes.getOrNull(target.index)
+                if (trial != null && trialSource != null && episodeId != null && episodeId == trialEpisodeId &&
+                    trialMaxQuality == library.maxQuality &&
+                    android.os.SystemClock.elapsedRealtime() - trialCapturedAt in 0..15_000
+                ) {
+                    cancelPrefetch()
+                    val key = "$episodeId:$trialMaxQuality"
+                    val opened = OpenedStream(trialSource.open(repository.http), trial.rendition, trial.tiers, trial.track)
+                    preparedNext.complete(preparedNext.begin(key), key, opened)
+                }
+                playEpisode(target.index, target.position, autoplay = detailAutoplay)
             },
             { problem ->
                 error(body, problem) {
@@ -2734,118 +2788,23 @@ class MainActivity : Activity() {
         content.addView(text("选集分组 · 共 ${data.episodes.size} 集", 12f, muted).apply {
             setPadding(0, dp(12), 0, dp(6))
         })
-        val groupRow = row()
-        groupRow.gravity = Gravity.CENTER_VERTICAL
-        groupRow.setPadding(0, dp(3), 0, dp(10))
-        val maxGroup = data.episodes.lastIndex / 20
-        group = group.coerceIn(0, maxGroup)
-        val groupStrip = row()
-        val groupScroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            isFocusable = false
-            addView(groupStrip)
-        }
-        groupRow.addView(groupScroll, lp(0, dp(44)).apply { weight = 1f; rightMargin = dp(12) })
-        val groupButtons = (0..maxGroup).map { index ->
-            val start = index * 20 + 1
-            val end = minOf((index + 1) * 20, data.episodes.size)
-            button("$start–$end", index == group) {
-                if (group != index) {
-                    group = index
-                    showDetail(true)
-                    root.findViewWithTag<View>("episode-group-$index")?.requestFocus()
-                }
-            }.apply {
-                tag = "episode-group-$index"
-                contentDescription = "第 $start 至 $end 集分组"
-                textSize = 13f
-                minWidth = dp(88)
-                setPadding(dp(14), 0, dp(14), 0)
-                fun paintGroup() {
-                    setTextColor(if (isSelected) accent else if (hasFocus()) white else muted)
-                    setTypeface(null, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
-                    background = TvStyle.shape(this@MainActivity,
-                        if (isSelected || hasFocus()) TvStyle.raised else Color.TRANSPARENT,
-                        if (hasFocus()) white else Color.TRANSPARENT, radius = 20)
-                }
-                setOnFocusChangeListener { _, _ -> paintGroup() }
-                paintGroup()
-                groupStrip.addView(this, lp(-2, dp(40)).apply { rightMargin = dp(6) })
-            }
-        }
-        val selectedGroupButton = groupButtons[group]
-        groupScroll.post {
-            groupScroll.scrollTo((selectedGroupButton.left - groupScroll.width / 2 +
-                selectedGroupButton.width / 2).coerceAtLeast(0), 0)
-        }
-        lateinit var jump: TextView
-        jump =
-            addButton(groupRow, "跳转集数") {
-                tvTools.episodePicker(data.episodes.size, episodeIndex, jump) { target ->
-                    playEpisode(target)
-                }
-            }
-        content.addView(groupRow)
-        content.addView(
-            text("高亮为当前集 · 上次为续播位置 · 方向键选择，确定播放", 12f, muted).apply { setPadding(0, 0, 0, dp(6)) }
+        group = group.coerceIn(0, data.episodes.lastIndex / 20)
+        val selector = EpisodeSelectorView(
+            this, data.episodes.size, episodeIndex, group, resumeIndex, progress?.completed == true,
+            onGroup = { index ->
+                group = index
+                showDetail(true)
+                root.findViewWithTag<View>("episode-group-$index")?.requestFocus()
+            },
+            onJump = { focused, anchor ->
+                tvTools.episodePicker(data.episodes.size, focused, anchor, ::playSelectedEpisode)
+            },
+            onSelect = ::playSelectedEpisode,
         )
-        val episodes = mutableListOf<View>()
-        (group * 20 until minOf((group + 1) * 20, data.episodes.size))
-            .toList()
-            .chunked(10)
-            .forEach { numbers ->
-                val line = row()
-                numbers.forEach { index ->
-                    val item =
-                        button(
-                            "${index+1}" +
-                                (if (index == episodeIndex) "\n当前"
-                                else if (index == resumeIndex && progress != null)
-                                    if (progress.completed) "\n已看" else "\n上次"
-                                else ""),
-                            index == episodeIndex,
-                        ) {
-                            val current = detailProgress(data)
-                            playEpisode(
-                                index,
-                                if (
-                                    current?.episodeId == data.episodes[index] && !current.completed
-                                )
-                                    current.position
-                                else 0,
-                            )
-                        }
-                    item.textSize = 12f
-                    item.includeFontPadding = false
-                    item.setPadding(dp(2), dp(3), dp(2), dp(3))
-                    item.contentDescription = "第 ${index+1} 集"
-                    line.addView(
-                        item,
-                        lp(0, dp(52)).apply {
-                            weight = 1f
-                            rightMargin = dp(6)
-                        },
-                    )
-                    episodes += item
-                }
-                repeat(10 - numbers.size) {
-                    line.addView(
-                        Space(this),
-                        lp(0, dp(52)).apply {
-                            weight = 1f
-                            rightMargin = dp(6)
-                        },
-                    )
-                }
-                content.addView(line, lp(-1, dp(60)))
-            }
-        episodes.forEachIndexed { i, v ->
-            v.nextFocusLeftId = if (i % 10 == 0) v.id else episodes[i - 1].id
-            v.nextFocusRightId =
-                if (i % 10 == 9 || i == episodes.lastIndex) v.id else episodes[i + 1].id
-            if (i >= 10) v.nextFocusUpId = episodes[i - 10].id
-            v.nextFocusDownId = if (i + 10 < episodes.size) episodes[i + 10].id else v.id
-        }
+        content.addView(selector)
+        val groupButtons = selector.groupButtons
+        val jump = selector.jump
+        val episodes = selector.episodes
         val primary = listOf(play, detailComments)
         play.setTextColor(accent)
         val secondaryActions = listOf(accountFavoriteButton!!, synopsisButton)
@@ -2961,6 +2920,18 @@ class MainActivity : Activity() {
         automaticNext: Boolean = false,
         recreateView: Boolean = false,
     ) {
+        val keepOverlayHidden = screen == "player" && !panel && hud.visibility != View.VISIBLE
+        val restoreControls = automaticNext && panel && !playError
+        val restoreControlTag = if (restoreControls) controls.findFocus()?.tag else null
+        if (automaticNext) {
+            if (pendingEpisodeTarget != null) return
+            automaticEpisodeFrom = episodeIndex
+            automaticEpisodeAt = android.os.SystemClock.uptimeMillis()
+        } else {
+            automaticEpisodeFrom = -1
+            automaticEpisodeAt = -1L
+        }
+        cancelEpisodeSwitch()
         cancelNextSeason()
         seasonSuppressed = false
         updater.interrupt()
@@ -2989,11 +2960,11 @@ class MainActivity : Activity() {
             return
         }
         val prepareKey = "${data.episodes[selectedIndex]}:${library.maxQuality}"
-        // 切到正在准备的下一集时接管原任务，不能先 take/clear 再取消，否则会重新请求同一集。
+        // Retain a nearly completed prefetch while keeping most of the foreground deadline available.
         val pending =
             if (position == 0L && !recovering) claimPendingPreparation(prepareKey) else null
         val prefetched =
-            if (position == 0L && !recovering && pending == null) preparedNext.take(prepareKey)
+            if (!recovering && pending == null) preparedNext.take(prepareKey)
             else null
         val claimedHttp =
             if (prefetched != null) prefetchHttp.also { prefetchHttp = null } else null
@@ -3021,18 +2992,20 @@ class MainActivity : Activity() {
             video = null
             closeTransport(playbackHttp)
             playbackHttp = null
+            hideSeekHint()
             main.removeCallbacks(hideHud)
             main.removeCallbacks(seekRunnable)
             pendingSeek = null
         } else releasePlayer(keepPrepared = pending != null)
         artwork.cancelPage(clearMemory = true)
         playbackHttp = claimedHttp
-        video = prefetched
+        video = prefetched?.video
         var firstReady = true
         var firstFrame = true
         if (!recovering) {
             recovery.reset()
             allowSlowRecovery = false
+            waitForEmptyPlaybackModels = false
             playbackPreparationUntil = android.os.SystemClock.elapsedRealtime() + 20_000
             autoRecoveredPlay = false
         }
@@ -3047,7 +3020,7 @@ class MainActivity : Activity() {
         panel = false
         playError = false
         waitingForFirstFrame = true
-        hideAutoplayOverlay = automaticNext && !keepRecoveryStatus
+        hideAutoplayOverlay = (automaticNext || keepOverlayHidden) && !keepRecoveryStatus
         recoveryDisplayActive = keepRecoveryStatus
         relayAttempted = false
         relaySlowHintShown = false
@@ -3076,23 +3049,26 @@ class MainActivity : Activity() {
                     isFocusable = false
                     setKeepContentOnPlayerReset(true)
                     setShutterBackgroundColor(Color.BLACK)
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                 }
             playerView = view
             root.addView(view, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
             view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyVideoRotation() }
             view.post { if (playerView === view) applyVideoRotation() }
-            persistentTime = text("", 12f, Color.WHITE)
-            persistentBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000; progressTintList = android.content.res.ColorStateList.valueOf(accent) }
-            persistentProgress = column().apply {
+            persistentBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = 1000
+                progressTintList = android.content.res.ColorStateList.valueOf(accent)
                 isFocusable = false
-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                setPadding(dp(12), dp(4), dp(12), dp(6))
-                setBackgroundColor(Color.argb(160, 0, 0, 0))
-                addView(persistentTime); addView(persistentBar, lp(-1, dp(3)))
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 visibility = View.GONE
             }
-            root.addView(persistentProgress, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+            root.addView(persistentBar, FrameLayout.LayoutParams(-1, dp(3), Gravity.BOTTOM))
+            seekHint = text("", 18f, Color.WHITE).apply {
+                setPadding(dp(10), dp(4), dp(10), dp(4))
+                background = rounded(Color.argb(150, 11, 15, 21))
+                visibility = View.GONE
+            }
+            root.addView(seekHint, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
             social.attach(root)
             playbackClock = TextClock(this).apply {
                 format12Hour = "HH:mm"
@@ -3139,7 +3115,7 @@ class MainActivity : Activity() {
                 }
             hud.addView(progressBar, lp(-1, dp(4)))
             hud.addView(
-                text("确认 暂停/播放    左右 快退/快进    ↓ 选集    ↑ 操作菜单    菜单 更多", 13f, Color.LTGRAY).apply {
+                text("观看时 ↑ 上一集  ↓ 下一集  ← → 快退/快进\n确认 暂停/继续并打开菜单 · 菜单键 打开菜单", 13f, Color.LTGRAY).apply {
                     setPadding(0, dp(12), 0, 0)
                 }
             )
@@ -3172,6 +3148,10 @@ class MainActivity : Activity() {
         }
         transportPlay = null
         sleepButton = null
+        if (restoreControls) {
+            showPanel()
+            if (restoreControlTag != null) controls.findViewWithTag<View>(restoreControlTag)?.requestFocus()
+        }
         syncMediaSession()
         val requestedId = data.episodes[episodeIndex]
         val maxQuality = library.maxQuality
@@ -3179,7 +3159,7 @@ class MainActivity : Activity() {
         var usedPending = false
         work(
             {
-                val remaining = if (allowSlowRecovery) 20_000L else
+                val remaining = if (slowRecoveryAllowed) 20_000L else
                     playbackPreparationUntil - android.os.SystemClock.elapsedRealtime()
                 if (remaining <= 0) throw java.net.SocketTimeoutException("播放准备超时")
                 RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(remaining)) {
@@ -3188,13 +3168,14 @@ class MainActivity : Activity() {
                             ?: pending?.let {
                                 awaitPreparedEpisode(it, remaining).also { ready -> usedPending = ready != null }
                             }
-                    prepared?.let { OpenedStream(it, null, emptyList(), it.trackInfo()) }
+                    prepared
                         ?: openStream(
                             repository.http,
                             repository,
                             requestedId,
                             maxQuality,
                             CodecCapabilities::supports,
+                            recentPlaybackSources,
                             metadataAhead = data.episodes.drop(selectedIndex + 1).take(2),
                         ) {
                             it == null || CodecCapabilities.supports(it)
@@ -3209,11 +3190,7 @@ class MainActivity : Activity() {
                 }
                 val remote = opened.video
                 video = remote
-                quality = playedQualityLabel(opened, maxQuality)
-                attemptedQuality = opened.rendition?.quality ?: 0
-                currentTrack = opened.track
-                currentRendition = opened.rendition
-                currentTiers = opened.tiers
+                applyOpenedStream(opened, maxQuality)
                 val p =
                     ensurePlayer()
                 p.setPlaybackSpeed(library.playbackSpeed)
@@ -3253,6 +3230,7 @@ class MainActivity : Activity() {
                             if (state == Player.STATE_ENDED) {
                                 saveProgress(true)
                                 if (sleepTimer.episodeEnded()) stopForSleep()
+                                else if (pendingEpisodeTarget != null) return
                                 else if (
                                     foreground &&
                                         requestedAutoplay &&
@@ -3352,41 +3330,44 @@ class MainActivity : Activity() {
     private fun claimPendingPreparation(key: String): PendingEpisodePreparation? {
         if (prefetchedFor != key || preparedNext.isFresh(key)) return null
         val job = prefetchJob?.takeIf { !it.isDone } ?: return null
+        val ticket = preparedNext.ticketFor(key) ?: return null
         val scope = prefetchScope ?: return null
         val http = prefetchHttp ?: return null
         prefetchJob = null
         prefetchScope = null
         prefetchHttp = null
         prefetchedFor = ""
-        return PendingEpisodePreparation(key, job, scope, http)
+        return PendingEpisodePreparation(key, ticket, job, scope, http)
     }
 
-    private fun awaitPreparedEpisode(pending: PendingEpisodePreparation, remainingMillis: Long): RemoteVideo? {
+    private fun awaitPreparedEpisode(pending: PendingEpisodePreparation, remainingMillis: Long): OpenedStream? {
         try {
-            pending.job.get(remainingMillis.coerceAtLeast(1), java.util.concurrent.TimeUnit.MILLISECONDS)
+            pending.job.get(minOf(400L, remainingMillis), java.util.concurrent.TimeUnit.MILLISECONDS)
         } catch (_: java.util.concurrent.TimeoutException) {
-            pending.scope.cancel()
-            pending.job.cancel(true)
-            closeTransport(pending.http)
-            throw java.net.SocketTimeoutException("预加载等待超时")
+            cancelPreparedWork(pending)
+            return null
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             throw java.io.InterruptedIOException("播放准备已取消")
         } catch (_: java.util.concurrent.ExecutionException) {
-            // 预加载失败只影响本次投机任务；正式播放仍可正常重新获取一次。
+            // A failed background request leaves the foreground path available.
         } catch (_: java.util.concurrent.CancellationException) {
-            throw java.io.InterruptedIOException("播放准备已取消")
+            // Check the foreground scope below before using the network again.
         }
-        if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放准备已取消")
-        return preparedNext.take(pending.key)
+        RequestScope.ensureActive()
+        return preparedNext.take(pending.key, pending.ticket)
+    }
+
+    private fun cancelPreparedWork(pending: PendingEpisodePreparation) {
+        preparedNext.take(pending.key, pending.ticket)?.close()
+        pending.scope.cancel()
+        pending.job.cancel(true)
     }
 
     private fun cancelPromotedPreparation() {
         val pending = promotedPreparation ?: return
         promotedPreparation = null
-        pending.scope.cancel()
-        pending.job.cancel(true)
-        preparedNext.clear()
+        cancelPreparedWork(pending)
         closeTransport(pending.http)
     }
 
@@ -3450,6 +3431,7 @@ class MainActivity : Activity() {
         if (
             prefetchAttempts >= 3 ||
                 (prefetchAttempts > 0 && now - prefetchAttemptAt < 15_000) ||
+                repository.shouldDeferPlaybackPrefetch() ||
                 connectivity.isActiveNetworkMetered ||
                 !networkAvailable()
         )
@@ -3465,25 +3447,24 @@ class MainActivity : Activity() {
         prefetchScope = scope
         prefetchJob =
             prefetchWorker.submit {
-                var remote: RemoteVideo? = null
                 try {
                     val prepared =
                         scope.run {
-                            val opened =
-                                // 播放地址复用当前 Repository 的设备身份和会话；仅视频传输独立取消。
+                            RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(5)) {
                                 openStream(
                                     http,
                                     repository,
                                     id,
                                     quality,
                                     CodecCapabilities::supports,
+                                    recentPlaybackSources,
                                     initialBytes = 32 * 1024,
                                     metadataAhead = metadataAhead,
                                     speculative = true,
                                 ) {
                                     it == null || CodecCapabilities.supports(it)
                                 } ?: throw java.io.IOException("没有电视可播放的清晰度")
-                            opened.video.also { remote = it }
+                            }
                         }
                     if (preparedNext.complete(ticket, key, prepared)) {
                         android.util.Log.i(
@@ -3493,7 +3474,6 @@ class MainActivity : Activity() {
                         main.post { queuePreparedEpisode(key) }
                     }
                 } catch (problem: Exception) {
-                    remote?.close()
                     android.util.Log.i(
                         "HongguoTV",
                         "Next episode preparation unavailable: ${problem.javaClass.simpleName}",
@@ -3510,7 +3490,7 @@ class MainActivity : Activity() {
             .build()
 
     private fun episodeSource(remote: RemoteVideo, id: String) =
-        ProgressiveMediaSource.Factory { VideoDataSource(remote) }
+        playbackSourceFactory { VideoDataSource(remote) }
             .createMediaSource(
                 MediaItem.Builder()
                     .setMediaId(id)
@@ -3537,12 +3517,12 @@ class MainActivity : Activity() {
                 p.currentMediaItem?.mediaId != data.episodes[episodeIndex]
         )
             return
-        val remote = preparedNext.take(key) ?: return
-        queuedNext = remote
+        val prepared = preparedNext.take(key) ?: return
+        queuedNext = prepared
         queuedHttp = prefetchHttp
         prefetchHttp = null
         queuedEpisode = next
-        p.addMediaSource(episodeSource(remote, data.episodes[next]))
+        p.addMediaSource(episodeSource(prepared.video, data.episodes[next]))
         android.util.Log.i("HongguoTV", "Next episode added to playback queue target=${next+1}")
     }
 
@@ -3593,8 +3573,12 @@ class MainActivity : Activity() {
         val previous = video
         val previousHttp = playbackHttp
         social.reset()
-        video = next
+        video = next.video
         playbackHttp = queuedHttp
+        if (completed) {
+            automaticEpisodeFrom = episodeIndex
+            automaticEpisodeAt = android.os.SystemClock.uptimeMillis()
+        }
         episodeIndex = queuedEpisode
         group = episodeIndex / 20
         queuedNext = null
@@ -3603,7 +3587,9 @@ class MainActivity : Activity() {
         if (p.currentMediaItemIndex > 0) p.removeMediaItems(0, p.currentMediaItemIndex)
         previous?.close()
         closeTransport(previousHttp)
-        quality = next.info.quality
+        hideSeekHint()
+        applyOpenedStream(next, library.maxQuality)
+        autoDowngrades = 0
         pendingSeek = null
         startPosition = 0
         playbackReady = p.playbackState == Player.STATE_READY
@@ -3614,13 +3600,17 @@ class MainActivity : Activity() {
         cancelRecovery()
         recovery.reset()
         playbackTitle.text = "${data.series.title}  ·  第 ${episodeIndex+1} 集"
-        controls.removeAllViews()
-        controls.visibility = View.GONE
-        panel = false
-        // 自动队列续播保持画面干净，手动切集仍沿用原有提示。
-        hideAutoplayOverlay = completed
-        if (completed) hidePlaybackOverlay()
-        transportPlay = null
+        if (panel && completed) {
+            if (pendingEpisodeTarget == null) showPanel()
+        } else {
+            controls.removeAllViews()
+            controls.visibility = View.GONE
+            panel = false
+        }
+        // Preserve a hidden overlay for both automatic and remote episode switches.
+        hideAutoplayOverlay = completed || hud.visibility != View.VISIBLE
+        if (hideAutoplayOverlay && !panel && !playerModalOpen()) hidePlaybackOverlay()
+        if (!panel) transportPlay = null
         saveProgress()
         syncMediaSession()
         android.util.Log.i("HongguoTV", "Playback queue transition episode=${episodeIndex+1}")
@@ -3647,7 +3637,7 @@ class MainActivity : Activity() {
                 autoplay = retryAutoplay,
                 slow = recovery.slow,
                 attempt = recovery.attempts + 1,
-                total = if (allowSlowRecovery) recovery.total else RecoveryBudget.FAST_ATTEMPTS,
+                total = if (slowRecoveryAllowed) recovery.total else recovery.fastAttempts,
                 remainingMillis = remainingMillis,
                 positionText = formatTime(retryPosition),
             )
@@ -3655,7 +3645,7 @@ class MainActivity : Activity() {
 
     private fun scheduleRecovery() {
         if (!foreground || !playError || !autoRecovery || retryPending) return
-        if (!recovery.remaining || (!allowSlowRecovery &&
+        if (!recovery.remaining || (!slowRecoveryAllowed &&
             (recovery.slow || android.os.SystemClock.elapsedRealtime() >= playbackPreparationUntil))) {
             autoRecovery = false
             playbackText.text = (if (recovery.remaining)
@@ -3673,7 +3663,7 @@ class MainActivity : Activity() {
             return
         }
         val plannedDelay = recovery.delayMillis ?: return
-        val delay = if (allowSlowRecovery) plannedDelay else minOf(plannedDelay,
+        val delay = if (slowRecoveryAllowed) plannedDelay else minOf(plannedDelay,
             (playbackPreparationUntil - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0))
         recoveryScheduledAt = android.os.SystemClock.uptimeMillis()
         recoveryDelayMillis = delay
@@ -3701,9 +3691,8 @@ class MainActivity : Activity() {
         }
 
     /**
-     * Detects growing audio/video drift (video frame processing offset stays signed) and re-seeks
-     * to the current position once per cooldown window: a seek flushes the audio processors and
-     * clock basis, which users confirmed restores sync; a pause does not.
+     * Requests recovery only for a batch of persistently late video frames. Media3 reports
+     * processing offsets when its renderer stops, so this does not measure lip sync directly.
      */
     private fun playbackDriftListener(p: ExoPlayer): AnalyticsListener {
         val guard = PlaybackSyncGuard()
@@ -3761,19 +3750,35 @@ class MainActivity : Activity() {
         return if (ideal != null && rendition.quality < ideal) label + "（自动降清）" else label
     }
 
+    private fun applyOpenedStream(opened: OpenedStream, maxQuality: Int) {
+        quality = playedQualityLabel(opened, maxQuality)
+        attemptedQuality = opened.rendition?.quality ?: 0
+        currentTrack = opened.track
+        currentRendition = opened.rendition
+        currentTiers = opened.tiers
+    }
+
     /** 懒建播放器（正式路径与伴机路径共用）；已存在则原样返回。 */
     private fun ensurePlayer(): ExoPlayer =
         player
             ?: run {
+                // Older TVs recover poorly from starvation. Read ahead while bandwidth is
+                // available, with the same startup thresholds and allocator byte target.
                 val load =
                     DefaultLoadControl.Builder()
-                        .setBufferDurationsMs(15000, 30000, 1000, 2000)
+                        .setBufferDurationsMs(
+                            if (Build.VERSION.SDK_INT <= 22) 50_000 else 15_000,
+                            if (Build.VERSION.SDK_INT <= 22) 60_000 else 30_000,
+                            1000,
+                            2000,
+                        )
                         .setTargetBufferBytes(12 * 1024 * 1024)
                         .build()
                 val renderers =
                     playbackRenderers(this)
                 ExoPlayer.Builder(this, renderers).setLoadControl(load).build().also {
                     player = it
+                    it.addListener(bufferingIndicator)
                     playerView?.player = it
                     it.setAudioAttributes(
                         AudioAttributes.Builder()
@@ -3783,6 +3788,7 @@ class MainActivity : Activity() {
                         true,
                     )
                     it.setHandleAudioBecomingNoisy(true)
+                    it.addAnalyticsListener(PlaybackDiagnostics("player"))
                     it.addAnalyticsListener(playbackDriftListener(it))
                 }
             }
@@ -3895,6 +3901,7 @@ class MainActivity : Activity() {
                             if (state == Player.STATE_ENDED) {
                                 saveProgress(true)
                                 if (sleepTimer.episodeEnded()) stopForSleep()
+                                else if (pendingEpisodeTarget != null) return
                                 else if (
                                     foreground && requestedAutoplay && !pausedForLifecycle && library.autoNext &&
                                         !sleepStopped &&
@@ -3983,7 +3990,7 @@ class MainActivity : Activity() {
     }
 
     /** 伴机设置：开关 + 局域网地址 + 连接测试。 */
-    private fun showRelaySettings(anchor: TextView) {
+    private fun showRelaySettings(anchor: TextView, onBack: (() -> Unit)? = null) {
         if (relayDialog != null) return
         val container =
             LinearLayout(this).apply {
@@ -4127,6 +4134,15 @@ class MainActivity : Activity() {
             if (anchor.isAttachedToWindow) anchor.requestFocus()
         }
         relayDialog = dialog
+        if (onBack != null) dialog.setOnKeyListener { _, key, event ->
+            if (key == KeyEvent.KEYCODE_BACK) {
+                if (event.action == KeyEvent.ACTION_UP) {
+                    dialog.dismiss()
+                    main.post { if (screen == "player" && anchor.isAttachedToWindow) onBack() }
+                }
+                true
+            } else false
+        }
         dialog.show()
     }
 
@@ -4137,6 +4153,7 @@ class MainActivity : Activity() {
             allowSlowRecovery = false
             recovery.reset()
         }
+        waitForEmptyPlaybackModels = hasEmptyPlaybackModels(problem)
         lastPlaybackFailure = playbackFailureSummary(problem)
         lastPlaybackDetail = diagnosticDetail(problem)
         retryPosition = currentPosition().coerceAtLeast(0)
@@ -4267,14 +4284,16 @@ class MainActivity : Activity() {
         waitingForFirstFrame = false
         recoveryDisplayActive = false
         allowSlowRecovery = false
-        controls.removeAllViews()
-        controls.visibility = View.GONE
-        panel = false
+        waitForEmptyPlaybackModels = false
+        if (!panel) {
+            controls.removeAllViews()
+            controls.visibility = View.GONE
+        }
         if (autoRecoveredPlay) {
             autoRecoveredPlay = false
             Toast.makeText(this, "已恢复播放", Toast.LENGTH_SHORT).show()
         }
-        if (hideAutoplayOverlay) {
+        if (hideAutoplayOverlay && !panel && !playerModalOpen()) {
             hideAutoplayOverlay = false
             hidePlaybackOverlay()
         } else showHud()
@@ -4303,12 +4322,13 @@ class MainActivity : Activity() {
 
     private fun showHud() {
         if (screen != "player") return
+        hideSeekHint()
         hideAutoplayOverlay = false
         hud.visibility = View.VISIBLE
         updateClock()
         updatePlaybackText()
         main.removeCallbacks(hideHud)
-        if (player?.isPlaying == true) main.postDelayed(hideHud, if (panel) 8000 else 4500)
+        if (player?.isPlaying == true && !playerControlsOpen() && !playerModalOpen()) main.postDelayed(hideHud, 4500)
     }
 
     private fun updatePlaybackText() {
@@ -4369,7 +4389,7 @@ class MainActivity : Activity() {
         showHud()
         updatePlaybackText()
         syncMediaSession()
-        if (panel && episodePanel == null) showPanel()
+        // Updating the label is sufficient; rebuilding here loses the focused control.
     }
 
     private fun togglePlayback() =
@@ -4388,11 +4408,36 @@ class MainActivity : Activity() {
         showHud()
     }
 
-    private fun skipEpisode(direction: Int) {
-        if (!foreground || screen != "player") return
-        val count = detail?.episodes?.size ?: return
-        val target = episodeIndex + direction
-        if (target in 0 until count) playEpisode(target)
+    private fun skipEpisode(direction: Int, pressedAt: Long = android.os.SystemClock.uptimeMillis()) {
+        if (!foreground || screen != "player" || playerModalOpen() || episodePanel != null) return
+        val data = detail ?: return
+        // A queued key may predate the automatic transition already delivered on the main thread.
+        val base = pendingEpisodeTarget ?: if (
+            automaticEpisodeFrom >= 0 && pressedAt <= automaticEpisodeAt &&
+            automaticEpisodeAt - pressedAt < 500
+        ) automaticEpisodeFrom else episodeIndex
+        val target = base + direction
+        if (target !in data.episodes.indices) {
+            Toast.makeText(this, if (direction < 0) "已经是第一集" else "已经是最后一集", Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingEpisodeSwitch?.let(main::removeCallbacks)
+        pendingEpisodeTarget = target
+        val ticket = generation
+        if (hud.visibility == View.VISIBLE) playbackText.text = "即将播放第 ${target + 1} 集"
+        val switch = Runnable {
+            pendingEpisodeSwitch = null
+            pendingEpisodeTarget = null
+            if (foreground && screen == "player" && generation == ticket && detail === data) {
+                if (target != episodeIndex) playEpisode(target)
+                else {
+                    if (panel) showPanel() else updatePlaybackText()
+                }
+            }
+        }
+        pendingEpisodeSwitch = switch
+        // Coalesce taps before starting network/decoder work, not after starting each episode.
+        main.postDelayed(switch, 160)
     }
 
     private fun syncMediaSession() {
@@ -4427,6 +4472,7 @@ class MainActivity : Activity() {
     }
 
     private fun stopForSleep() {
+        cancelEpisodeSwitch()
         cancelNextSeason()
         sleepStopped = true
         requestedAutoplay = false
@@ -4462,6 +4508,7 @@ class MainActivity : Activity() {
                 updatePlaybackText()
                 showHud()
             },
+            onBack = if (anchor.tag == "playback-settings") ({ showPlaybackSettings(anchor) }) else null,
         )
     }
 
@@ -4493,18 +4540,23 @@ class MainActivity : Activity() {
                 }
             } else applyVideoRotation()
             if(anchor.tag!="playback-settings") anchor.text="画面旋转  ·  ${library.videoRotation}°"
-        })
+        }, onBack = if (anchor.tag == "playback-settings") ({ showPlaybackSettings(anchor) }) else null)
     }
     private fun updatePersistentProgress() {
-        if (persistentProgress == null || !library.isLoaded) return
-        val visible=PlaybackProgressDisplay.visible(library.alwaysShowProgress,screen=="player",hud.visibility==View.VISIBLE,playError)
-        persistentProgress?.visibility=if(visible) View.VISIBLE else View.GONE
-        if(!visible) return
-        val duration=player?.duration?.coerceAtLeast(0) ?: 0L
-        val position=currentPosition().coerceAtLeast(0)
-        persistentTime?.text=if(playbackReady) "${formatTime(position)} / ${if(duration>0) formatTime(duration) else "--:--"}" else "正在准备…"
-        persistentBar?.progress=PlaybackProgressDisplay.value(position,duration)
+        val bar = persistentBar ?: return
+        if (!library.isLoaded) return
+        val visible = PlaybackProgressDisplay.visible(library.alwaysShowProgress, screen == "player", hud.visibility == View.VISIBLE, playError)
+        bar.visibility = if (visible) View.VISIBLE else View.GONE
+        if (visible) bar.progress = PlaybackProgressDisplay.value(currentPosition(), player?.duration ?: 0L)
     }
+
+    private fun hideSeekHint() {
+        seekHint?.apply {
+            animate().cancel()
+            visibility = View.GONE
+        }
+    }
+
     private fun frameResizeMode() =
         when (library.frameMode) {
             VideoFrameMode.FIT -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -4524,6 +4576,7 @@ class MainActivity : Activity() {
                     anchor.text = (if (inPlayer) "画面 " else "画面模式  ·  ") + library.frameMode.label
             },
             selected = library.frameMode.ordinal,
+            onBack = if (inPlayer && anchor.tag == "playback-settings") ({ showPlaybackSettings(anchor) }) else null,
         )
     }
 
@@ -4533,111 +4586,121 @@ class MainActivity : Activity() {
         val duration = p.duration
         if (duration <= 0) return
         val step = if (repeat > 4) 30000 else 10000
-        pendingSeek =
+        val target =
             ((pendingSeek ?: p.currentPosition) + direction * step).coerceIn(
                 0,
                 (duration - 500).coerceAtLeast(0),
             )
         main.removeCallbacks(seekRunnable)
+        pendingSeek = target
         main.postDelayed(seekRunnable, 250)
-        updatePlaybackText()
-        showHud()
+        if (hud.visibility == View.VISIBLE) {
+            updatePlaybackText()
+            return
+        }
+        updatePersistentProgress()
+        seekHint?.apply {
+            animate().cancel()
+            alpha = 1f
+            text = formatTime(target)
+            visibility = View.VISIBLE
+            animate().alpha(0f).setStartDelay(900).setDuration(180)
+                .withEndAction { visibility = View.GONE }.start()
+        }
     }
 
     private fun showPanel() {
         seasonBanner?.visibility = View.GONE
-        if (playError) return
+        if (playError || recoveryDisplayActive) return
+        if (episodePanel != null) { showHud(); return }
+        cancelEpisodeSwitch()
+        val focusedTag = controls.findFocus()?.tag
         panel = true
         showHud()
         controls.visibility = View.VISIBLE
         controls.removeAllViews()
-        if (nextSeasonWork != null) addButton(controls, "取消本次跨季连播") {
-            seasonSuppressed = true
-            cancelNextSeason()
-            showPanel()
-        }
-
-        val transport = row()
-        controls.addView(transport)
-        val play =
-            addButton(transport, if (player?.playWhenReady == true) "暂停" else "播放") {
-                    togglePlayback()
-                }
-                .also { transportPlay = it }
-        addButton(transport, "上一集") { if (episodeIndex > 0) playEpisode(episodeIndex - 1) }
-            .apply {
-                isEnabled = episodeIndex > 0
-                isFocusable = episodeIndex > 0
-                alpha = if (episodeIndex > 0) 1f else .4f
+        val primary = row()
+        controls.addView(primary)
+        fun item(row: LinearLayout, title: String, key: String, action: () -> Unit): TextView =
+            PlaybackIconButton(this, key).apply {
+                text = title
+                tag = key
+                setOnClickListener { action() }
+                row.addView(this, LinearLayout.LayoutParams(dp(64), dp(52)).apply { rightMargin = dp(16) })
             }
-        addButton(transport, "下一集") {
-                if (episodeIndex < (detail?.episodes?.lastIndex ?: 0)) playEpisode(episodeIndex + 1)
-            }
-            .apply {
-                val enabled = episodeIndex < (detail?.episodes?.lastIndex ?: 0)
-                isEnabled = enabled
-                isFocusable = enabled
-                alpha = if (enabled) 1f else .4f
-            }
-        val options = row().apply { setPadding(0, dp(6), 0, 0) }
-        controls.addView(options)
+        val play = item(primary, if (requestedAutoplay) "暂停" else "播放", "transport-play") {
+            val play = !(player?.playWhenReady ?: requestedAutoplay)
+            episodePanel?.dismiss()
+            requestPlayback(play)
+            hidePanel()
+        }.also { transportPlay = it }
         lateinit var episodes: TextView
-        episodes = addButton(options, "选集") { showEpisodePanel(episodes) }
-        lateinit var commentsButton: TextView
-        commentsButton = addButton(options, "评论") { social.showComments(commentsButton) }
-        lateinit var danmakuButton: TextView
-        danmakuButton = addButton(options, "弹幕设置") { social.settings(danmakuButton) }
+        episodes = item(primary, "选集", "episodes") { showEpisodePanel(episodes) }
+        lateinit var speed: TextView
+        speed = item(primary, "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}", "speed") { showSpeedPicker(speed) }
+        lateinit var danmaku: TextView
+        danmaku = item(primary, "弹幕设置", "danmaku") { social.settings(danmaku) }
         lateinit var more: TextView
-        more =
-            addButton(options, "播放设置") {
-                    tvTools.choose(
-                        "播放设置",
-                        listOf(
-                            "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}",
-                            "清晰度 ${library.maxQuality}P",
-                            "画面 ${library.frameMode.label}",
-                            "定时 ${sleepTimer.label()}",
-                            "伴机代解码 ${if (relayStore.enabled) "开" else "关"}",
-                            "从头播放",
-                            "重置设备能力记录",
-                            "画面旋转 ${library.videoRotation}°",
-                            "常驻播放进度 ${if (library.alwaysShowProgress) "开启" else "关闭"}",
-                        ),
-                        more,
-                        { choice ->
-                            main.post {
-                                if (screen == "player" && more.isAttachedToWindow)
-                                    when (choice) {
-                                        0 -> showSpeedPicker(more)
-                                        1 -> showQualityPicker(more, true)
-                                        2 -> showFramePicker(more, true)
-                                        3 -> showSleepPicker(more)
-                                        4 -> showRelaySettings(more)
-                                        5 -> {
-                                            seekTo(0)
-                                            hidePanel()
-                                        }
-                                        7 -> showRotationPicker(more)
-                                        8 -> { library.alwaysShowProgress = !library.alwaysShowProgress; updatePersistentProgress() }
-                                        6 -> {
-                                            val count = CodecCapabilities.learnedCount()
-                                            CodecCapabilities.resetLearned()
-                                            android.util.Log.i(
-                                                "HongguoTV",
-                                                "Decoder capability lessons reset ($count entries)",
-                                            )
-                                            playbackText.text =
-                                                if (count > 0) "已清除 $count 条设备能力记录，重新按解码器实际能力选流"
-                                                else "暂无设备能力记录"
-                                        }
-                                    }
-                            }
-                        },
-                    )
-                }
-                .apply { tag = "playback-settings" }
-        play.requestFocus()
+        more = item(primary, "更多设置", "playback-settings") { showPlaybackSettings(more) }
+        val rows = mutableListOf(primary)
+        if (nextSeasonWork != null) {
+            val seasonal = row()
+            controls.addView(seasonal)
+            rows += seasonal
+            addButton(seasonal, "取消本次跨季连播") {
+                seasonSuppressed = true
+                cancelNextSeason()
+                showPanel()
+            }
+        }
+        // Explicit paths keep focus inside the menu; episode shortcuts belong to fullscreen playback.
+        val buttons = rows.map { row -> (0 until row.childCount).map { row.getChildAt(it) }.filter { it.isFocusable } }
+        buttons.forEachIndexed { r, cells -> cells.forEachIndexed { c, view ->
+            view.nextFocusLeftId = cells[maxOf(0, c - 1)].id
+            view.nextFocusRightId = cells[minOf(cells.lastIndex, c + 1)].id
+            view.nextFocusUpId = buttons[maxOf(0, r - 1)].let { it[minOf(c, it.lastIndex)].id }
+            view.nextFocusDownId = buttons[minOf(buttons.lastIndex, r + 1)].let { it[minOf(c, it.lastIndex)].id }
+        } }
+        (buttons.flatten().firstOrNull { it.tag == focusedTag } ?: play).requestFocus()
         showHud()
+    }
+
+    private fun showPlaybackSettings(anchor: TextView) {
+        tvTools.choose("更多设置", listOf(
+            "清晰度 ${library.maxQuality}P", "画面 ${library.frameMode.label}",
+            "定时 ${sleepTimer.label()}", "从头播放", "高级设置",
+            "画面旋转 ${library.videoRotation}°",
+            "常驻播放进度 ${if (library.alwaysShowProgress) "开启" else "关闭"}",
+        ), anchor, { choice ->
+            main.post {
+                if (screen == "player" && anchor.isAttachedToWindow) when (choice) {
+                    0 -> showQualityPicker(anchor, true)
+                    1 -> showFramePicker(anchor, true)
+                    2 -> showSleepPicker(anchor)
+                    3 -> { seekTo(0); hidePanel() }
+                    4 -> showAdvancedPlaybackSettings(anchor)
+                    5 -> showRotationPicker(anchor)
+                    6 -> { library.alwaysShowProgress = !library.alwaysShowProgress; updatePersistentProgress(); showPlaybackSettings(anchor) }
+                }
+            }
+        })
+    }
+
+    private fun showAdvancedPlaybackSettings(anchor: TextView) {
+        tvTools.choose("高级设置", listOf(
+            "伴机代解码 ${if (relayStore.enabled) "开" else "关"}", "重置设备能力记录",
+        ), anchor, { choice ->
+            main.post {
+                if (screen == "player" && anchor.isAttachedToWindow) when (choice) {
+                    0 -> showRelaySettings(anchor) { showAdvancedPlaybackSettings(anchor) }
+                    1 -> {
+                        val count = CodecCapabilities.learnedCount()
+                        CodecCapabilities.resetLearned()
+                        playbackText.text = if (count > 0) "已清除 $count 条设备能力记录" else "暂无设备能力记录"
+                    }
+                }
+            }
+        }, onBack = { showPlaybackSettings(anchor) })
     }
 
     private fun showSpeedPicker(anchor: TextView, inPlayer: Boolean = true) {
@@ -4661,12 +4724,20 @@ class MainActivity : Activity() {
                 anchor.text = (if (inPlayer) "清晰度 " else "默认清晰度  ·  ") + "${target}P"
             if (inPlayer && changed)
                 playEpisode(episodeIndex, currentPosition(), player?.playWhenReady ?: requestedAutoplay)
-        }, selected = options.indexOf(library.maxQuality))
+        }, selected = options.indexOf(library.maxQuality),
+            onBack = if (inPlayer && anchor.tag == "playback-settings") ({ showPlaybackSettings(anchor) }) else null)
+    }
+
+    private fun playSelectedEpisode(index: Int) {
+        val data = detail ?: return
+        if (index !in data.episodes.indices) return
+        val saved = detailProgress(data)
+        playEpisode(index, if (saved?.episodeId == data.episodes[index] && !saved.completed) saved.position else 0)
     }
 
     private fun showEpisodePanel(anchor: View) {
         val data = detail ?: return
-        if (episodePanel != null) return
+        if (episodePanel != null) { episodePanel?.dismiss(); return }
         val ticket = generation
         val overlayWasVisible = hud.visibility == View.VISIBLE
         requestedAutoplay = player?.playWhenReady ?: requestedAutoplay
@@ -4686,7 +4757,7 @@ class MainActivity : Activity() {
                     else {
                         resumeOnClose = false
                         episodePanel?.dismiss()
-                        playEpisode(selected)
+                        playSelectedEpisode(selected)
                     }
                 },
                 {
@@ -4705,11 +4776,13 @@ class MainActivity : Activity() {
                 lastCompleted = library.progress(data.series.id)?.completed == true,
             )
         episodePanel = next
-        next.show()
+        next.show(controls, anchor)
+        showHud()
     }
 
     private fun hidePanel() {
         if (playError) return
+        episodePanel?.dismiss()
         panel = false
         controls.visibility = View.GONE
         controls.clearFocus()
@@ -4779,7 +4852,7 @@ class MainActivity : Activity() {
             if (token != seasonGeneration || !foreground || detail?.series?.id != current.series.id) return@work
             nextSeasonWork = next
             if (next != null) {
-                val banner = text("本季结束后播放《${next.series.title}》 · 取消请按 ↑ 操作菜单", 13f).apply {
+                val banner = text("本季结束后播放《${next.series.title}》 · 取消请按菜单键，或确认打开菜单", 13f).apply {
                     setPadding(dp(14), dp(9), dp(14), dp(9))
                     setSingleLine(true)
                     ellipsize = TextUtils.TruncateAt.END
@@ -4821,6 +4894,7 @@ class MainActivity : Activity() {
         cancelRecovery()
         cancelPrefetchState(keepPrepared)
         relayStopAsync()
+        cancelEpisodeSwitch()
         mediaSession.deactivate()
         tvTools.close()
         val wasForeground = foreground
@@ -4829,6 +4903,7 @@ class MainActivity : Activity() {
         episodePanel = null
         oldPanel?.dismiss()
         foreground = wasForeground
+        hideSeekHint()
         main.removeCallbacks(hideHud)
         main.removeCallbacks(seekRunnable)
         pendingSeek = null
@@ -4836,10 +4911,11 @@ class MainActivity : Activity() {
         playerListener = null
         video?.close()
         video = null
+        player?.removeListener(bufferingIndicator)
+        bufferingIndicator.clear()
         playerView?.player = null
         playerView = null
-        persistentProgress = null
-        persistentTime = null
+        seekHint = null
         persistentBar = null
         player?.release()
         player = null
@@ -4907,7 +4983,9 @@ class MainActivity : Activity() {
         }
         when (screen) {
             "player" ->
-                if (homePlayback || phonePlayback) returnToDetail(forceDetail = true)
+                if (episodePanel != null) episodePanel?.dismiss()
+                else if (panel && !playError) hidePanel()
+                else if (homePlayback || phonePlayback) returnToDetail(forceDetail = true)
                 else if (waitingForFirstFrame) returnToDetail()
                 else if (hud.visibility == View.VISIBLE && !playError) hidePlaybackOverlay()
                 else returnToDetail()
@@ -4941,14 +5019,21 @@ class MainActivity : Activity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val key = event.keyCode
+        if (key in playerShortcutKeys) {
+            if (event.action == KeyEvent.ACTION_UP) playerShortcutKeys.remove(key)
+            // A fresh non-repeat down also handles remotes that lost an earlier up event.
+            if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount > 0) return true
+            playerShortcutKeys.remove(key)
+        }
         if (event.action == KeyEvent.ACTION_DOWN) gradualPreloader?.yieldToUser()
         if (screen == "catalog" && event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) goBack()
             return true
         }
         if (screen == "player") {
+            if (playerModalOpen()) return super.dispatchKeyEvent(event)
             if (panel && !playError && event.action == KeyEvent.ACTION_DOWN) showHud()
-            val key = event.keyCode
             if (key == KeyEvent.KEYCODE_BACK) {
                 if (event.action == KeyEvent.ACTION_UP) goBack()
                 return true
@@ -4970,8 +5055,8 @@ class MainActivity : Activity() {
                     when (key) {
                         KeyEvent.KEYCODE_MEDIA_PLAY -> requestPlayback(true)
                         KeyEvent.KEYCODE_MEDIA_PAUSE -> requestPlayback(false)
-                        KeyEvent.KEYCODE_MEDIA_NEXT -> skipEpisode(1)
-                        KeyEvent.KEYCODE_MEDIA_PREVIOUS -> skipEpisode(-1)
+                        KeyEvent.KEYCODE_MEDIA_NEXT -> skipEpisode(1, event.downTime)
+                        KeyEvent.KEYCODE_MEDIA_PREVIOUS -> skipEpisode(-1, event.downTime)
                         KeyEvent.KEYCODE_MEDIA_STOP -> returnToDetail()
                         KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> seek(1, 0)
                         KeyEvent.KEYCODE_MEDIA_REWIND -> seek(-1, 0)
@@ -4979,7 +5064,7 @@ class MainActivity : Activity() {
                     }
                 return true
             }
-            if (!panel) {
+            if (!playerControlsOpen()) {
                 if (
                     key in
                         listOf(
@@ -4992,18 +5077,23 @@ class MainActivity : Activity() {
                             KeyEvent.KEYCODE_MENU,
                         )
                 ) {
-                    if (event.action == KeyEvent.ACTION_DOWN)
+                    if (event.action == KeyEvent.ACTION_DOWN) {
+                        if (key !in listOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT))
+                            playerShortcutKeys.add(key)
                         when (key) {
                             KeyEvent.KEYCODE_DPAD_LEFT -> seek(-1, event.repeatCount)
                             KeyEvent.KEYCODE_DPAD_RIGHT -> seek(1, event.repeatCount)
                             KeyEvent.KEYCODE_DPAD_CENTER,
-                            KeyEvent.KEYCODE_ENTER -> if (event.repeatCount == 0) togglePlayback()
-                            KeyEvent.KEYCODE_DPAD_DOWN ->
-                                if (event.repeatCount == 0) showEpisodePanel(hud)
-                            KeyEvent.KEYCODE_DPAD_UP,
+                            KeyEvent.KEYCODE_ENTER -> if (event.repeatCount == 0) {
+                                togglePlayback()
+                                showPanel()
+                            }
+                            KeyEvent.KEYCODE_DPAD_DOWN -> if (event.repeatCount == 0) skipEpisode(1, event.downTime)
+                            KeyEvent.KEYCODE_DPAD_UP -> if (event.repeatCount == 0) skipEpisode(-1, event.downTime)
                             KeyEvent.KEYCODE_MENU -> if (event.repeatCount == 0) showPanel()
                             else -> showHud()
                         }
+                    }
                     return true
                 }
             }
@@ -5084,6 +5174,8 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        cancelEpisodeSwitch()
+        playerShortcutKeys.clear()
         gradualPreloader?.pause()
         stallGuard.suspendObservation()
         cancelNextSeason()

@@ -346,4 +346,40 @@ class FeedStartupCacheTest {
             controller.pause().stop().destroy()
         }
     }
+    @Test
+    fun emptyPlaybackRetriesReuseARecentlyVerifiedEpisodeId() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val cache = FeedStartupCache(controller.get()) { 1000L }
+        cache.save("guest", "recommend", page.copy(trialHints = mapOf("101" to TrialHint("10101", 2))))
+        val paths = mutableListOf<String>()
+        val transport = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            paths += request.url.encodedPath
+            val body = when (request.url.encodedPath) {
+                "/detail" ->
+                    """<script>_ROUTER_DATA={"loaderData":{"detail_page":{"seriesDetail":{"series_id":"101","series_title":"缓存作品","vid_list":["10101","10102"]}}}};</script>"""
+                else -> ""
+            }
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                .code(200).message("OK").body(body.toResponseBody()).build()
+        }.build()
+        try {
+            PublicFeedBackend(720, http = transport, startupCache = cache, playbackSession = testPlaybackDeviceSession()).use { backend ->
+                val series = backend.recommendations(1, DramaFeedState().recommendationCursor).items.single()
+                repeat(3) {
+                    assertThrows(EmptyPlaybackResponseException::class.java) { backend.trial(series) }
+                }
+                assertEquals(1, paths.count { it == "/detail" })
+                assertEquals(3, paths.count { it == "/novel/player/multi_video_model/player/v1" })
+                assertEquals(3, paths.count { it.contains("/video_tab/") })
+
+                org.robolectric.shadows.ShadowLooper.idleMainLooper(20, java.util.concurrent.TimeUnit.SECONDS)
+                assertThrows(EmptyPlaybackResponseException::class.java) { backend.trial(series) }
+                assertEquals(2, paths.count { it == "/detail" })
+            }
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
 }

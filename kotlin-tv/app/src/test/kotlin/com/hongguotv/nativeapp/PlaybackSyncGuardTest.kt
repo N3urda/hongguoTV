@@ -23,29 +23,30 @@ class PlaybackSyncGuardTest {
     }
 
     @Test
-    fun sustainedDriftAdvisesOneResyncThenCoolsDown() {
+    fun sustainedLateFramesAdviseOneResyncThenCoolDown() {
         val g = guard()
         clock += 31_000 // past the startup cooldown
-        assertTrue(g.offer(48_000_000, 120, true)!!.resync) // 400ms average
-        val again = g.offer(48_000_000, 120, true)
+        assertTrue(g.offer(-48_000_000, 120, true)!!.resync) // 400ms late on average
+        val again = g.offer(-48_000_000, 120, true)
         assertNotNull(again)
         assertFalse(again!!.resync) // cooldown
         clock += 31_000
-        assertTrue(g.offer(48_000_000, 120, true)!!.resync)
+        assertTrue(g.offer(-48_000_000, 120, true)!!.resync)
     }
 
     @Test
-    fun earlyDriftIsAlsoResynced() {
+    fun earlyFramesDoNotTriggerASeek() {
         val g = guard()
         clock += 31_000
-        assertTrue(g.offer(-36_000_000, 120, true)!!.resync) // -300ms average
+        assertFalse(g.offer(36_000_000, 120, true)!!.resync) // 300ms before deadline
     }
 
     @Test
     fun smallOffsetsAndPausedPlaybackNeverResync() {
+        val g = guard()
         clock += 31_000
-        assertFalse(guard().offer(12_000_000, 120, true)!!.resync) // 100ms average
-        assertFalse(guard().offer(48_000_000, 120, false)!!.resync)
+        assertFalse(g.offer(-12_000_000, 120, true)!!.resync) // 100ms late on average
+        assertFalse(g.offer(-48_000_000, 120, false)!!.resync)
     }
 
     @Test

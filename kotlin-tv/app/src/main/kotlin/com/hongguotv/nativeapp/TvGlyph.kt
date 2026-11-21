@@ -13,6 +13,11 @@ internal class TvGlyph(private val kind: Int, private val size: Int, var ink: In
         pen.color = ink
         fun line(vararg xy: Float) { val p = Path(); p.moveTo(xy[0], xy[1]); for(i in 2 until xy.size step 2) p.lineTo(xy[i], xy[i+1]); c.drawPath(p, pen) }
         when(kind) {
+            10 -> { line(7f,3f,21f,12f,7f,21f,7f,3f) }
+            11 -> { line(8f,4f,8f,20f); line(16f,4f,16f,20f) }
+            12 -> { c.drawArc(3f,3f,21f,21f,135f,270f,false,pen); line(12f,12f,17f,7f); c.drawCircle(12f,12f,1f,pen) }
+            13 -> { c.drawRoundRect(2f,4f,22f,20f,2f,2f,pen); line(5f,9f,11f,9f); line(15f,9f,19f,9f); line(8f,15f,17f,15f) }
+            14 -> { line(3f,4f,21f,4f,21f,17f,10f,17f,5f,21f,5f,17f,3f,17f,3f,4f); line(7f,9f,17f,9f); line(7f,13f,13f,13f) }
             0 -> { line(3f,11f,12f,3f,21f,11f); line(5f,10f,5f,21f,10f,21f,10f,15f,14f,15f,14f,21f,19f,21f,19f,10f) }
             1 -> { for(x in listOf(4f,14f)) for(y in listOf(4f,14f)) c.drawRoundRect(x,y,x+6,y+6,1f,1f,pen) }
             8 -> { c.drawCircle(12f,12f,9f,pen); line(10f,8f,16f,12f,10f,16f,10f,8f) }

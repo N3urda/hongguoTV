@@ -82,10 +82,9 @@ internal class HomeFeedScreen(
     private var manuallyStarted: String? = null
     private var loading = false
     private var failed = false
-    private var trialRecoveryAttempts = 0
+    private val trialRecoveryBudget = RecoveryBudget(listOf(2000L, 5000L))
     private var trialPreparationUntil = 0L
     private var trialRecovery: Runnable? = null
-    private val trialRecoveryDelays = listOf(2000L, 5000L)
     private val exhaustedCursors = mutableSetOf<RecommendationCursor>()
     private var lastPlaybackError: androidx.media3.common.PlaybackException? = null
     private var healTarget: String? = null
@@ -496,6 +495,11 @@ internal class HomeFeedScreen(
         if (!closed) paintActions()
     }
 
+    fun currentPlayback(seriesId: String): TrialClip? {
+        if (!playbackReady || failed || buffering || state.userPaused || state.ended || playback.position() <= 0) return null
+        return clip?.takeIf { it.detail.series.id == seriesId }
+    }
+
     private fun openCurrent() {
         state.current?.let { remember(force = true); pause(); watch(it) }
     }
@@ -686,15 +690,19 @@ internal class HomeFeedScreen(
         return true
     }
 
-    // 只对当前作品的播放信息空响应恢复两次，不重试目录、确定性错误或后台预加载。
-    // 每次仍沿用 Repository 的有界请求；切换、暂停和关闭通过 cancelRequest 取消倒计时。
+    // 当前作品两次快速恢复后，仅在主备播放接口都为空时使用有界退避。
+    // 切换、暂停和关闭通过 cancelRequest 取消本集的恢复。
     private fun recoverEmptyTrial(problem: Throwable): Boolean {
         if (generateSequence(problem) { it.cause }.take(8).none { it is EmptyPlaybackResponseException }) return false
-        val delay = trialRecoveryDelays.getOrNull(trialRecoveryAttempts) ?: return false
-        if (trialPreparationUntil - android.os.SystemClock.elapsedRealtime() <= delay) return false
+        val bothModelsEmpty = hasEmptyPlaybackModels(problem)
+        val delay = trialRecoveryBudget.delayMillis ?: return false
+        if (!bothModelsEmpty && (trialRecoveryBudget.slow ||
+                trialPreparationUntil - android.os.SystemClock.elapsedRealtime() <= delay)) return false
         val target = state.current?.id ?: return false
         val token = generation
-        val attempt = ++trialRecoveryAttempts
+        trialRecoveryBudget.consume()
+        val attempt = trialRecoveryBudget.attempts
+        val total = if (bothModelsEmpty) trialRecoveryBudget.total else trialRecoveryBudget.fastAttempts
         val deadline = android.os.SystemClock.elapsedRealtime() + delay
         loading = true
         failed = false
@@ -704,10 +712,11 @@ internal class HomeFeedScreen(
                 val remaining = deadline - android.os.SystemClock.elapsedRealtime()
                 if (remaining <= 0) {
                     trialRecovery = null
-                    loadCurrent("正在恢复播放 · 第 $attempt/${trialRecoveryDelays.size} 次", recovering = true)
+                    if (bothModelsEmpty) trialPreparationUntil = android.os.SystemClock.elapsedRealtime() + 20_000
+                    loadCurrent("正在恢复播放 · 第 $attempt/$total 次", recovering = true)
                 } else {
                     status.visibility = View.VISIBLE
-                    status.text = "播放信息暂时为空 · ${(remaining + 999) / 1000} 秒后自动恢复 $attempt/${trialRecoveryDelays.size}"
+                    status.text = "播放信息暂时为空 · ${(remaining + 999) / 1000} 秒后自动恢复 $attempt/$total"
                     main.postDelayed(this, minOf(1000L, remaining))
                 }
             }
@@ -760,7 +769,7 @@ internal class HomeFeedScreen(
                         if (error is NoNewRecommendationsException) {
                             exhaustedCursors += requestedCursor
                             status.text = "推荐接口未返回新作品 · 最近已去重 ${error.rememberedCount} 部\n可稍后换一批，或切换漫剧、真人剧继续发现"
-                        } else if (recoverTrial && trialRecoveryAttempts > 0) {
+                        } else if (recoverTrial && trialRecoveryBudget.attempts > 0) {
                             diagnosticDetail(error)?.take(640)?.let {
                                 android.util.Log.i("HongguoTV", "Home playback recovery exhausted: $it")
                             }
@@ -814,7 +823,7 @@ internal class HomeFeedScreen(
         val episodeIndex = state.episodeIndex
         if (!active || closed) return
         if (!recovering) {
-            trialRecoveryAttempts = 0
+            trialRecoveryBudget.reset()
             trialPreparationUntil = android.os.SystemClock.elapsedRealtime() + 20_000
         }
         // 记下展示过的作品：冷启动时用它跳过重复内容，而不是每次都从同一部开始。
@@ -956,7 +965,7 @@ internal class HomeFeedScreen(
             prefetchSeries = state.current?.id
             prefetchReadyAt = now
         }
-        if (now - prefetchReadyAt < 500) return
+        if (now - prefetchReadyAt < 500 || backend.shouldDeferPlaybackPrefetch()) return
         val current = clip ?: return
         if (autoNext && current.trialEpisodeIndex < current.episodeCount && nextEpisode == null &&
             playback.duration() > 0 && playback.duration() - playback.position() <= 8_000 &&

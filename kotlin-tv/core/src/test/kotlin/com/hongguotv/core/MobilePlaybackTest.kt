@@ -5,6 +5,7 @@ import java.security.MessageDigest
 import java.util.zip.GZIPInputStream
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
+import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
@@ -88,5 +89,124 @@ class MobilePlaybackTest {
                 ContentRepository(http = http(model()), playbackSession = session)
                     .streamLadderWithCompatibility("123", speculative = true)
             }
+    }
+
+    @Test fun emptyForegroundModelUsesTabWithTheSameRegisteredIdentity() {
+        val requests = mutableListOf<Request>()
+        val entries = JSONObject(model(stringModel = true)).getJSONObject("data")
+        val tab = JSONObject().put("code", 0).put("data", JSONObject().put("video_model_data", entries))
+        val repository = repositoryWithModels("", tab.toString(), requests)
+
+        val rendition = repository.streamLadderWithCompatibility("123").renditions.single()
+        assertEquals("https://example.org/video", rendition.url)
+        assertEquals(720, rendition.quality)
+        assertEquals(listOf("POST", "GET"), requests.map { it.method })
+        assertEquals("123", requests[1].url.queryParameter("video_id"))
+        for (parameter in listOf("iid", "device_id", "cdid")) {
+            assertEquals(requests[0].url.queryParameter(parameter), requests[1].url.queryParameter(parameter))
+        }
+    }
+
+    @Test fun bothEmptyModelsRetainResponseDiagnosticsForRecovery() {
+        val requests = mutableListOf<Request>()
+        val repository = repositoryWithModels("", "", requests)
+
+        val error = assertThrows(EmptyPlaybackResponseException::class.java) {
+            repository.streamLadderWithCompatibility("123")
+        }
+
+        assertTrue(error.allPlaybackModelsEmpty)
+        assertEquals("stage=mobile-model", error.detail)
+        val primary = error.suppressed.filterIsInstance<EmptyPlaybackResponseException>().single()
+        assertEquals("mobile-model=200/0B", (primary.suppressed.single() as PlaybackDiagnosticException).detail)
+        val tab = error.suppressed.filterIsInstance<PlaybackDiagnosticException>().single()
+        assertTrue(tab.detail.startsWith("video-tab-empty ") && tab.detail.contains("200/0B"))
+        assertEquals(listOf("POST", "GET"), requests.map { it.method })
+    }
+
+    @Test fun emptyPrimaryDefersBackgroundWorkAcrossRepositoriesUntilRecoveryOrExpiry() {
+        val session = PlaybackDeviceSession { DeviceRegister.Registered("123456", "654321") }
+        var now = 1000L
+        val empty = repositoryWithModels("", "", mutableListOf(), session = session, clock = { now })
+        val healthy = repositoryWithModels(model(), requests = mutableListOf(), session = session, clock = { now })
+
+        assertFalse(healthy.shouldDeferPlaybackPrefetch())
+        assertThrows(EmptyPlaybackResponseException::class.java) { empty.streamLadderWithCompatibility("123") }
+        assertTrue(healthy.shouldDeferPlaybackPrefetch())
+        now += 4_999
+        assertTrue(healthy.shouldDeferPlaybackPrefetch())
+        now++
+        assertFalse(healthy.shouldDeferPlaybackPrefetch())
+
+        assertThrows(EmptyPlaybackResponseException::class.java) {
+            empty.streamLadderWithCompatibility("123", speculative = true)
+        }
+        assertTrue(healthy.shouldDeferPlaybackPrefetch())
+        assertEquals(1, healthy.streamLadderWithCompatibility("123").renditions.size)
+        assertFalse(empty.shouldDeferPlaybackPrefetch())
+    }
+
+    @Test fun tabTimeoutPreservesTheEmptyPrimaryResponse() {
+        val requests = mutableListOf<Request>()
+        val timeout = java.io.InterruptedIOException("deadline reached")
+        val repository = repositoryWithModels("", requests = requests, tabFailure = timeout)
+
+        val error = assertThrows(java.io.InterruptedIOException::class.java) {
+            repository.streamLadderWithCompatibility("123")
+        }
+
+        assertSame(timeout, error)
+        val primary = error.suppressed.filterIsInstance<EmptyPlaybackResponseException>().single()
+        assertFalse(primary.allPlaybackModelsEmpty)
+        assertEquals("stage=mobile-model", primary.detail)
+        assertEquals("mobile-model=200/0B", (primary.suppressed.single() as PlaybackDiagnosticException).detail)
+        val tab = error.suppressed.filterIsInstance<PlaybackDiagnosticException>().single()
+        assertTrue(tab.detail.startsWith("video-tab ") && tab.detail.endsWith("=timeout"))
+        assertEquals(listOf("POST", "GET"), requests.map { it.method })
+    }
+
+    @Test fun tabFallbackDoesNotSelectAnotherEpisode() {
+        val requests = mutableListOf<Request>()
+        val repository = repositoryWithModels("", model(id = "456"), requests)
+
+        val error = assertThrows(EmptyPlaybackResponseException::class.java) {
+            repository.streamLadderWithCompatibility("123")
+        }
+        assertEquals("stage=mobile-model", error.detail)
+        assertFalse(error.allPlaybackModelsEmpty)
+        assertEquals(listOf("POST", "GET"), requests.map { it.method })
+    }
+
+    @Test fun healthyModelAndUpstreamBackoffDoNotUseTab() {
+        val requests = mutableListOf<Request>()
+        val healthy = repositoryWithModels(model(), requests = requests)
+        assertEquals(1, healthy.streamLadderWithCompatibility("123").renditions.size)
+        val busy = repositoryWithModels("", requests = requests, retryAfter = "30")
+        assertThrows(PlaybackServiceBackoffException::class.java) {
+            busy.streamLadderWithCompatibility("123")
+        }
+        assertEquals(listOf("POST", "POST"), requests.map { it.method })
+    }
+
+    private fun repositoryWithModels(
+        mobile: String,
+        tab: String = model(),
+        requests: MutableList<Request>,
+        retryAfter: String? = null,
+        session: PlaybackDeviceSession = PlaybackDeviceSession { DeviceRegister.Registered("123456", "654321") },
+        clock: () -> Long = System::currentTimeMillis,
+        tabFailure: IOException? = null,
+    ): ContentRepository {
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            requests += request
+            if (request.method == "GET" && tabFailure != null) throw tabFailure
+            val body = if (request.method == "POST") mobile else tab
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                .code(200).message("OK").body(body.toResponseBody()).apply {
+                    retryAfter?.let { header("Retry-After", it) }
+                }.build()
+        }.build()
+        return ContentRepository(http = client, clock = clock, playbackSession = session)
     }
 }

@@ -2,6 +2,7 @@
 package com.hongguotv.core
 
 import java.io.IOException
+import java.net.SocketTimeoutException
 import okhttp3.*
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.buffer
@@ -9,6 +10,9 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RemoteVideoStreamingTest {
+    private val primary = "https://primary.example.test/video"
+    private val backup = "https://backup.example.test/video"
+
     @Test
     fun streamingDisablesWallClockDeadlineButKeepsProbeDeadline() {
         val file = fixture()
@@ -80,6 +84,38 @@ class RemoteVideoStreamingTest {
         }
     }
 
+    @Test
+    fun preparedSourceKeepsLocalBytesAndUsesTheNewTransportAfterThePreviewCloses() {
+        val file = fixture()
+        val previewRanges = mutableListOf<String>()
+        val playerRanges = mutableListOf<String>()
+        fun transport(ranges: MutableList<String>) = OkHttpClient.Builder().addInterceptor { chain ->
+            val range = chain.request().header("Range")!!
+            ranges += range
+            val (start, end) = range.removePrefix("bytes=").split('-').map(String::toInt)
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(206).message("Partial Content")
+                .header("Content-Range", "bytes $start-$end/${file.size}")
+                .body(file.copyOfRange(start, end + 1).toResponseBody()).build()
+        }.build()
+        val preview = RemoteVideo(transport(previewRanges), StreamInfo("https://example.test/video", null, "测试"))
+        val prepared = preview.use {
+            assertNull(it.preparedSource())
+            it.prepare()
+            checkNotNull(it.preparedSource())
+        }
+        assertNull(preview.preparedSource())
+        prepared.open(transport(playerRanges)).use { player ->
+            assertArrayEquals(file.copyOfRange(0, 32), player.read(0, 32))
+            assertTrue(playerRanges.isEmpty())
+            player.openRead(300 * 1024L, 64).use { input ->
+                assertArrayEquals(file.copyOfRange(300 * 1024, 300 * 1024 + 64), input.readBytes())
+            }
+        }
+        assertEquals(listOf("bytes=0-262143"), previewRanges)
+        assertEquals(listOf("bytes=307200-307263"), playerRanges)
+    }
+
     private fun fixture(headerSize: Int = 16): ByteArray =
         ByteArray(1024 * 1024) { (it % 239).toByte() }
             .also {
@@ -89,6 +125,132 @@ class RemoteVideoStreamingTest {
                     .putInt(headerSize - 8)
                     .put("moov".toByteArray())
             }
+
+    private fun partial(request: Request, file: ByteArray): Response {
+        val (start, requestedEnd) = request.header("Range")!!.removePrefix("bytes=").split('-').map(String::toInt)
+        val end = minOf(file.lastIndex, requestedEnd)
+        return Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+            .code(206).message("Partial Content").header("Content-Range", "bytes $start-$end/${file.size}")
+            .body(file.copyOfRange(start, end + 1).toResponseBody()).build()
+    }
+
+    private fun mediaError(request: Request, status: Int, retryAfter: String? = null): Response {
+        val response = Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+            .code(status).message("fixture").body("".toResponseBody())
+        retryAfter?.let { response.header("Retry-After", it) }
+        return response.build()
+    }
+
+    @Test
+    fun switchesToTheSameRenditionBackupWhenThePrimaryReturnsA5xxAtStartup() {
+        val file = fixture()
+        val hosts = mutableListOf<String>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            hosts += request.url.host
+            if (request.url.host == "primary.example.test") mediaError(request, 503)
+            else partial(request, file)
+        }.build()
+        RemoteVideo(http, StreamInfo(primary, null, "720P", backup)).use { video ->
+            video.prepare()
+            assertEquals(file.size.toLong(), video.total)
+            assertEquals("720P", video.info.quality)
+            assertEquals(backup, video.info.url)
+            assertNull(video.info.backupUrl)
+        }
+        assertEquals(listOf("primary.example.test", "backup.example.test"), hosts)
+    }
+
+    @Test
+    fun continuesAnInterruptedRangeFromTheNextByteAfterVerifyingTheBackupIndex() {
+        val file = fixture()
+        val requests = mutableListOf<Pair<String, String?>>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val range = request.header("Range")
+            requests += request.url.host to range
+            val response = partial(request, file)
+            if (request.url.host != "primary.example.test" || range != "bytes=307200-307231")
+                return@addInterceptor response
+            val complete = checkNotNull(response.body)
+            val truncated = object : okio.ForwardingSource(complete.source()) {
+                private var readOnce = false
+
+                override fun read(sink: okio.Buffer, byteCount: Long): Long {
+                    if (readOnce) throw SocketTimeoutException("fixture read timeout")
+                    readOnce = true
+                    return super.read(sink, minOf(5L, byteCount))
+                }
+            }.buffer()
+            response.newBuilder().body(object : ResponseBody() {
+                override fun contentType() = complete.contentType()
+                override fun contentLength() = complete.contentLength()
+                override fun source() = truncated
+            }).build()
+        }.build()
+        RemoteVideo(http, StreamInfo(primary, null, "720P", backup)).use { video ->
+            video.prepare()
+            video.openRead(307200, 32).use { input ->
+                assertArrayEquals(file.copyOfRange(307200, 307232), input.readBytes())
+            }
+            assertEquals(backup, video.info.url)
+            video.openRead(307232, 32).use { input ->
+                assertArrayEquals(file.copyOfRange(307232, 307264), input.readBytes())
+            }
+        }
+        assertEquals(
+            listOf(
+                "primary.example.test" to "bytes=0-262143",
+                "primary.example.test" to "bytes=307200-307231",
+                "backup.example.test" to "bytes=0-15",
+                "backup.example.test" to "bytes=307205-307231",
+                "backup.example.test" to "bytes=307232-307263",
+            ),
+            requests,
+        )
+    }
+
+    @Test
+    fun backupWithADifferentIndexIsDiscardedAndOnlyProbedOnce() {
+        val file = fixture()
+        val different = file.copyOf().apply { this[15] = 0 }
+        val backupRanges = mutableListOf<String?>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val range = request.header("Range")
+            when {
+                request.url.host == "backup.example.test" -> {
+                    backupRanges += range
+                    partial(request, different)
+                }
+                range == "bytes=0-262143" -> partial(request, file)
+                else -> mediaError(request, 502)
+            }
+        }.build()
+        RemoteVideo(http, StreamInfo(primary, null, "720P", backup)).use { video ->
+            video.prepare()
+            val failure = assertThrows(IOException::class.java) { video.openRead(307200, 32) }
+            assertEquals("备用视频资源的索引与当前集不一致", failure.message)
+            assertEquals(primary, video.info.url)
+            assertThrows(IOException::class.java) { video.openRead(307200, 32) }
+        }
+        assertEquals(listOf("bytes=0-15"), backupRanges)
+    }
+
+    @Test
+    fun doesNotContactABackupForRejectedOrRateLimitedMediaRequests() {
+        for ((status, retryAfter) in listOf(403 to null, 429 to null, 503 to "60")) {
+            val hosts = mutableListOf<String>()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                hosts += chain.request().url.host
+                mediaError(chain.request(), status, retryAfter)
+            }.build()
+            RemoteVideo(http, StreamInfo(primary, null, "720P", backup)).use { video ->
+                assertThrows(IOException::class.java) { video.prepare() }
+            }
+            assertEquals(listOf("primary.example.test"), hosts)
+        }
+    }
 
     @Test
     fun completeLargeHeaderIsRetainedInsteadOfDownloadedAgainByPlayer() {

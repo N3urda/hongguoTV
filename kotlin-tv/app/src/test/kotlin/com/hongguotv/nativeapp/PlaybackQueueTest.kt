@@ -1,5 +1,7 @@
 package com.hongguotv.nativeapp
 
+import android.view.KeyEvent
+import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.media3.common.*
@@ -62,6 +64,7 @@ class PlaybackQueueTest {
         val items = mutableListOf(MediaItem.Builder().setMediaId("101").build())
         val calls = mutableListOf<String>()
         var index = 0
+        var playing = true
         val player =
             Proxy.newProxyInstance(
                 ExoPlayer::class.java.classLoader,
@@ -77,7 +80,10 @@ class PlaybackQueueTest {
                     "getPlaybackState" -> Player.STATE_READY
                     "getPlaybackParameters" -> PlaybackParameters(1f)
                     "getPlayWhenReady",
-                    "isPlaying" -> true
+                    "isPlaying" -> playing
+                    "pause" -> { playing = false; null }
+                    "play" -> { playing = true; null }
+                    "setPlayWhenReady" -> { playing = args!![0] as Boolean; null }
                     "hasNextMediaItem" -> index + 1 < items.size
                     "addMediaSource" -> {
                         items += (args!![0] as MediaSource).mediaItem
@@ -116,7 +122,7 @@ class PlaybackQueueTest {
             } as ExoPlayer
     }
 
-    private fun fixture(test: (MainActivity, QueuePlayer, Library, RemoteVideo) -> Unit) {
+    private fun fixture(test: (MainActivity, QueuePlayer, Library, OpenedStream) -> Unit) {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()
         try {
@@ -141,13 +147,25 @@ class PlaybackQueueTest {
             set(activity, "playbackText", TextView(activity))
             set(activity, "progressBar", android.widget.ProgressBar(activity))
             set(activity, "episodeDuration", 90000L)
+            set(activity, "requestedAutoplay", true)
+            val root = get(activity, "root") as android.widget.FrameLayout
+            root.removeAllViews()
+            val hud = get(activity, "hud") as LinearLayout
+            hud.orientation = LinearLayout.VERTICAL
+            hud.addView(get(activity, "controls") as LinearLayout)
+            root.addView(hud)
+            root.measure(View.MeasureSpec.makeMeasureSpec(960, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(540, View.MeasureSpec.EXACTLY))
+            root.layout(0, 0, 960, 540)
             val remote =
                 RemoteVideo(OkHttpClient(), StreamInfo("https://example.com/next", null, "720P"))
+            val rendition = com.hongguotv.core.Rendition(720, "h264", 720, 1280, remote.info.url, null)
+            val lower = rendition.copy(quality = 480, width = 480, height = 854)
+            val opened = OpenedStream(remote, rendition, listOf(rendition, lower), null)
             @Suppress("UNCHECKED_CAST")
-            val slot = get(activity, "preparedNext") as PreparedSlot<RemoteVideo>
+            val slot = get(activity, "preparedNext") as PreparedSlot<OpenedStream>
             val key = "102:${library.maxQuality}"
-            slot.complete(slot.begin(key), key, remote)
-            test(activity, fake, library, remote)
+            slot.complete(slot.begin(key), key, opened)
+            test(activity, fake, library, opened)
         } finally {
             // No formal playback tick/network is started by these tests.
             set(activity, "foreground", false)
@@ -156,7 +174,7 @@ class PlaybackQueueTest {
     }
 
     @Test
-    fun upOpensTwoRowControlsWithoutPausingAndClockModesRemainIndependent() =
+    fun menuOpensSingleRowWithoutPausingAndClockModesRemainIndependent() =
         fixture { activity, fake, library, _ ->
             val hud = LinearLayout(activity).apply { visibility = android.view.View.GONE }
             val controls = LinearLayout(activity)
@@ -167,13 +185,12 @@ class PlaybackQueueTest {
             set(activity, "progressBar", android.widget.ProgressBar(activity))
             set(activity, "playbackClock", clock)
             val before = fake.player.playWhenReady
-            activity.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DPAD_UP))
+            activity.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_MENU))
             assertEquals(android.view.View.VISIBLE, hud.visibility)
             assertEquals(true, get(activity, "panel"))
             assertEquals(android.view.View.VISIBLE, clock.visibility)
-            assertEquals(2, controls.childCount)
-            assertEquals(3, (controls.getChildAt(0) as LinearLayout).childCount)
-            assertEquals(4, (controls.getChildAt(1) as LinearLayout).childCount)
+            assertEquals(1, controls.childCount)
+            assertEquals(5, (controls.getChildAt(0) as LinearLayout).childCount)
             assertEquals(before, fake.player.playWhenReady)
             invoke(activity, "hidePlaybackOverlay")
             assertEquals(android.view.View.GONE, clock.visibility)
@@ -187,7 +204,9 @@ class PlaybackQueueTest {
 
     @Test
     fun automaticTransitionReusesPlayerAndUpdatesEpisodeProgress() =
-        fixture { activity, fake, library, remote ->
+        fixture { activity, fake, library, opened ->
+            set(activity, "attemptedQuality", 1080)
+            set(activity, "autoDowngrades", 2)
             invoke(activity, "queuePreparedEpisode", "102:${library.maxQuality}")
             assertEquals(listOf("101", "102"), fake.items.map { it.mediaId })
             fake.index = 1
@@ -195,10 +214,14 @@ class PlaybackQueueTest {
             assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
             invoke(activity, "playbackFirstFrame")
             assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
-            activity.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DPAD_UP))
+            activity.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_MENU))
             assertEquals(android.view.View.VISIBLE, (get(activity, "hud") as LinearLayout).visibility)
             assertEquals(1, get(activity, "episodeIndex"))
-            assertSame(remote, get(activity, "video"))
+            assertSame(opened.video, get(activity, "video"))
+            assertSame(opened.rendition, get(activity, "currentRendition"))
+            assertEquals(opened.tiers, get(activity, "currentTiers"))
+            assertEquals(720, get(activity, "attemptedQuality"))
+            assertEquals(0, get(activity, "autoDowngrades"))
             assertNull(get(activity, "queuedNext"))
             assertEquals(listOf("102"), fake.items.map { it.mediaId })
             assertEquals("102", library.progress("1")?.episodeId)
@@ -209,6 +232,208 @@ class PlaybackQueueTest {
                 }
             )
         }
+
+    private fun press(activity: MainActivity, key: Int, repeats: Int = 0) {
+        val now = android.os.SystemClock.uptimeMillis()
+        activity.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, key, 0))
+        repeat(repeats) { n -> activity.dispatchKeyEvent(KeyEvent(now, now + n + 1, KeyEvent.ACTION_DOWN, key, n + 1)) }
+        activity.dispatchKeyEvent(KeyEvent(now, now + repeats + 1, KeyEvent.ACTION_UP, key, 0))
+    }
+
+    @Test
+    fun downDownUpCoalescesToOneQueuedTransitionAndLongPressDoesNotSkip() = fixture { activity, fake, library, _ ->
+        val hud = get(activity, "hud") as LinearLayout
+        hud.visibility = View.GONE
+        invoke(activity, "queuePreparedEpisode", "102:${library.maxQuality}")
+        press(activity, KeyEvent.KEYCODE_DPAD_DOWN, repeats = 8)
+        assertEquals(View.GONE, hud.visibility)
+        assertEquals(1, get(activity, "pendingEpisodeTarget"))
+        press(activity, KeyEvent.KEYCODE_DPAD_DOWN)
+        assertEquals(2, get(activity, "pendingEpisodeTarget"))
+        press(activity, KeyEvent.KEYCODE_DPAD_UP)
+        assertEquals(1, get(activity, "pendingEpisodeTarget"))
+        assertFalse(fake.calls.contains("seekToNextMediaItem"))
+        ShadowLooper.idleMainLooper(200, TimeUnit.MILLISECONDS)
+        assertEquals(1, fake.calls.count { it == "seekToNextMediaItem" })
+        assertEquals(true, invoke(activity, "advanceQueuedEpisode", 12000L, false))
+        assertEquals(1, get(activity, "episodeIndex"))
+        assertEquals(View.GONE, hud.visibility)
+        invoke(activity, "playbackFirstFrame")
+        assertEquals(View.GONE, hud.visibility)
+        assertEquals("102", library.progress("1")?.episodeId)
+        assertFalse(fake.calls.any { it in listOf("stop", "clearMediaItems", "prepare") })
+    }
+
+    @Test
+    fun endpointsAndSingleEpisodeNeverReload() = fixture { activity, fake, _, _ ->
+        press(activity, KeyEvent.KEYCODE_DPAD_UP)
+        assertEquals("已经是第一集", org.robolectric.shadows.ShadowToast.getTextOfLatestToast())
+        set(activity, "episodeIndex", 2)
+        press(activity, KeyEvent.KEYCODE_DPAD_DOWN)
+        assertEquals("已经是最后一集", org.robolectric.shadows.ShadowToast.getTextOfLatestToast())
+        set(activity, "detail", Detail(Series("one", "单集"), listOf("one-1")))
+        set(activity, "episodeIndex", 0)
+        press(activity, KeyEvent.KEYCODE_DPAD_DOWN)
+        press(activity, KeyEvent.KEYCODE_DPAD_UP)
+        ShadowLooper.idleMainLooper(200, TimeUnit.MILLISECONDS)
+        assertNull(get(activity, "pendingEpisodeTarget"))
+        assertFalse(fake.calls.any { it in listOf("stop", "prepare", "seekToNextMediaItem") })
+    }
+
+    @Test
+    fun confirmPausesOpensMenuAndItsReleaseCannotClickResume() = fixture { activity, fake, _, _ ->
+        press(activity, KeyEvent.KEYCODE_DPAD_CENTER, repeats = 5)
+        assertFalse(fake.playing)
+        assertEquals(true, get(activity, "panel"))
+        val controls = get(activity, "controls") as LinearLayout
+        val primary = controls.getChildAt(0) as LinearLayout
+        assertEquals(listOf("播放", "选集", "倍速 1×", "弹幕设置", "更多设置"), (0 until primary.childCount).map { (primary.getChildAt(it) as TextView).text.toString() })
+        assertTrue(primary.getChildAt(0).hasFocus())
+        primary.getChildAt(0).performClick()
+        assertTrue(fake.playing)
+        assertEquals(false, get(activity, "panel"))
+    }
+
+    @Test
+    fun inlineEpisodesBackOnlyCollapsesAndPlayResumesWithoutDoubleToggle() = fixture { activity, fake, _, _ ->
+        press(activity, KeyEvent.KEYCODE_MENU)
+        val controls = get(activity, "controls") as LinearLayout
+        val menu = controls.getChildAt(0) as LinearLayout
+        val episodes = menu.getChildAt(1)
+        episodes.performClick()
+        assertFalse(fake.playing)
+        assertEquals(2, controls.childCount)
+        assertEquals(false, invoke(activity, "playerModalOpen"))
+        press(activity, KeyEvent.KEYCODE_BACK)
+        assertNull(get(activity, "episodePanel"))
+        assertEquals(true, get(activity, "panel"))
+        assertEquals(1, controls.childCount)
+        assertTrue(fake.playing)
+        episodes.performClick()
+        assertFalse(fake.playing)
+        menu.getChildAt(0).performClick()
+        assertTrue(fake.playing)
+        assertNull(get(activity, "episodePanel"))
+        assertEquals(false, get(activity, "panel"))
+    }
+
+    @Test
+    fun focusSurvivesFirstFrameAndTimeoutAndDirectionsDoNotSwitchEpisodes() = fixture { activity, _, _, _ ->
+        press(activity, KeyEvent.KEYCODE_MENU)
+        val controls = get(activity, "controls") as LinearLayout
+        val selection = (controls.getChildAt(0) as LinearLayout).getChildAt(1)
+        selection.requestFocus()
+        set(activity, "waitingForFirstFrame", true)
+        invoke(activity, "playbackFirstFrame")
+        (get(activity, "hideHud") as Runnable).run()
+        assertEquals(true, get(activity, "panel"))
+        assertTrue(selection.hasFocus())
+        press(activity, KeyEvent.KEYCODE_DPAD_DOWN)
+        assertNull(get(activity, "pendingEpisodeTarget"))
+        assertEquals(0, get(activity, "episodeIndex"))
+    }
+
+    @Test
+    fun recoveryControlsAndModalOwnDirectionsEvenWithoutPanelFlag() = fixture { activity, _, _, _ ->
+        val controls = get(activity, "controls") as LinearLayout
+        controls.addView(TextView(activity).apply { text = "取消恢复"; isFocusable = true })
+        controls.visibility = View.VISIBLE
+        press(activity, KeyEvent.KEYCODE_DPAD_DOWN)
+        assertNull(get(activity, "pendingEpisodeTarget"))
+        controls.removeAllViews()
+        val tools = get(activity, "tvTools") as TvTools
+        tools.choose("测试", listOf("第一项", "第二项"), controls, {})
+        press(activity, KeyEvent.KEYCODE_DPAD_DOWN)
+        assertNull(get(activity, "pendingEpisodeTarget"))
+        tools.close()
+    }
+
+    @Test
+    fun leavingOrOpeningMenuCancelsPendingSwitch() = fixture { activity, fake, _, _ ->
+        press(activity, KeyEvent.KEYCODE_DPAD_DOWN)
+        press(activity, KeyEvent.KEYCODE_MENU)
+        assertNull(get(activity, "pendingEpisodeTarget"))
+        invoke(activity, "hidePanel")
+        press(activity, KeyEvent.KEYCODE_DPAD_DOWN)
+        invoke(activity, "invalidatePage")
+        ShadowLooper.idleMainLooper(200, TimeUnit.MILLISECONDS)
+        assertNull(get(activity, "pendingEpisodeTarget"))
+        assertFalse(fake.calls.contains("seekToNextMediaItem"))
+    }
+
+    @Test
+    fun automaticTransitionAndOlderDownEventDoNotSkipTwoEpisodes() = fixture { activity, fake, library, _ ->
+        invoke(activity, "queuePreparedEpisode", "102:${library.maxQuality}")
+        val pressedAt = android.os.SystemClock.uptimeMillis()
+        fake.index = 1
+        invoke(activity, "advanceQueuedEpisode", 90000L, true)
+        activity.dispatchKeyEvent(KeyEvent(pressedAt, pressedAt, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN, 0))
+        activity.dispatchKeyEvent(KeyEvent(pressedAt, pressedAt, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_DOWN, 0))
+        ShadowLooper.idleMainLooper(200, TimeUnit.MILLISECONDS)
+        assertEquals(1, get(activity, "episodeIndex"))
+        assertFalse(fake.calls.contains("prepare"))
+    }
+
+    @Test
+    fun pendingManualSwitchWinsOverAutomaticNext() = fixture { activity, fake, library, _ ->
+        invoke(activity, "queuePreparedEpisode", "102:${library.maxQuality}")
+        press(activity, KeyEvent.KEYCODE_DPAD_DOWN)
+        invoke(activity, "playEpisode", 1, 0L, true, false, false, true)
+        assertFalse(fake.calls.contains("seekToNextMediaItem"))
+        ShadowLooper.idleMainLooper(200, TimeUnit.MILLISECONDS)
+        assertEquals(1, fake.calls.count { it == "seekToNextMediaItem" })
+    }
+
+    @Test
+    fun manualSwitchFromPausedStateStartsPlayback() = fixture { activity, fake, library, _ ->
+        invoke(activity, "queuePreparedEpisode", "102:${library.maxQuality}")
+        fake.playing = false
+        set(activity, "requestedAutoplay", false)
+        press(activity, KeyEvent.KEYCODE_DPAD_DOWN)
+        ShadowLooper.idleMainLooper(200, TimeUnit.MILLISECONDS)
+        assertTrue(fake.playing)
+        assertEquals(true, get(activity, "requestedAutoplay"))
+    }
+
+    @Test
+    fun sleepStopCancelsPendingManualSwitch() = fixture { activity, fake, _, _ ->
+        press(activity, KeyEvent.KEYCODE_DPAD_DOWN)
+        invoke(activity, "stopForSleep")
+        ShadowLooper.idleMainLooper(200, TimeUnit.MILLISECONDS)
+        assertNull(get(activity, "pendingEpisodeTarget"))
+        assertFalse(fake.playing)
+        assertFalse(fake.calls.contains("seekToNextMediaItem"))
+        assertEquals(0, get(activity, "episodeIndex"))
+    }
+
+    @Test
+    fun migratedMenuPreservesRotationAndPersistentProgressSettings() = fixture { activity, _, _, _ ->
+        press(activity, KeyEvent.KEYCODE_MENU)
+        val anchor = (get(activity, "controls") as LinearLayout).findViewWithTag<TextView>("playback-settings")
+        invoke(activity, "showPlaybackSettings", anchor)
+        val dialog = org.robolectric.shadows.ShadowDialog.getLatestDialog()
+        fun labels(view: View): List<String> = when (view) {
+            is TextView -> listOf(view.text.toString())
+            is android.view.ViewGroup -> (0 until view.childCount).flatMap { labels(view.getChildAt(it)) }
+            else -> emptyList()
+        }
+        val titles = labels(dialog.window!!.decorView)
+        assertTrue(titles.any { it.startsWith("画面旋转") })
+        assertTrue(titles.any { it.startsWith("常驻播放进度") })
+        dialog.dismiss()
+    }
+
+    @Test
+    fun phoneDirectionUsesNewShortcutAndBackClosesMenuBeforeLeavingHomePlayback() = fixture { activity, _, _, _ ->
+        invoke(activity, "phoneControl", org.json.JSONObject().put("action", "key").put("value", "down"))
+        assertEquals(1, get(activity, "pendingEpisodeTarget"))
+        press(activity, KeyEvent.KEYCODE_MENU)
+        set(activity, "homePlayback", true)
+        invoke(activity, "goBack")
+        assertEquals(false, get(activity, "panel"))
+        assertEquals("player", get(activity, "screen"))
+        assertNull(get(activity, "pendingEpisodeTarget"))
+    }
 
     @Test
     fun manualNextUsesQueuedSourceWithoutConsumingEpisodeSleepCount() =
@@ -230,12 +455,12 @@ class PlaybackQueueTest {
 
     @Test
     fun cancellationDropsOnlyQueuedSourceAndClosesItsResource() =
-        fixture { activity, fake, library, remote ->
+        fixture { activity, fake, library, opened ->
             invoke(activity, "queuePreparedEpisode", "102:${library.maxQuality}")
             invoke(activity, "cancelPrefetch")
             assertEquals(listOf("101"), fake.items.map { it.mediaId })
             assertNull(get(activity, "queuedNext"))
-            assertThrows(java.io.IOException::class.java) { remote.read(0, 1) }
+            assertThrows(java.io.IOException::class.java) { opened.video.read(0, 1) }
             assertFalse(fake.calls.contains("stop"))
         }
 
@@ -251,12 +476,12 @@ class PlaybackQueueTest {
 
     @Test
     fun switchingToAnInFlightNextEpisodeDoesNotCancelAndRestartItsPreparation() =
-        fixture { activity, fake, library, remote ->
+        fixture { activity, fake, library, opened ->
             val metadataRequests = blockDuplicateMetadataRequests(activity)
             @Suppress("UNCHECKED_CAST")
-            val slot = get(activity, "preparedNext") as PreparedSlot<RemoteVideo>
+            val slot = get(activity, "preparedNext") as PreparedSlot<OpenedStream>
             val key = "102:${library.maxQuality}"
-            assertSame(remote, slot.take(key))
+            assertSame(opened, slot.take(key))
             val ticket = slot.begin(key)
             val started = CountDownLatch(1)
             val finish = CountDownLatch(1)
@@ -267,7 +492,7 @@ class PlaybackQueueTest {
                 worker.submit {
                     started.countDown()
                     finish.await(5, TimeUnit.SECONDS)
-                    slot.complete(ticket, key, remote)
+                    slot.complete(ticket, key, opened)
                 }
             try {
                 assertTrue(started.await(5, TimeUnit.SECONDS))
@@ -290,7 +515,88 @@ class PlaybackQueueTest {
                 ShadowLooper.idleMainLooper()
                 invoke(activity, "playbackFirstFrame")
                 assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
-                assertSame(remote, get(activity, "video"))
+                assertSame(opened.video, get(activity, "video"))
+                assertSame(opened.rendition, get(activity, "currentRendition"))
+                assertSame(http, get(activity, "playbackHttp"))
+                assertEquals(1, get(activity, "episodeIndex"))
+                assertEquals("102", fake.items.single().mediaId)
+                assertEquals(0, metadataRequests.get())
+            } finally {
+                finish.countDown()
+            }
+        }
+
+    @Test
+    fun aSlowPrefetchLeavesTimeForForegroundPlayback() =
+        fixture { activity, _, library, opened ->
+            val metadataRequests = blockDuplicateMetadataRequests(activity)
+            @Suppress("UNCHECKED_CAST")
+            val slot = get(activity, "preparedNext") as PreparedSlot<OpenedStream>
+            val key = "102:${library.maxQuality}"
+            assertSame(opened, slot.take(key))
+            val ticket = slot.begin(key)
+            val unfinished = java.util.concurrent.CompletableFuture<Unit>()
+            set(activity, "prefetchedFor", key)
+            set(activity, "prefetchJob", unfinished)
+            set(activity, "prefetchScope", RequestScope())
+            set(activity, "prefetchHttp", invoke(activity, "newPrefetchTransport"))
+            set(activity, "playerView", PlayerView(activity))
+            set(activity, "hud", LinearLayout(activity))
+            set(activity, "playbackText", TextView(activity))
+            set(activity, "progressBar", android.widget.ProgressBar(activity))
+
+            invoke(activity, "playEpisode", 1, 0L, true, false, false, false)
+            (get(activity, "workJob") as Future<*>).get(3, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+
+            assertTrue(unfinished.isCancelled)
+            assertEquals(1, metadataRequests.get())
+            assertFalse(slot.complete(ticket, key, opened))
+            assertThrows(java.io.IOException::class.java) { opened.video.read(0, 1) }
+        }
+
+    @Test
+    fun manualSwitchKeepsOverlayHiddenDuringPreparationAndFirstFrame() =
+        fixture { activity, fake, library, opened ->
+            val metadataRequests = blockDuplicateMetadataRequests(activity)
+            @Suppress("UNCHECKED_CAST")
+            val slot = get(activity, "preparedNext") as PreparedSlot<OpenedStream>
+            val key = "102:${library.maxQuality}"
+            assertSame(opened, slot.take(key))
+            val ticket = slot.begin(key)
+            val started = CountDownLatch(1)
+            val finish = CountDownLatch(1)
+            val worker = get(activity, "prefetchWorker") as ExecutorService
+            val scope = RequestScope()
+            val http = OkHttpClient()
+            val job =
+                worker.submit {
+                    started.countDown()
+                    finish.await(5, TimeUnit.SECONDS)
+                    slot.complete(ticket, key, opened)
+                }
+            try {
+                assertTrue(started.await(5, TimeUnit.SECONDS))
+                set(activity, "prefetchedFor", key)
+                set(activity, "prefetchJob", job)
+                set(activity, "prefetchScope", scope)
+                set(activity, "prefetchHttp", http)
+                set(activity, "playerView", PlayerView(activity))
+                set(activity, "hud", LinearLayout(activity).apply { visibility = View.GONE })
+                set(activity, "playbackText", TextView(activity))
+                set(activity, "progressBar", android.widget.ProgressBar(activity))
+                invoke(activity, "playEpisode", 1, 0L, true, false, false, false)
+                assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
+                assertFalse(
+                    "Switching to the next episode must retain its running request",
+                    job.isCancelled,
+                )
+                finish.countDown()
+                (get(activity, "workJob") as Future<*>).get(5, TimeUnit.SECONDS)
+                ShadowLooper.idleMainLooper()
+                invoke(activity, "playbackFirstFrame")
+                assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
+                assertSame(opened.video, get(activity, "video"))
                 assertSame(http, get(activity, "playbackHttp"))
                 assertEquals(1, get(activity, "episodeIndex"))
                 assertEquals("102", fake.items.single().mediaId)
@@ -340,13 +646,30 @@ class PlaybackQueueTest {
     }
 
     @Test
+    fun bothEmptyModelsKeepAutomaticRecoveryAfterTheFastAttempts() = fixture { activity, _, _, _ ->
+        val status = TextView(activity)
+        set(activity, "hud", LinearLayout(activity))
+        set(activity, "playbackText", status)
+        set(activity, "progressBar", android.widget.ProgressBar(activity))
+        set(activity, "waitingForFirstFrame", true)
+        val budget = get(activity, "recovery") as RecoveryBudget
+        repeat(budget.fastAttempts) { budget.consume() }
+
+        invoke(activity, "playerFailure", EmptyPlaybackResponseException("stage=mobile-model", allPlaybackModelsEmpty = true))
+
+        assertTrue(get(activity, "autoRecovery") as Boolean)
+        assertTrue(get(activity, "waitForEmptyPlaybackModels") as Boolean)
+        assertFalse(status.text.contains("快速恢复暂未成功"))
+    }
+
+    @Test
     fun leavingWhileWaitingCancelsPromotedRequestAndClosesALateResult() =
-        fixture { activity, _, library, remote ->
+        fixture { activity, _, library, opened ->
             val metadataRequests = blockDuplicateMetadataRequests(activity)
             @Suppress("UNCHECKED_CAST")
-            val slot = get(activity, "preparedNext") as PreparedSlot<RemoteVideo>
+            val slot = get(activity, "preparedNext") as PreparedSlot<OpenedStream>
             val key = "102:${library.maxQuality}"
-            assertSame(remote, slot.take(key))
+            assertSame(opened, slot.take(key))
             val ticket = slot.begin(key)
             val started = CountDownLatch(1)
             val finish = CountDownLatch(1)
@@ -362,7 +685,7 @@ class PlaybackQueueTest {
                         // 模拟取消时已经在返回途中的结果，确保迟到资源也会被关闭。
                         finish.await(5, TimeUnit.SECONDS)
                     }
-                    slot.complete(ticket, key, remote)
+                    slot.complete(ticket, key, opened)
                 }
             try {
                 assertTrue(started.await(5, TimeUnit.SECONDS))
@@ -386,7 +709,7 @@ class PlaybackQueueTest {
                     .get(5, TimeUnit.SECONDS)
                 ShadowLooper.idleMainLooper()
                 assertFalse(slot.isFresh(key))
-                assertThrows(java.io.IOException::class.java) { remote.read(0, 1) }
+                assertThrows(java.io.IOException::class.java) { opened.video.read(0, 1) }
                 assertTrue(http.dispatcher.executorService.isShutdown)
                 assertFalse(root.dispatcher.executorService.isShutdown)
                 assertEquals(0, metadataRequests.get())

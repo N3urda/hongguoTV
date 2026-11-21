@@ -32,6 +32,15 @@ class PlaybackModelsTest {
     @Test fun badPrimaryUsesValidBackupAndRejectsCredentials() {
         val rows=PlaybackModels.candidates(model(row(url="https://user:password@example.com/video").put("backup_url_1","https://example.com/backup")))
         assertEquals("https://example.com/backup",rows.single().url)
+        assertNull(rows.single().backupUrl)
+    }
+    @Test fun preservesASeparateBackupForTheSameRendition() {
+        val main = "https://example.com/video"
+        val alternate = "https://backup.example.com/video"
+        val rendition = PlaybackModels.renditions(model(row(url = main).put("backup_url_1", alternate))).single()
+        assertEquals(main, rendition.url)
+        assertEquals(alternate, rendition.toStreamInfo().backupUrl)
+        assertNull(PlaybackModels.renditions(model(row(url = main).put("backup_url_1", main))).single().backupUrl)
     }
     @Test fun plainBase64UrlAndEscapedUrlAreAccepted() {
         val encoded="https://example.com/base64".toByteArray().base64()

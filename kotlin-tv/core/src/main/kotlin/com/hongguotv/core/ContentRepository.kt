@@ -57,12 +57,12 @@ internal fun cleanUrl(s: String) =
 class ContentHttpException(val statusCode: Int) : IOException("内容请求失败（HTTP $statusCode）")
 
 private class PlaybackModelRejectedException(val code: Int) : IOException("播放接口暂不可用（错误码 $code）")
-private class PlaybackServiceBackoffException : IOException("播放服务繁忙，请稍后重试")
+internal class PlaybackServiceBackoffException : IOException("播放服务繁忙，请稍后重试")
 
 class SearchSessionExpiredException : IOException("搜索结果已过期，请从第 1 页重新搜索")
 
 /** `detail` 仅携带路径代号、HTTP/字节数/协议与注册结果，不含地址与凭据。 */
-class EmptyPlaybackResponseException(val detail: String? = null, internal val allCompatibilityModelsEmpty: Boolean = false) :
+class EmptyPlaybackResponseException(val detail: String? = null, val allPlaybackModelsEmpty: Boolean = false) :
     IOException("播放接口暂时返回空响应，请稍后重试")
 
 class PlaybackDiagnosticException(val detail: String) : IOException("播放恢复诊断")
@@ -800,26 +800,21 @@ constructor(
                     if (strict || Thread.currentThread().isInterrupted) throw problem
                     continue
                 } catch (problem: RuntimeException) {
+                    if (strict) throw problem
                     continue
                 }
             val root = runCatching { JSONObject(text) }.getOrNull()
             if (root == null) { trace.rejected(); continue }
+            if (strict) PlaybackModels.checkStatus(root)
             val code = root.optInt("code", root.optInt("Code", -1))
             if (code != 0) { trace.rejected(code); continue }
             val data = root.optJSONObject("data") ?: continue
             val rows = data.optJSONObject("video_model_data") ?: data
             val row =
                 rows.optJSONObject(id)
-                    ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
-                    ?: continue
-            val raw = row.opt("video_model") ?: continue
-            val model =
-                (when (raw) {
-                    is JSONObject -> raw
-                    is String -> runCatching { JSONObject(raw) }.getOrNull()
-                    else -> null
-                }) ?: continue
-            if ((model.optJSONArray("video_list")?.length() ?: 0) == 0) continue
+                    ?: if (strict) null else rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
+            val model = PlaybackModels.objectValue(row?.opt("video_model")) ?: continue
+            if (!strict && (model.optJSONArray("video_list")?.length() ?: 0) == 0) continue
             return JSONObject().put("video_model", model)
         }
         return null
@@ -880,12 +875,52 @@ constructor(
         }
     }
 
+    fun shouldDeferPlaybackPrefetch(): Boolean = playbackSession.shouldDeferPlaybackPrefetch(clock())
+
     /** v5 model requests use the same anonymous registration across foreground and prefetch. */
-    fun streamLadderWithCompatibility(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder =
+    fun streamLadderWithCompatibility(
+        id: String,
+        metadataAhead: List<String> = emptyList(),
+        speculative: Boolean = false,
+        onPrimaryEmpty: (() -> Unit)? = null,
+    ): StreamLadder =
         RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(if (speculative) 2 else 8)) {
             val profile = if (speculative) playbackSession.existing()
                 ?: throw IOException("播放设备尚未就绪") else playbackSession.profile(http)
-            MobilePlayback.ladder(id, profile.values, http, MobilePlayback.signer, clock())
+            try {
+                MobilePlayback.ladder(id, profile.values, http, MobilePlayback.signer, clock())
+                    .also { profile.recordPlayablePrimaryModel() }
+            } catch (empty: EmptyPlaybackResponseException) {
+                profile.recordEmptyPrimaryModel(clock())
+                if (speculative) throw empty
+                RequestScope.ensureActive()
+                onPrimaryEmpty?.invoke()
+                val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+                val trace = PlaybackRequestTrace()
+                val entry = try {
+                    tabVideoModel(id, profile, trace, transport, strict = true)
+                } catch (_: EmptyPlaybackResponseException) {
+                    throw EmptyPlaybackResponseException(empty.detail, allPlaybackModelsEmpty = true).apply {
+                        addSuppressed(empty)
+                        addSuppressed(PlaybackDiagnosticException("video-tab-empty ${trace.summary()}"))
+                    }
+                } catch (fallback: IOException) {
+                    val failure = if (fallback is ContentHttpException)
+                        PlaybackSourceException(PlaybackSourceException.Reason.HTTP_REJECTED, fallback.statusCode)
+                    else fallback
+                    throw failure.apply {
+                        addSuppressed(empty)
+                        addSuppressed(PlaybackDiagnosticException("video-tab ${trace.summary()}"))
+                    }
+                }
+                RequestScope.ensureActive()
+                val rows = entry?.optJSONObject("video_model")?.let(PlaybackModels::renditions).orEmpty()
+                if (rows.isEmpty()) {
+                    empty.addSuppressed(PlaybackDiagnosticException("video-tab-no-model ${trace.summary()}"))
+                    throw empty
+                }
+                StreamLadder(rows)
+            }
         }
 
     /** Retained legacy transport for compatibility regression coverage. */
@@ -912,7 +947,7 @@ constructor(
                 val device = RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(8)) { devices.obtain() }
                 return RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(8)) {
                     try { playerLadder(id, device) } catch (empty: EmptyPlaybackResponseException) {
-                        if (!empty.allCompatibilityModelsEmpty) throw empty
+                        if (!empty.allPlaybackModelsEmpty) throw empty
                         RequestScope.ensureActive()
                         val replacement = try { devices.refreshEmpty(device) } catch (registration: IOException) {
                             RequestScope.ensureActive()

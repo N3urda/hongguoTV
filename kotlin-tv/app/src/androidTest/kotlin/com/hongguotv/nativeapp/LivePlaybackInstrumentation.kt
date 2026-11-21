@@ -6,6 +6,9 @@ import android.app.Instrumentation
 import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.KeyEvent
+import android.view.View
+import android.widget.TextView
 import androidx.media3.exoplayer.ExoPlayer
 import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.Detail
@@ -65,6 +68,44 @@ class LivePlaybackInstrumentation : Instrumentation() {
             check(home.items.size >= 2)
             val first = repo.detail(home.items[0].id)
             start(first, 0)
+            val library = field("library").get(current) as Library
+            val initialProgressSetting = library.alwaysShowProgress
+            try {
+                for (alwaysShow in listOf(true, false)) {
+                    var target = 0L
+                    runOnMainSync {
+                        library.alwaysShowProgress = alwaysShow
+                        val p = player()!!
+                        p.pause()
+                        p.seekTo(0)
+                        MainActivity::class.java.getDeclaredMethod("hidePlaybackOverlay")
+                            .apply { isAccessible = true }.invoke(current)
+                        val hud = field("hud").get(current) as View
+                        val bar = field("persistentBar").get(current) as View
+                        val hint = field("seekHint").get(current) as TextView
+                        check(bar.isShown == alwaysShow)
+                        val now = SystemClock.uptimeMillis()
+                        for ((key, repeat) in listOf(KeyEvent.KEYCODE_DPAD_RIGHT to 0,
+                            KeyEvent.KEYCODE_DPAD_RIGHT to 5, KeyEvent.KEYCODE_DPAD_LEFT to 0)) {
+                            current.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, key, repeat))
+                            target = (target + (if (key == KeyEvent.KEYCODE_DPAD_LEFT) -10000L
+                                else if (repeat == 5) 30000L else 10000L)).coerceIn(0, p.duration - 500)
+                            val seconds = target / 1000
+                            check(hint.isShown && hint.text == "%02d:%02d".format(seconds / 60, seconds % 60))
+                            check(!hud.isShown && bar.isShown == alwaysShow)
+                        }
+                    }
+                    Thread.sleep(1500)
+                    runOnMainSync {
+                        check(!(field("seekHint").get(current) as View).isShown)
+                        check(!(field("hud").get(current) as View).isShown)
+                        check(kotlin.math.abs(player()!!.currentPosition - target) < 1000)
+                    }
+                }
+                sendStatus(0, Bundle().apply { putString("stream", "PASS: seek target, repeat keys, hint dismissal and both progress settings\n") })
+            } finally {
+                runOnMainSync { library.alwaysShowProgress = initialProgressSetting; player()?.play() }
+            }
             runOnMainSync { player()!!.seekTo(15_000) }
             awaitFrame(first, 0, 18_000)
             runOnMainSync { player()!!.pause() }

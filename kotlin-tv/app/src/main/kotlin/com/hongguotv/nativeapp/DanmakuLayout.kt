@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.nativeapp
 
-/**
- * 弹幕轨道调度：只做时间与轨道分配，不涉及绘制。
- *
- * 旧实现是「轨道被占用就丢弃这条弹幕」，默认 2 条轨道、每条占满整个滚动时长，
- * 120 秒最多只能显示 20 条，实测一集 259 条弹幕会被丢掉九成以上。
- * 现在改为：轨道按需排队，超出容量时短暂顺延或同时进入，不丢弃；同一文本可合并计数。
- */
+import kotlin.math.ceil
+
 internal data class DanmakuItem(val id: String, val text: String, val timeMs: Long)
 
 internal data class ScheduledDanmaku(
@@ -16,31 +11,71 @@ internal data class ScheduledDanmaku(
     val lane: Int,
     val endMs: Long,
     val count: Int,
-)
+    val widthPx: Float,
+) {
+    fun xAt(timeMs: Long, viewportWidthPx: Int): Float =
+        viewportWidthPx - (viewportWidthPx + widthPx) * (timeMs - startMs).toFloat() / (endMs - startMs)
+}
+
+internal data class DanmakuRegion(val topPx: Int, val heightPx: Int) {
+    fun laneCount(textHeightPx: Int, lineHeightPx: Int, maxRows: Int): Int =
+        if (heightPx < textHeightPx) 0 else minOf(maxRows, 1 + (heightPx - textHeightPx) / lineHeightPx)
+}
+
+internal enum class DanmakuArea(val preference: String, val label: String, private val fraction: Float) {
+    TOP_EIGHTH("top_eighth", "顶部 1/8", 0.125f),
+    TOP_QUARTER("top_quarter", "顶部 1/4", 0.25f),
+    TOP_HALF("top", "顶部 1/2", 0.5f),
+    TOP_THREE_QUARTERS("top_three_quarters", "顶部 3/4", 0.75f),
+    FULL("full", "全屏", 1f),
+    MIDDLE("middle", "中部 1/2", 0.5f),
+    BOTTOM("bottom", "底部 1/2", 0.5f);
+
+    fun region(viewHeightPx: Int, topInsetPx: Int, bottomInsetPx: Int, textHeightPx: Int): DanmakuRegion {
+        val available = (viewHeightPx - topInsetPx - bottomInsetPx).coerceAtLeast(0)
+        val height = (available * fraction).toInt().coerceAtLeast(textHeightPx).coerceAtMost(available)
+        val space = available - height
+        val offset = when (this) {
+            MIDDLE -> space / 2
+            BOTTOM -> space
+            else -> 0
+        }
+        return DanmakuRegion(topInsetPx + offset, height)
+    }
+
+    companion object {
+        fun fromPreference(value: String?): DanmakuArea = entries.firstOrNull { it.preference == value } ?: TOP_HALF
+    }
+}
 
 internal object DanmakuLayout {
-    /** 同轨道两条弹幕之间的最小间隔，避免文字重叠。 */
+    /** 同轨道两条弹幕开始滚动的最小时间间隔。 */
     const val MIN_GAP_MS = 400L
 
-    /** 允许的最大顺延；拥挤时允许重叠，避免排队到剧集结束后。 */
+    /** 限制顺延时间，让弹幕尽量留在对应剧情附近。 */
     const val MAX_DELAY_MS = 3000L
 
     /**
-     * @param lanes 可用轨道数（已按屏幕高度算好）
+     * @param lanes 显示区域实际能容纳的轨道数
      * @param travelMs 单条弹幕完整穿过屏幕的时间
      * @param merge 五秒内相同文本是否合并为「文字 ×N」，保留最早出现时间
+     * @param allowOverlap 轨道挤满时是否仍显示无法及时排入的弹幕
      */
     fun assign(
         items: List<DanmakuItem>,
         lanes: Int,
         travelMs: Int,
+        viewportWidthPx: Int,
+        gapPx: Int,
         merge: Boolean = true,
-        minGapMs: Long = MIN_GAP_MS,
+        allowOverlap: Boolean = false,
         maxDelayMs: Long = MAX_DELAY_MS,
+        measureText: (String) -> Float,
     ): List<ScheduledDanmaku> {
-        if (items.isEmpty() || lanes <= 0 || travelMs <= 0) return emptyList()
+        if (items.isEmpty() || lanes <= 0 || travelMs <= 0 || viewportWidthPx <= 0) return emptyList()
         // 先按真实 id 去重，避免重叠时间段重复计数；相同文字只在五秒内合并。
-        val unique = items.distinctBy { it.id.ifBlank { "${it.timeMs}:${it.text}" } }.sortedBy { it.timeMs }
+        val unique = items.distinctBy { it.id.ifBlank { "${it.timeMs}:${it.text}" } }
+            .sortedWith(compareBy<DanmakuItem> { it.timeMs }.thenBy { it.id })
         val prepared = mutableListOf<Triple<String, Long, Int>>()
         val latest = mutableMapOf<String, Int>()
         for (item in unique) {
@@ -56,38 +91,49 @@ internal object DanmakuLayout {
             }
         }
 
-        val laneFreeAt = LongArray(lanes) { Long.MIN_VALUE }
+        val lastOnLane = arrayOfNulls<ScheduledDanmaku>(lanes)
+        val clearanceMs = LongArray(lanes)
         val output = ArrayList<ScheduledDanmaku>(prepared.size)
+        var overflowCount = 0
         for ((text, at, count) in prepared) {
+            val display = if (count > 1) "$text ×$count" else text
+            val widthPx = measureText(display)
+            val clearance = ceil(travelMs * (widthPx.toDouble() + gapPx) / (viewportWidthPx + widthPx))
+                .toLong().coerceAtLeast(MIN_GAP_MS)
             var bestLane = 0
             var bestStart = Long.MAX_VALUE
             for (lane in 0 until lanes) {
-                val earliest = maxOf(at, laneFreeAt[lane] + minGapMs)
+                val previous = lastOnLane[lane]
+                // 前条尾部先离开入口，较长的后条也须等到追不上前条才入轨。
+                val earliest = if (previous == null) at
+                    else maxOf(at, previous.startMs + maxOf(clearanceMs[lane], clearance))
                 if (earliest < bestStart) {
                     bestStart = earliest
                     bestLane = lane
                 }
             }
-            // 限制等待时间，轨道拥挤时允许重叠，不能把弹幕推迟到片尾之后。
-            val start = minOf(bestStart, at + maxDelayMs.coerceAtLeast(0)).coerceAtLeast(at)
-            laneFreeAt[bestLane] = start + travelMs / 3
-            output +=
-                ScheduledDanmaku(
-                    text = if (count > 1) "$text ×$count" else text,
-                    startMs = start,
-                    lane = bestLane,
-                    endMs = start + travelMs,
-                    count = count,
-                )
+            val latestStart = at + maxDelayMs.coerceAtLeast(0)
+            if (bestStart > latestStart) {
+                if (!allowOverlap) continue
+                bestLane = overflowCount++ % lanes
+                bestStart = latestStart
+            }
+            val item = ScheduledDanmaku(display, bestStart, bestLane, bestStart + travelMs, count, widthPx)
+            lastOnLane[bestLane] = item
+            clearanceMs[bestLane] = clearance
+            output += item
         }
+        output.sortBy { it.startMs }
         return output
     }
 
-    /** 按屏幕高度推算可用轨道数，单条行高由字号决定。 */
-    fun laneCountFor(heightPx: Int, textSizePx: Int, topPaddingPx: Int, maxLanes: Int = 12): Int {
-        if (heightPx <= 0 || textSizePx <= 0) return 1
-        val usable = heightPx - topPaddingPx
-        val lineHeight = (textSizePx * 1.8f).toInt().coerceAtLeast(1)
-        return (usable / lineHeight).coerceIn(1, maxLanes)
+    fun firstStartingAfter(items: List<ScheduledDanmaku>, timeMs: Long): Int {
+        var low = 0
+        var high = items.size
+        while (low < high) {
+            val mid = (low + high) ushr 1
+            if (items[mid].startMs <= timeMs) low = mid + 1 else high = mid
+        }
+        return low
     }
 }

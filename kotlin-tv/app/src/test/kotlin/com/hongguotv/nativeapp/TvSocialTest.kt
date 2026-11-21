@@ -64,12 +64,24 @@ class TvSocialTest {
             assertEquals("密度：多", density.text.toString())
             assertTrue(density.hasFocus())
             row("更多设置").performClick()
-            assertTrue(row("精确行数").isShown)
-            assertEquals("精确行数：12 行", row("精确行数").text.toString())
-            row("精确行数").performClick()
+            val exactRows = row("精确行数")
+            assertTrue(exactRows.isShown)
+            assertEquals("精确行数：12 行", exactRows.text.toString())
+            density.performClick()
+            assertEquals("密度：极少（2 行）", density.text.toString())
+            assertEquals("精确行数：2 行", exactRows.text.toString())
+            assertEquals(2, activity.getSharedPreferences("social", 0).getInt("lanes", 0))
+            density.performClick()
+            assertEquals("密度：少", density.text.toString())
+            assertEquals("精确行数：4 行", exactRows.text.toString())
+            density.performClick()
             assertEquals("密度：标准（自动）", density.text.toString())
-            row("精确行数").performClick()
-            row("精确行数").performClick()
+            exactRows.performClick()
+            assertEquals("精确行数：2 行", exactRows.text.toString())
+            assertEquals("密度：极少（2 行）", density.text.toString())
+            exactRows.performClick()
+            assertEquals("精确行数：4 行", exactRows.text.toString())
+            exactRows.performClick()
             assertEquals("密度：自定义 6 行", density.text.toString())
             val page = JSONObject().put("items", JSONArray())
             val field = social.javaClass.getDeclaredField("pages").apply { isAccessible = true }
@@ -87,6 +99,72 @@ class TvSocialTest {
             assertTrue(dialog.isShowing)
             assertTrue(pages.isEmpty())
             dialog.dismiss()
+        } finally {
+            social.destroy()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun displayAreaUsesRemoteStepsAndPersistsAcrossOpeningTheDialog() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val social = TvSocial(activity, { null }, { null })
+        val anchor = Button(activity)
+        try {
+            social.settings(anchor)
+            fun areaRow() = views(ShadowDialog.getLatestDialog().window!!.decorView)
+                .single { it.text.startsWith("显示区域：") }
+            val area = areaRow()
+            assertEquals("显示区域：顶部 1/2", area.text.toString())
+            assertTrue(area.requestFocus())
+            assertTrue(area.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT)))
+            assertTrue(area.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_LEFT)))
+            assertEquals("显示区域：顶部 1/4", area.text.toString())
+            assertTrue(area.hasFocus())
+            assertTrue(area.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)))
+            assertEquals("显示区域：顶部 1/2", area.text.toString())
+            area.performClick()
+            social.settings(anchor)
+            assertEquals("显示区域：顶部 3/4", areaRow().text.toString())
+        } finally {
+            social.destroy()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun overlayAppliesTheTwoRowLimitAndOverlapSettingAfterItIsLaidOut() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val social = TvSocial(activity, { null }, { null })
+        val root = FrameLayout(activity)
+        val anchor = Button(activity)
+        root.addView(anchor)
+        activity.setContentView(root)
+        try {
+            activity.getSharedPreferences("social", 0).edit().putInt("lanes", 2).apply()
+            social.attach(root)
+            val overlay = root.getChildAt(1)
+            val rows = (1..30).map { index ->
+                JSONObject().put("id", "id$index").put("text", "测试弹幕 $index").put("timeMS", 0L)
+            }
+            overlay.javaClass.getDeclaredMethod("setRows", List::class.java)
+                .apply { isAccessible = true }.invoke(overlay, rows)
+            val field = overlay.javaClass.getDeclaredField("scheduled").apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            fun scheduled() = field.get(overlay) as List<ScheduledDanmaku>
+            assertTrue(scheduled().isEmpty())
+            overlay.layout(0, 0, 960, 540)
+            assertEquals(setOf(0, 1), scheduled().map { it.lane }.toSet())
+            assertTrue(scheduled().size < rows.size)
+
+            social.settings(anchor)
+            val overlap = views(ShadowDialog.getLatestDialog().window!!.decorView).single { it.text == "防重叠：开" }
+            overlap.performClick()
+            assertEquals("防重叠：关", overlap.text.toString())
+            assertEquals(rows.size, scheduled().size)
+            assertEquals(setOf(0, 1), scheduled().map { it.lane }.toSet())
         } finally {
             social.destroy()
             controller.pause().stop().destroy()
