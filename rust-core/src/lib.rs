@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#![recursion_limit = "256"]
 use std::cmp::Reverse;
 
 pub mod range;
@@ -140,3 +141,13 @@ mod tests {
         assert_eq!(select_rendition(&[rows[0], automatic], 1080), Some(1));
     }
 }
+
+#[cfg(feature = "registered")]
+mod cenc;
+#[cfg(feature = "registered")]
+mod crypto;
+#[cfg(feature = "registered")]
+pub mod registered;
+
+#[cfg(feature = "registered")]
+mod v5;

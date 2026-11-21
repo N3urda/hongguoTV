@@ -10,7 +10,7 @@ use tokio::sync::OwnedSemaphorePermit;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) async fn serve(
-    media: &RemoteMp4,
+    media: &std::sync::Arc<RemoteMp4>,
     method: Method,
     headers: HeaderMap,
     cancellation: CancellationToken,
@@ -61,6 +61,7 @@ pub(crate) async fn serve(
         .run_until_cancelled(media.read_range(range))
         .await
         .context("播放会话已关闭")??;
+    let media = media.clone();
     let body = Body::from_stream(async_stream::stream! {
         let _permit = permit;
         let mut remaining = range.length();
@@ -71,8 +72,14 @@ pub(crate) async fn serve(
             };
             match result {
                 Ok(Some(chunk)) if chunk.len() as u64 <= remaining => {
-                    remaining -= chunk.len() as u64;
-                    yield Ok::<_, io::Error>(chunk);
+                    let start = range.end + 1 - remaining;
+                    match media.decode_chunk(start, &chunk) {
+                        Ok(bytes) => {
+                            remaining -= bytes.len() as u64;
+                            yield Ok::<_, io::Error>(bytes);
+                        }
+                        Err(_) => { yield Err(io::Error::other("视频分段解密失败")); break; }
+                    }
                 }
                 _ => {
                     yield Err(io::Error::other("视频流读取中断"));
@@ -119,7 +126,7 @@ mod tests {
         let task = tokio::spawn(async move {
             axum::serve(listener, source).await.unwrap();
         });
-        let media = RemoteMp4::open(Client::new(), url, None).await.unwrap();
+        let media = std::sync::Arc::new(RemoteMp4::open(Client::new(), url, None).await.unwrap());
         let readers = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
         let mut headers = HeaderMap::new();
         headers.insert(header::RANGE, "bytes=-4".parse().unwrap());
@@ -207,6 +214,7 @@ mod tests {
             quality: 720,
             qualities: vec![720],
             scope: PlaybackScope::Full,
+            key: None,
         };
         let media = RemoteMp4::open_source(Client::new(), &source)
             .await

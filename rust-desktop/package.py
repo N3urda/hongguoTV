@@ -62,6 +62,7 @@ def package_mac(binary, artifact, staging, version):
             run("sips", "-z", pixels, pixels, str(square), "--out", str(icons / name))
     run("iconutil", "-c", "icns", str(icons), "-o", str(resources / "AppIcon.icns"))
     shutil.copyfile(REPO / "LICENSE", resources / "LICENSE.txt")
+    shutil.copyfile(REPO / "kotlin-tv" / "NOTICE.md", resources / "NOTICE.txt")
     info = {
         "CFBundleDevelopmentRegion": "zh_CN",
         "CFBundleDisplayName": "红果短剧",
@@ -89,11 +90,12 @@ def package_windows(binary, artifact, loader):
         if loader:
             archive.write(loader, "WebView2Loader.dll")
         archive.write(REPO / "LICENSE", "LICENSE.txt")
+        archive.write(REPO / "kotlin-tv" / "NOTICE.md", "NOTICE.txt")
         archive.writestr(
             "Readme.txt",
             "红果短剧 Rust 桌面版\r\n"
             "解压后运行 Hongguo Rust.exe。需要 Windows x64 的 Microsoft Edge WebView2 运行时。\r\n"
-            "应用可浏览、搜索和播放官网提供的公开试看。完整分集可选择「在官网播放」。\r\n",
+            "应用可浏览、搜索，通过注册源播放正片，也可选择官网公开试看。\r\n",
         )
 
 
@@ -101,6 +103,7 @@ def package_installer(binary, artifact, staging, loader, bootstrapper, version):
     shutil.copy2(binary, staging / "app.exe")
     shutil.copyfile(bootstrapper, staging / "MicrosoftEdgeWebview2Setup.exe")
     shutil.copyfile(REPO / "LICENSE", staging / "LICENSE.txt")
+    shutil.copyfile(REPO / "kotlin-tv" / "NOTICE.md", staging / "NOTICE.txt")
     shutil.copyfile(ROOT / "windows-installer.nsi", staging / "windows-installer.nsi")
     option = "/" if platform.system() == "Windows" else "-"
     args = [

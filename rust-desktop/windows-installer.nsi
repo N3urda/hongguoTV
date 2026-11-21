@@ -82,6 +82,7 @@ Section "hongguoTV"
         IfErrors install_failed
     !endif
     File "LICENSE.txt"
+    File "NOTICE.txt"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
     CreateDirectory "$SMPROGRAMS\hongguoTV"
     CreateShortCut "$SMPROGRAMS\hongguoTV\hongguoTV.lnk" "$INSTDIR\${APP_EXE}"
@@ -113,6 +114,7 @@ Section "Uninstall"
     ${EndIf}
     Delete "$INSTDIR\WebView2Loader.dll"
     Delete "$INSTDIR\LICENSE.txt"
+    Delete "$INSTDIR\NOTICE.txt"
     Delete "$INSTDIR\Uninstall.exe"
     Delete "$SMPROGRAMS\hongguoTV\hongguoTV.lnk"
     RMDir "$SMPROGRAMS\hongguoTV"

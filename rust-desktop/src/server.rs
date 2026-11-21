@@ -86,6 +86,7 @@ impl Drop for Session {
 
 #[derive(Clone)]
 struct App {
+    registered: Arc<hongguo_playback::registered::RegisteredSource>,
     site: Site,
     account: Arc<Account>,
     store: Arc<LibraryStore>,
@@ -104,7 +105,7 @@ impl App {
     async fn detail(&self, site: &Site, id: &str) -> Result<Detail> {
         let mut detail = site.detail(id).await?;
         for episode in &mut detail.episodes {
-            episode.full = self.sources.for_episode(id, &episode.id).is_some();
+            episode.full = valid_id(&episode.id);
             episode.available |= episode.full;
         }
         Ok(detail)
@@ -136,6 +137,7 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
         .transpose()?
         .unwrap_or_default();
     let app = App {
+        registered: Arc::new(hongguo_playback::registered::RegisteredSource::new()?),
         site: Site::new().context("无法初始化官网连接")?,
         store: Arc::new(LibraryStore::open(data_dir)?),
         account: Arc::new(Account::new(data_dir)?),
@@ -618,11 +620,14 @@ async fn play(
         PlaybackScope::Preview
     });
     let sources = match scope {
-        PlaybackScope::Full => app
-            .sources
-            .for_episode(&selection.series, &episode.id)
-            .cloned()
-            .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "本集暂未接入正式播放源".to_owned()))?,
+        PlaybackScope::Full => match app.sources.for_episode(&selection.series, &episode.id) {
+            Some(ladder) => ladder.clone(),
+            None => app
+                .registered
+                .ladder(&episode.id)
+                .await
+                .map_err(ApiError::upstream)?,
+        },
         PlaybackScope::Preview => site
             .public_media(&selection.series, &episode.id)
             .await

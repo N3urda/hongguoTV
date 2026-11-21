@@ -15,7 +15,7 @@ anyhow = "1.0"
 async-stream = "0.3"
 axum = "0.8.9"
 base64 = "0.22"
-hongguo-playback = { path = "../rust-core", features = ["web"] }
+hongguo-playback = { path = "../rust-core", features = ["registered"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "cookies", "gzip", "brotli", "stream"] }
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }

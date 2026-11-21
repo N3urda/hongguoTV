@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Pure playback-model parsing. Callers supply a response they are authorized to use.
-//! No registration, request signing, URL decryption or media decryption is performed.
+//! The registered feature also decodes the keys and URLs used by main’s playback protocol.
 
 use std::{borrow::Cow, fmt};
 
@@ -19,6 +19,8 @@ pub struct PlaybackVariant {
     pub height: Option<u32>,
     pub url: Url,
     pub backup_url: Option<Url>,
+    /// CENC key stays in native memory; never serialize it into UI responses.
+    pub key: Option<[u8; 16]>,
 }
 
 impl PlaybackVariant {
@@ -81,6 +83,32 @@ impl PlaybackModel {
         )
     }
 
+    /// Single-video responses must not silently select a different batch entry.
+    #[cfg(feature = "registered")]
+    pub(crate) fn single_model(bytes: &[u8], episode: &str) -> Result<Value, ModelError> {
+        let root = decode_json(bytes)?;
+        check_status(&root)?;
+        let data = root.get("data").ok_or(ModelError::InvalidResponse)?;
+        check_status(data)?;
+        let entries = data.get("1004").unwrap_or(data);
+        let entry = if data.get("video_model").is_some() || data.get("video_list").is_some() {
+            // Some single endpoints echo an ID. Honor it when present.
+            if data.get("video_id").is_some_and(|id| {
+                id.as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| id.to_string())
+                    != episode
+            }) {
+                return Err(ModelError::EpisodeMissing);
+            }
+            data
+        } else {
+            entries.get(episode).ok_or(ModelError::EpisodeMissing)?
+        };
+        check_status(entry)?;
+        object_model(entry.get("video_model").unwrap_or(entry)).map(Cow::into_owned)
+    }
+
     pub fn variants(&self) -> &[PlaybackVariant] {
         &self.variants
     }
@@ -90,10 +118,7 @@ impl PlaybackModel {
     }
 
     pub(crate) fn from_value(value: &Value) -> Result<Self, ModelError> {
-        let model = match value.as_str() {
-            Some(text) => Cow::Owned(decode_json(text.as_bytes())?),
-            None => Cow::Borrowed(value),
-        };
+        let model = object_model(value)?;
         check_status(&model)?;
         let rows: Vec<_> = match &model["video_list"] {
             Value::Object(rows) if rows.len() <= MAX_VARIANTS => rows
@@ -108,12 +133,30 @@ impl PlaybackModel {
         };
         let variants: Vec<_> = rows
             .into_iter()
-            .filter_map(|(name, row)| parse_variant(name, row))
+            .filter_map(|(name, row)| parse_variant(name, row, &model))
             .collect();
         if variants.is_empty() {
             return Err(ModelError::NoPlayableSource);
         }
         Ok(Self { variants })
+    }
+}
+
+fn object_model(value: &Value) -> Result<Cow<'_, Value>, ModelError> {
+    match value.as_str() {
+        Some(text) => {
+            if text.len() > MAX_MODEL_BYTES {
+                return Err(ModelError::TooLarge);
+            }
+            let decoded = decode_json(text.as_bytes()).or_else(|_| {
+                let raw = STANDARD
+                    .decode(text)
+                    .map_err(|_| ModelError::InvalidResponse)?;
+                decode_json(&raw)
+            })?;
+            Ok(Cow::Owned(decoded))
+        }
+        None => Ok(Cow::Borrowed(value)),
     }
 }
 
@@ -124,7 +167,7 @@ fn decode_json(bytes: &[u8]) -> Result<Value, ModelError> {
     serde_json::from_slice(bytes).map_err(|_| ModelError::InvalidResponse)
 }
 
-fn check_status(value: &Value) -> Result<(), ModelError> {
+pub(crate) fn check_status(value: &Value) -> Result<(), ModelError> {
     if !value.is_object() {
         return Err(ModelError::InvalidResponse);
     }
@@ -169,10 +212,40 @@ fn dimension(value: &Value) -> Option<u32> {
         .filter(|n| *n > 0)
 }
 
-fn parse_variant(name: &str, row: &Value) -> Option<PlaybackVariant> {
-    if !row.is_object() || protected(row) {
+fn parse_variant(name: &str, row: &Value, model: &Value) -> Option<PlaybackVariant> {
+    if !row.is_object() {
         return None;
     }
+    #[cfg(feature = "registered")]
+    let key = {
+        let raw = [text(&row["encrypt_info"]["spade_a"]), text(&row["spade_a"])]
+            .into_iter()
+            .find(|s| !s.is_empty());
+        match raw {
+            Some(raw) => Some(crate::crypto::derive_key(raw)?),
+            None => None,
+        }
+    };
+    #[cfg(not(feature = "registered"))]
+    let key = None;
+    if protected(row) && key.is_none() {
+        return None;
+    }
+    let resolve = |raw: &str| {
+        let plain = playable_url(raw);
+        #[cfg(feature = "registered")]
+        {
+            plain.or_else(|| {
+                let seed = crate::crypto::decode64(text(&model["key_seed"]))?;
+                playable_url(&crate::crypto::decrypt_url(raw, &seed)?)
+            })
+        }
+        #[cfg(not(feature = "registered"))]
+        {
+            let _ = model;
+            plain
+        }
+    };
     let meta = &row["video_meta"];
     let codec = [text(&row["codec_type"]), text(&meta["codec_type"])]
         .into_iter()
@@ -192,9 +265,9 @@ fn parse_variant(name: &str, row: &Value) -> Option<PlaybackVariant> {
     }) {
         return None;
     }
-    let backup = playable_url(text(&row["backup_url_1"]));
-    let url = playable_url(text(&row["main_url"]))
-        .or_else(|| playable_url(text(&row["play_url"])))
+    let backup = resolve(text(&row["backup_url_1"]));
+    let url = resolve(text(&row["main_url"]))
+        .or_else(|| resolve(text(&row["play_url"])))
         .or_else(|| backup.clone())?;
     let width = dimension(&row["vwidth"]).or_else(|| dimension(&meta["vwidth"]));
     let height = dimension(&row["vheight"]).or_else(|| dimension(&meta["vheight"]));
@@ -226,6 +299,7 @@ fn parse_variant(name: &str, row: &Value) -> Option<PlaybackVariant> {
         width,
         height,
         backup_url: backup.filter(|backup| backup != &url),
+        key,
         url,
     })
 }

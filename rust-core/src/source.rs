@@ -56,9 +56,19 @@ pub struct SelectedSource {
     pub quality: u16,
     pub qualities: Vec<u16>,
     pub scope: PlaybackScope,
+    pub key: Option<[u8; 16]>,
 }
 
 impl Ladder {
+    #[cfg(feature = "registered")]
+    pub(crate) fn registered(model: PlaybackModel) -> Self {
+        Self {
+            variants: model.into_variants(),
+            referer: None,
+            scope: PlaybackScope::Full,
+        }
+    }
+
     pub(crate) fn preview(urls: BTreeMap<u16, Url>, page: Url) -> Self {
         Self {
             variants: urls
@@ -70,6 +80,7 @@ impl Ladder {
                     codec: String::new(),
                     width: None,
                     height: None,
+                    key: None,
                 })
                 .collect(),
             referer: Some(page),
@@ -107,6 +118,7 @@ impl Ladder {
             quality: row.quality,
             qualities,
             scope: self.scope,
+            key: row.key,
         })
     }
 }
@@ -202,6 +214,7 @@ impl AuthorizedSources {
                                 codec: String::new(),
                                 width: None,
                                 height: None,
+                                key: None,
                             })
                         })
                         .collect::<Result<Vec<_>>>()?
@@ -236,7 +249,7 @@ impl AuthorizedSources {
     }
 }
 
-fn https_url(value: &str) -> Result<Url> {
+pub(crate) fn https_url(value: &str) -> Result<Url> {
     let url = Url::parse(value).map_err(|_| anyhow::anyhow!("正式源地址格式无效"))?;
     ensure!(
         url.scheme() == "https"
@@ -281,6 +294,8 @@ pub struct RemoteMp4 {
     url: Url,
     referer: Option<Url>,
     total: u64,
+    #[cfg(feature = "registered")]
+    decryption: Option<crate::cenc::Prepared>,
 }
 
 impl RemoteMp4 {
@@ -288,15 +303,61 @@ impl RemoteMp4 {
     /// Once opened, all ranges stay on that file; bytes from different files are
     /// never spliced together after a mid-stream failure.
     pub async fn open_source(client: Client, source: &SelectedSource) -> Result<Self> {
-        match Self::open(client.clone(), source.url.clone(), source.referer.clone()).await {
+        match Self::open_selected(client.clone(), source.url.clone(), source).await {
             Ok(media) => Ok(media),
             Err(primary) => match source.backup_url.as_ref().filter(|url| *url != &source.url) {
-                Some(backup) => Self::open(client, backup.clone(), source.referer.clone())
+                Some(backup) => Self::open_selected(client, backup.clone(), source)
                     .await
                     .context("主源和备用源均无法播放"),
                 None => Err(primary),
             },
         }
+    }
+
+    async fn open_selected(client: Client, url: Url, source: &SelectedSource) -> Result<Self> {
+        #[allow(unused_mut)]
+        let mut media = Self::open(client, url, source.referer.clone()).await?;
+        if let Some(key) = source.key {
+            #[cfg(feature = "registered")]
+            {
+                let part = ByteRange {
+                    start: 0,
+                    end: 65535.min(media.total - 1),
+                };
+                let prefix = read_limited(media.request(part).await?.0, 65536).await?;
+                let end = crate::cenc::header_end(&prefix, media.total)?;
+                let response = media
+                    .request(ByteRange {
+                        start: 0,
+                        end: end as u64 - 1,
+                    })
+                    .await?
+                    .0;
+                let header = read_limited(response, end).await?;
+                ensure!(header.len() == end, "视频索引不完整");
+                media.decryption = Some(crate::cenc::Prepared::parse(header, key, media.total)?);
+            }
+            #[cfg(not(feature = "registered"))]
+            {
+                let _ = key;
+                anyhow::bail!("当前构建不支持视频解密");
+            }
+        }
+        Ok(media)
+    }
+
+    /// Transform each range chunk at its absolute file offset, including seeks
+    /// beginning inside an encrypted subsample. All key/index logic stays in core.
+    pub fn decode_chunk(&self, start: u64, data: &[u8]) -> Result<Vec<u8>> {
+        ensure!(
+            start <= self.total && data.len() as u64 <= self.total - start,
+            "视频分段越界"
+        );
+        #[cfg(feature = "registered")]
+        if let Some(prepared) = &self.decryption {
+            return prepared.decrypt(start, data);
+        }
+        Ok(data.to_vec())
     }
 
     pub async fn open(client: Client, url: Url, referer: Option<Url>) -> Result<Self> {
@@ -305,6 +366,8 @@ impl RemoteMp4 {
             url,
             referer,
             total: 0,
+            #[cfg(feature = "registered")]
+            decryption: None,
         };
         let probe = ByteRange { start: 0, end: 31 };
         let (response, total) = media.request(probe).await?;
@@ -469,5 +532,74 @@ mod tests {
         assert!(AuthorizedSources::decode(&serde_json::to_vec(&manifest).unwrap()).is_ok());
         manifest["episodes"][0]["sources"] = serde_json::json!([]);
         assert!(AuthorizedSources::decode(&serde_json::to_vec(&manifest).unwrap()).is_err());
+    }
+}
+
+#[cfg(all(test, feature = "registered"))]
+mod encrypted_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[tokio::test]
+    async fn opens_encrypted_mp4_and_decodes_seeks_and_header_with_one_source() {
+        let (data, plain, key, _) = crate::cenc::test_fixture();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/clip", listener.local_addr().unwrap())).unwrap();
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut b = [0];
+                while !request.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut b).await.unwrap();
+                    request.push(b[0]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                let range = request
+                    .lines()
+                    .find_map(|s| s.strip_prefix("range: "))
+                    .unwrap();
+                let part = ByteRange::from_header(range, data.len() as u64).unwrap();
+                stream.write_all(format!("HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Range: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",part.content_range(data.len() as u64),part.length()).as_bytes()).await.unwrap();
+                stream
+                    .write_all(&data[part.start as usize..=part.end as usize])
+                    .await
+                    .unwrap();
+            }
+        });
+        let selected = SelectedSource {
+            url,
+            backup_url: None,
+            referer: None,
+            quality: 720,
+            qualities: vec![720],
+            scope: PlaybackScope::Full,
+            key: Some(key),
+        };
+        let media =
+            RemoteMp4::open_source(Client::builder().no_proxy().build().unwrap(), &selected)
+                .await
+                .unwrap();
+        let part = ByteRange {
+            start: 4101,
+            end: 4150,
+        };
+        let bytes = read_limited(media.read_range(part).await.unwrap(), 50)
+            .await
+            .unwrap();
+        assert_eq!(
+            media.decode_chunk(part.start, &bytes).unwrap(),
+            plain[5..55]
+        );
+        let part = ByteRange {
+            start: 0,
+            end: 1000,
+        };
+        let bytes = read_limited(media.read_range(part).await.unwrap(), 1001)
+            .await
+            .unwrap();
+        let decoded = media.decode_chunk(0, &bytes).unwrap();
+        assert!(decoded.windows(4).any(|b| b == b"avc1"));
+        assert!(!decoded.windows(4).any(|b| b == b"encv"));
+        task.abort();
     }
 }
