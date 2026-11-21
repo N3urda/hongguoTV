@@ -75,9 +75,21 @@ class RemoteVideo(private val http: OkHttpClient, info: StreamInfo) : Closeable 
             val retryable = response.code in 500..599 && response.header("Retry-After").isNullOrBlank()
             throw RangeHttpFailure(response.code, retryable)
         }
+        val header = response.header("Content-Range").orEmpty()
+        val full = when (val native = RustPlaybackCore.rangeTotal(header, start, end, expectedTotal)) {
+            null -> kotlinRangeTotal(header, start, end, expectedTotal)
+            -1L -> throw IOException("视频分段响应异常")
+            -2L -> throw IOException("视频分段范围不匹配")
+            -3L -> throw IOException("视频资源已变化，请重试")
+            else -> native
+        }
+        return (minOf(end, full - 1) - start + 1).toInt() to full
+    }
+
+    private fun kotlinRangeTotal(header: String, start: Long, end: Long, expectedTotal: Long): Long {
         val match =
             Regex("bytes (\\d+)-(\\d+)/(\\d+)")
-                .matchEntire(response.header("Content-Range").orEmpty())
+                .matchEntire(header)
                 ?: throw IOException("视频分段响应异常")
         val (begin, finish, size) = match.destructured
         val full = size.toLong()
@@ -85,7 +97,7 @@ class RemoteVideo(private val http: OkHttpClient, info: StreamInfo) : Closeable 
         if (begin.toLong() != start || finish.toLong() != last || full <= start)
             throw IOException("视频分段范围不匹配")
         if (expectedTotal != 0L && full != expectedTotal) throw IOException("视频资源已变化，请重试")
-        return (last - start + 1).toInt() to full
+        return full
     }
 
     private fun range(url: String, start: Long, end: Long, expectedTotal: Long = total): Range {

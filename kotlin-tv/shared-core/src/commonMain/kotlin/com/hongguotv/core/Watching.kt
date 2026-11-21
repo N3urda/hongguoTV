@@ -94,6 +94,7 @@ object ResumePlayback {
     ): ResumeTarget {
         require(episodes.isNotEmpty())
         val index = episodes.indexOf(episodeId)
+        nativeResumeTarget(episodes.size, index, position, completed)?.let { return it }
         if (index < 0) return ResumeTarget(0, 0)
         return if (completed) ResumeTarget((index + 1).coerceAtMost(episodes.lastIndex), 0)
         else ResumeTarget(index, position.coerceAtLeast(0))

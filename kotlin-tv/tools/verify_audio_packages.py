@@ -16,7 +16,7 @@ if __name__ == '__main__':
     spec.loader.exec_module(release)
     for directory, suffix, abis in release.APK_VARIANTS:
         apk = ROOT / 'kotlin-tv/app/build' / directory / f'outputs/apk/{kind}' / release.apk_filename(suffix, kind)
-        release.validate_apk_abis(apk, abis)
+        release.validate_apk_abis(apk, suffix, abis)
         if not abis:
             with zipfile.ZipFile(apk) as archive:
                 for name in archive.namelist():
@@ -27,4 +27,5 @@ if __name__ == '__main__':
         expected = 21 if abis else 23
         if f"sdkVersion:'{expected}'" not in badging:
             raise ValueError(f'{apk}: incorrect minimum SDK')
-        print(f'{suffix}: minSdk={expected}, native ABIs={sorted(abis)}, bytes={apk.stat().st_size}')
+        playback = sorted(release.playback_abis(suffix))
+        print(f'{suffix}: minSdk={expected}, Rust ABIs={playback}, FFmpeg ABIs={sorted(abis)}, bytes={apk.stat().st_size}')

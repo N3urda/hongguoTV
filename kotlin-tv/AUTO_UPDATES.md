@@ -4,16 +4,16 @@
 `kotlin-vMAJOR.MINOR.PATCH` 标签触发正式发布，标签必须匹配源码 versionName。
 发布前递增 versionCode、提交改动并完成评审。已发布资产不可变；更正安装包布局必须递增补丁版本和 versionCode，禁止重开旧 Release、覆盖旧附件或移动旧标签。
 
-## 强制发布清单（0.16.4 起）
+## APK 发布清单
 
-- `android6.apk`：Android 6+（API 23），默认构建，不依赖 FFmpeg，没有原生 `.so`，支持包括 ARM32 在内的平台。
-- `android5.apk`：Android 5 兼容包（API 21），使用 `-PlegacyAudio=true` 构建，包含四种 ABI 的 FFmpeg，仅 API 21–22 启用扩展音频解码。
+- `android6.apk`：Android 6+（API 23），默认构建，包含四种 ABI 的 Rust 内核，使用系统音频解码。
+- `android5.apk`：Android 5 兼容包（API 21），使用 `-PlegacyAudio=true` 构建，包含四种 ABI 的 Rust 内核和 FFmpeg，仅 API 21–22 启用扩展音频解码。
 
 - `android6-arm32-v7a.apk`：Android 6+ ARM32，来自 Gradle armeabi-v7a 分包。
 - `android6-arm64-v8a.apk`：Android 6+ ARM64，来自 Gradle arm64-v8a 分包。
 
 每次发布必须包含以上四个 APK，不能以通用包替代 ARM32/ARM64 交付，也不能仅复制或重命名通用包冒充分包。
-Android 6+ 包没有原生库，ARM 两包的可执行代码可能相同，不能通过 `.so` 目录判断分包是否正确；必须校验 Gradle output-metadata.json 中的 ABI filters。
+ARM 分包分别携带对应 ABI 的 Rust 内核。发布脚本同时校验库文件和 Gradle `output-metadata.json` 中的 ABI filters。
 四包使用相同包名、版本和正式证书。ARM32/ARM64 按 Android 用户态 ABI 选择，不能只看芯片位数。
 通用 android6 包继续为 0.16.3 更新器提供兼容更新入口；不明确 ABI 时也可以使用通用包。
 平台包输出在 `app/build/platform/`；兼容包在 `app/build/`。构建顺序先兼容版后平台版。
@@ -21,7 +21,7 @@ Android 6+ 包没有原生库，ARM 两包的可执行代码可能相同，不�
 
 ## 验证
 
-需要 JDK 17、SDK 36、Build Tools 36.0.0；兼容版额外需要 NDK 27.1.12297006。
+需要 JDK 17、SDK 36、Build Tools 36.0.0、NDK 27.1.12297006 和 [Android Rust 目标](README.md#构建)。
 
 ```sh
 python3 -m unittest discover -s kotlin-tv/tools -p 'test_*.py'

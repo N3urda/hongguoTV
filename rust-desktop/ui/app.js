@@ -202,9 +202,10 @@ async function openDetail(id) {
   const frame = (body) => main.replaceChildren(button("返回", back, "back"), body);
   frame(status("正在读取剧集…"));
   try {
+    await pendingStop;
     const [detail, library] = await Promise.all([
       request(`api/detail/${id}`, { signal: navigation.signal }),
-      pendingStop.then(() => request("api/library", { signal: navigation.signal })),
+      request("api/library", { signal: navigation.signal }),
     ]);
     if (navigation.signal.aborted) return;
     state.library = library;
@@ -218,13 +219,10 @@ async function openDetail(id) {
 }
 
 function renderDetail(detail) {
-  const { series, episodes } = detail;
+  const { series, episodes, resume } = detail;
   const history = state.library.history.find((item) => item.series.id === series.id);
-  const available = episodes.filter((episode) => episode.available);
-  const savedIndex = available.findIndex((episode) => episode.id === history?.episode);
-  const resumeEpisode = savedIndex < 0 ? available[0]
-    : history.completed ? available[savedIndex + 1] || available[savedIndex] : available[savedIndex];
-  const resumePosition = history && resumeEpisode?.id === history.episode && !history.completed ? history.position : 0;
+  const resumeEpisode = episodes.find((episode) => episode.id === resume?.episode);
+  const resumePosition = resume?.position || 0;
 
   const layout = node("div", "detail");
   const copy = node("section", "detail-copy");

@@ -6,6 +6,7 @@ package com.hongguotv.nativeapp
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -40,6 +41,10 @@ class MainActivity : Activity() {
     private val muted get() = TvStyle.muted
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newFixedThreadPool(3)
+    private val touchPlayback by lazy {
+        packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN) &&
+            !packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+    }
     private val repository = ContentRepository(playbackSession = PlaybackDeviceSession.shared)
     private val phoneCatalog by lazy {
         PhoneControlCatalog(library, cloudAccount) { series, progress ->
@@ -3053,6 +3058,13 @@ class MainActivity : Activity() {
                 }
             playerView = view
             root.addView(view, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+            if (touchPlayback) {
+                root.addView(View(this).apply {
+                    contentDescription = "显示或收起播放菜单"
+                    setOnClickListener { if (panel) hidePanel() else showPanel() }
+                    isFocusable = false
+                }, FrameLayout.LayoutParams(-1, -1))
+            }
             view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyVideoRotation() }
             view.post { if (playerView === view) applyVideoRotation() }
             persistentBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -3107,15 +3119,42 @@ class MainActivity : Activity() {
             hud.addView(playbackTitle)
             playbackText = text("", 15f, Color.LTGRAY).apply { setPadding(0, dp(10), 0, dp(9)) }
             hud.addView(playbackText)
-            progressBar =
-                ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-                    max = 1000
-                    progressTintList = android.content.res.ColorStateList.valueOf(accent)
-                    progressBackgroundTintList = android.content.res.ColorStateList.valueOf(surface)
+            progressBar = if (touchPlayback) {
+                SeekBar(this).apply {
+                    contentDescription = "播放进度"
+                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        private fun commit(bar: SeekBar) {
+                            val duration = player?.duration ?: return
+                            if (duration > 0) seekTo(duration * bar.progress / bar.max)
+                        }
+
+                        override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                            if (fromUser && !bar.isPressed) commit(bar)
+                        }
+
+                        override fun onStartTrackingTouch(bar: SeekBar) {
+                            bar.parent.requestDisallowInterceptTouchEvent(true)
+                        }
+
+                        override fun onStopTrackingTouch(bar: SeekBar) {
+                            bar.parent.requestDisallowInterceptTouchEvent(false)
+                            commit(bar)
+                        }
+                    })
                 }
-            hud.addView(progressBar, lp(-1, dp(4)))
+            } else ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
+            progressBar.apply {
+                max = 1000
+                progressTintList = android.content.res.ColorStateList.valueOf(accent)
+                progressBackgroundTintList = android.content.res.ColorStateList.valueOf(surface)
+            }
+            hud.addView(progressBar, lp(-1, dp(if (touchPlayback) 36 else 4)))
             hud.addView(
-                text("观看时 ↑ 上一集  ↓ 下一集  ← → 快退/快进\n确认 暂停/继续并打开菜单 · 菜单键 打开菜单", 13f, Color.LTGRAY).apply {
+                text(
+                    if (touchPlayback) "轻点画面显示播放菜单"
+                    else "观看时 ↑ 上一集  ↓ 下一集  ← → 快退/快进\n确认 暂停/继续并打开菜单 · 菜单键 打开菜单",
+                    13f, Color.LTGRAY,
+                ).apply {
                     setPadding(0, dp(12), 0, 0)
                 }
             )
@@ -4365,8 +4404,10 @@ class MainActivity : Activity() {
         playbackText.text =
             "$state  ·  ${formatTime(position)} / ${formatTime(duration)}  ·  $quality  ·  ${PlaybackSpeed.label(p.playbackParameters.speed)}" +
                 (if (sleepTimer.active) "  ·  定时 ${sleepTimer.label()}" else "")
-        progressBar.progress =
-            if (duration > 0) (position * 1000 / duration).toInt().coerceIn(0, 1000) else 0
+        if (!progressBar.isPressed) {
+            progressBar.progress =
+                if (duration > 0) (position * 1000 / duration).toInt().coerceIn(0, 1000) else 0
+        }
     }
 
     private fun requestPlayback(play: Boolean) {

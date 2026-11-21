@@ -4,29 +4,73 @@ package com.hongguotv.nativeapp
 import android.app.Activity
 import android.app.Instrumentation
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
+import android.widget.SeekBar
 import android.widget.TextView
 import androidx.media3.exoplayer.ExoPlayer
 import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.Detail
+import com.hongguotv.core.Rendition
+import com.hongguotv.core.ResumePlayback
+import com.hongguotv.core.ResumeTarget
+import com.hongguotv.core.RustPlaybackCore
+import com.hongguotv.core.StreamLadder
 
-/** Explicit real-network acceptance: uses the Activity's production player, never a sample URL. */
+/** Check the packaged core and, in the live suite, the production player on real episodes. */
 class LivePlaybackInstrumentation : Instrumentation() {
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); start() }
+    private var suite = "live"
+
+    override fun onCreate(arguments: Bundle?) {
+        super.onCreate(arguments)
+        suite = arguments?.getString("suite") ?: "live"
+        start()
+    }
+
     private fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
+
+    private fun verifyRustCore() {
+        check(RustPlaybackCore.available) { "Rust JNI library failed to load" }
+        val ids = listOf("1", "2")
+        check(ResumePlayback.target(ids, "1", 1200L, false) == ResumeTarget(0, 1200L))
+        check(ResumePlayback.target(ids, "1", 1200L, true) == ResumeTarget(1, 0L))
+        val hevc = Rendition(1080, "hevc", 1080, 1920, "https://example.invalid/hevc", null)
+        val avc = hevc.copy(quality = 720, codec = "h264", url = "https://example.invalid/avc")
+        check(StreamLadder(listOf(hevc, avc)).select(1080) { it.codec == "h264" } === avc)
+        check(RustPlaybackCore.rangeTotal("bytes 16-63/64", 16, 128, 64) == 64L)
+        check(RustPlaybackCore.rangeTotal("bytes 17-63/64", 16, 128, 64) == -2L)
+        check(RustPlaybackCore.rangeTotal("bytes 16-63/64", 16, 128, 65) == -3L)
+    }
 
     override fun onStart() {
         val result = Bundle()
         var activity: MainActivity? = null
         try {
             check(targetContext.packageName.endsWith(".debug")) { "Use isolated debug app" }
+            check(suite in setOf("live", "rust")) { "Unknown instrumentation suite" }
+            verifyRustCore()
             val current = startActivitySync(Intent(targetContext, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
             activity = current
+            val tv = targetContext.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+            val platform = if (tv) "TV" else "phone"
+            val rustEvidence = "PASS: Rust JNI, resume, rendition and ranges on Android $platform API ${Build.VERSION.SDK_INT} (${Build.SUPPORTED_ABIS.first()})"
+            sendStatus(0, Bundle().apply { putString("stream", rustEvidence + "\n") })
             runOnMainSync { check(!(field("cloudAccount").get(current) as AccountController).signedIn) }
+            if (suite == "rust") {
+                runOnMainSync {
+                    check(current.findViewById<android.view.ViewGroup>(android.R.id.content).childCount > 0)
+                    current.finish()
+                }
+                result.putString("stream", "PASS: MainActivity started on Android $platform\n")
+                finish(Activity.RESULT_OK, result)
+                return
+            }
             val repo = field("repository").get(current) as ContentRepository
             val play = MainActivity::class.java.getDeclaredMethod("playEpisode", Int::class.javaPrimitiveType,
                 Long::class.javaPrimitiveType, Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType,
@@ -68,6 +112,54 @@ class LivePlaybackInstrumentation : Instrumentation() {
             check(home.items.size >= 2)
             val first = repo.detail(home.items[0].id)
             start(first, 0)
+            if (tv) {
+                sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN)
+                awaitFrame(first, 1)
+                sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_UP)
+                awaitFrame(first, 0)
+                sendStatus(0, Bundle().apply { putString("stream", "PASS: TV remote next and previous episode\n") })
+            } else if (targetContext.packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)) {
+                fun point(view: View, at: Float, height: Float): Pair<Float, Float> {
+                    val location = IntArray(2)
+                    view.getLocationOnScreen(location)
+                    return (location[0] + view.width * at) to (location[1] + view.height * height)
+                }
+                fun gesture(vararg points: Pair<Float, Float>) {
+                    val down = SystemClock.uptimeMillis()
+                    val events = listOf(MotionEvent.ACTION_DOWN to points.first()) +
+                        points.drop(1).map { MotionEvent.ACTION_MOVE to it } +
+                        (MotionEvent.ACTION_UP to points.last())
+                    for ((action, position) in events) {
+                        val event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, position.first, position.second, 0)
+                        try { sendPointerSync(event) } finally { event.recycle() }
+                    }
+                }
+                lateinit var surface: Pair<Float, Float>
+                runOnMainSync { surface = point(current.window.decorView, .5f, .25f) }
+                gesture(surface)
+                waitForIdleSync()
+                lateinit var from: Pair<Float, Float>
+                lateinit var to: Pair<Float, Float>
+                runOnMainSync {
+                    check(field("panel").getBoolean(current)) { "Tap did not open playback controls" }
+                    val bar = field("progressBar").get(current) as SeekBar
+                    check(bar.isShown)
+                    from = point(bar, .2f, .5f)
+                    to = point(bar, .55f, .5f)
+                }
+                gesture(from, to)
+                waitForIdleSync()
+                runOnMainSync {
+                    val p = player()!!
+                    check(p.currentPosition in (p.duration * .47).toLong()..(p.duration * .65).toLong()) {
+                        "Dragging the playback progress bar did not seek"
+                    }
+                }
+                gesture(surface)
+                waitForIdleSync()
+                runOnMainSync { check(!field("panel").getBoolean(current)) }
+                sendStatus(0, Bundle().apply { putString("stream", "PASS: phone tap controls and drag to seek\n") })
+            }
             val library = field("library").get(current) as Library
             val initialProgressSetting = library.alwaysShowProgress
             try {

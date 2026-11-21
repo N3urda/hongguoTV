@@ -10,6 +10,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
+use hongguo_playback::resume_target;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Semaphore};
@@ -17,7 +18,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::catalog::{Category, PreviewUnavailable, Series, Site, valid_id};
+use crate::catalog::{Category, Detail, PreviewUnavailable, Series, Site, valid_id};
 use crate::library::{LibraryStore, WatchPosition};
 use crate::media::RemoteVideo;
 
@@ -230,6 +231,19 @@ async fn catalog(
     result.map(Json).map_err(ApiError::upstream)
 }
 
+#[derive(Serialize)]
+struct PlaybackResume {
+    episode: String,
+    position: i64,
+}
+
+#[derive(Serialize)]
+struct DetailResponse {
+    #[serde(flatten)]
+    detail: Detail,
+    resume: Option<PlaybackResume>,
+}
+
 async fn detail(
     State(app): State<App>,
     RoutePath(id): RoutePath<String>,
@@ -237,11 +251,28 @@ async fn detail(
     if !valid_id(&id) {
         return Err(ApiError::bad_request("剧集编号无效"));
     }
-    app.site
-        .detail(&id)
-        .await
-        .map(Json)
-        .map_err(ApiError::upstream)
+    let detail = app.site.detail(&id).await.map_err(ApiError::upstream)?;
+    let history = app.store.history_for(&id).map_err(ApiError::storage)?;
+    let available: Vec<_> = detail
+        .episodes
+        .iter()
+        .filter(|episode| episode.available)
+        .collect();
+    let matched = history.as_ref().and_then(|entry| {
+        available
+            .iter()
+            .position(|episode| episode.id == entry.episode)
+    });
+    let position = history
+        .as_ref()
+        .map_or(0, |entry| i64::try_from(entry.position).unwrap_or(i64::MAX));
+    let completed = history.as_ref().is_some_and(|entry| entry.completed);
+    let resume =
+        resume_target(available.len(), matched, position, completed).map(|target| PlaybackResume {
+            episode: available[target.index].id.clone(),
+            position: target.position,
+        });
+    Ok(Json(DetailResponse { detail, resume }))
 }
 
 async fn library(State(app): State<App>) -> ApiResult<impl IntoResponse> {

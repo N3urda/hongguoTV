@@ -14,6 +14,7 @@ desktop = ["dep:tao", "dep:wry"]
 anyhow = "1.0"
 async-stream = "0.3"
 axum = "0.8.9"
+hongguo-playback = { path = "../rust-core" }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "cookies", "gzip", "brotli", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

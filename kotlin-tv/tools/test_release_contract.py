@@ -87,6 +87,8 @@ class ReleaseContractTest(unittest.TestCase):
             target = directory / variant / 'outputs/apk/release'
             target.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(target / r.apk_filename(suffix), 'w') as package:
+                for abi in r.playback_abis(suffix):
+                    package.writestr(f'lib/{abi}/libhongguo_playback.so', b'native')
                 for abi in abis:
                     package.writestr(f'lib/{abi}/libffmpegJNI.so', b'native')
             listing = target / 'output-metadata.json'
@@ -105,8 +107,8 @@ class ReleaseContractTest(unittest.TestCase):
                 paths = r.prepare_apks('0.10.0', 10, 21, out)
             self.assertEqual(['hongguotv-kotlin-0.10.0-' + suffix + '.apk' for suffix in ['android5', 'android6', 'android6-arm32-v7a', 'android6-arm64-v8a']], [p.name for p in paths])
             self.assertEqual(8, run.call_count)
-            for path, (_, _, abis) in zip(paths, r.APK_VARIANTS):
-                r.validate_apk_abis(path, abis)
+            for path, (_, suffix, abis) in zip(paths, r.APK_VARIANTS):
+                r.validate_apk_abis(path, suffix, abis)
 
     def test_each_missing_apk_blocks_preparation(self):
         for variant, suffix, _ in r.APK_VARIANTS:
@@ -145,23 +147,24 @@ class ReleaseContractTest(unittest.TestCase):
                 run.assert_not_called()
             self.assertEqual([], list(out.iterdir()))
 
-    def test_wrong_architecture_or_missing_decoder_is_rejected(self):
+    def test_wrong_architecture_or_missing_core_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'arm32.apk'
-            for names in [['lib/arm64-v8a/libffmpegJNI.so'], ['lib/armeabi-v7a/other.so'], ['lib/armeabi-v7a/libffmpegJNI.so', 'lib/x86/other.so']]:
+            for names in [[], ['lib/arm64-v8a/libhongguo_playback.so'], ['lib/armeabi-v7a/other.so']]:
                 with zipfile.ZipFile(path, 'w') as package:
                     for name in names:
                         package.writestr(name, b'native')
                 with self.assertRaises(ValueError):
-                    r.validate_apk_abis(path, {'armeabi-v7a'})
+                    r.validate_apk_abis(path, 'android6-arm32-v7a', set())
 
-    def test_platform_package_rejects_any_native_library(self):
+    def test_platform_package_rejects_ffmpeg(self):
         with tempfile.TemporaryDirectory() as tmp:
             apk = Path(tmp) / 'platform.apk'
             with zipfile.ZipFile(apk, 'w') as package:
+                package.writestr('lib/armeabi-v7a/libhongguo_playback.so', b'native')
                 package.writestr('lib/armeabi-v7a/libffmpegJNI.so', b'native')
             with self.assertRaises(ValueError):
-                r.validate_apk_abis(apk, set())
+                r.validate_apk_abis(apk, 'android6-arm32-v7a', set())
 
     def test_invalid_split_signature_blocks_all_asset_copying(self):
         with tempfile.TemporaryDirectory() as tmp:

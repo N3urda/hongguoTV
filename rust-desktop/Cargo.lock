@@ -1103,6 +1103,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "axum",
+ "hongguo-playback",
  "reqwest",
  "serde",
  "serde_json",
@@ -1114,6 +1115,10 @@ dependencies = [
  "windows-sys 0.61.2",
  "wry",
 ]
+
+[[package]]
+name = "hongguo-playback"
+version = "0.1.0"
 
 [[package]]
 name = "html5ever"

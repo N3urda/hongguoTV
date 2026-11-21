@@ -30,4 +30,4 @@ python rust-desktop/package.py --target x86_64-pc-windows-msvc
 
 本机收藏和试看进度保存在 macOS 的 `~/Library/Application Support/HongguoRust/` 或 Windows 的 `%LOCALAPPDATA%\HongguoRust\`，测试可用 `HONGGUO_RUST_DATA_DIR` 指向独立目录。关闭播放器和打开下一集会保存已读进度。
 
-现有 Android 手机、Android TV 和 Compose Desktop 仍使用仓库各自的构建入口。
+本应用与 Android 手机及 Android TV 共用 `rust-core` 的续播和视频分段规则。Android 安装包使用 [Android 构建入口](../kotlin-tv/README.md#构建)。

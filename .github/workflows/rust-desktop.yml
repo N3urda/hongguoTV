@@ -3,9 +3,9 @@ name: Verify Rust desktop
 on:
   push:
     branches: [main, codex/rust-desktop]
-    paths: ['rust-desktop/**', '.github/workflows/rust-desktop.yml', 'assets/brand/logo-pixel.png']
+    paths: ['rust-core/**', 'rust-desktop/**', '.github/workflows/rust-desktop.yml', 'assets/brand/logo-pixel.png']
   pull_request:
-    paths: ['rust-desktop/**', '.github/workflows/rust-desktop.yml', 'assets/brand/logo-pixel.png']
+    paths: ['rust-core/**', 'rust-desktop/**', '.github/workflows/rust-desktop.yml', 'assets/brand/logo-pixel.png']
   workflow_dispatch:
 
 permissions:
@@ -21,6 +21,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - run: cargo +stable fmt --manifest-path ../rust-core/Cargo.toml --check
+      - run: cargo +stable clippy --manifest-path ../rust-core/Cargo.toml --locked --all-targets --features android-jni -- -D warnings
+      - run: cargo +stable test --manifest-path ../rust-core/Cargo.toml --locked --features android-jni
       - run: cargo +stable fmt --check
       - run: cargo +stable clippy --locked --no-default-features --all-targets -- -D warnings
       - run: cargo +stable test --locked --no-default-features

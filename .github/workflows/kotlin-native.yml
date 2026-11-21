@@ -46,7 +46,12 @@ jobs:
         with:
           packages: platform-tools
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006'
+      - run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add --toolchain stable aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
       - name: Unit tests, Android lint, and installable development APK
+        env:
+          RUSTUP_TOOLCHAIN: stable
         run: |
           for legacy in true false; do
             ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug -PlegacyAudio="$legacy" --console=plain

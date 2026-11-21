@@ -7,6 +7,9 @@ plugins {
 
 val legacyAudio = providers.gradleProperty("legacyAudio").map { it.toBooleanStrict() }.getOrElse(false)
 if (!legacyAudio) layout.buildDirectory.set(file("build/platform"))
+val ndkRevision = "27.1.12297006"
+val rustCore = rootProject.layout.projectDirectory.dir("../rust-core")
+val rustJni = layout.buildDirectory.dir("rust-jni")
 
 val signingProperties =
     Properties().apply {
@@ -20,6 +23,8 @@ fun signingValue(env: String, key: String): String? =
 android {
     namespace = "com.hongguotv.nativeapp"
     compileSdk = 36
+    ndkVersion = ndkRevision
+    sourceSets.getByName("main").jniLibs.srcDir(rustJni)
     defaultConfig {
         applicationId = "com.hongguotv.nativeapp"
         testInstrumentationRunner = "com.hongguotv.nativeapp.LivePlaybackInstrumentation"
@@ -63,8 +68,8 @@ android {
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug.20261114"
-            manifestPlaceholders["appLabel"] = "hongguoTV"
+            versionNameSuffix = "-rust-debug"
+            manifestPlaceholders["appLabel"] = "hongguoTV Rust"
         }
         getByName("release") {
             signingConfig = signingConfigs.getByName("delivery")
@@ -83,6 +88,19 @@ android {
     kotlinOptions { jvmTarget = "17" }
     packaging { resources.excludes += setOf("META-INF/versions/**", "META-INF/*.kotlin_module") }
 }
+
+val buildRustPlayback by tasks.registering(Exec::class) {
+    inputs.files(rustCore.file("Cargo.toml"), rustCore.file("Cargo.lock"), rustCore.file("build_android.py"))
+    inputs.dir(rustCore.dir("src"))
+    inputs.property("ndkVersion", ndkRevision)
+    outputs.dir(rustJni)
+    commandLine(
+        "python3", rustCore.file("build_android.py").asFile.absolutePath,
+        "--ndk", android.sdkDirectory.resolve("ndk/$ndkRevision").absolutePath,
+        "--output", rustJni.get().asFile.absolutePath,
+    )
+}
+tasks.named("preBuild") { dependsOn(buildRustPlayback) }
 
 dependencies {
     testImplementation("junit:junit:4.13.2")

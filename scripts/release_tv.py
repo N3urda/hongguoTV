@@ -116,8 +116,9 @@ def release_including_draft(tag):
 
 
 # Explicit filenames prevent an old single-APK build from being published by accident.
+ANDROID_ABIS = {'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'}
 APK_VARIANTS = (
-    ('', 'android5', {'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'}),
+    ('', 'android5', ANDROID_ABIS),
     ('platform/', 'android6', set()),
     ('platform/', 'android6-arm32-v7a', set()),
     ('platform/', 'android6-arm64-v8a', set()),
@@ -135,13 +136,19 @@ def apk_filters(suffix):
     return [dict(filterType='ABI', value=abi)] if abi else []
 
 
-def validate_apk_abis(path, expected):
+def playback_abis(suffix):
+    return {item['value'] for item in apk_filters(suffix)} or ANDROID_ABIS
+
+
+def validate_apk_abis(path, suffix, audio_abis):
     with zipfile.ZipFile(path) as package:
-        names = package.namelist()
-        actual = {name.split('/')[1] for name in names if name.startswith('lib/') and name.endswith('.so')}
-        require(actual == expected, f'{path.name}: APK ABI mismatch: {actual} != {expected}')
-        require({f'lib/{abi}/libffmpegJNI.so' for abi in expected} <= set(names),
-                f'{path.name}: missing Android 5 AAC native decoder')
+        actual = {name for name in package.namelist() if name.startswith('lib/') and name.endswith('.so')}
+        playback = {f'lib/{abi}/libhongguo_playback.so' for abi in playback_abis(suffix)}
+        audio = {f'lib/{abi}/libffmpegJNI.so' for abi in audio_abis}
+        expected = playback | audio
+        require(actual == expected,
+                f'{path.name}: incorrect native libraries (missing {sorted(expected - actual)}, '
+                f'unexpected {sorted(actual - expected)})')
 
 
 def prepare_apks(version, code, sdk, out):
@@ -158,11 +165,11 @@ def prepare_apks(version, code, sdk, out):
                 and matches[0].get('versionCode') == code and matches[0].get('versionName') == version,
                 'Mismatched current build output')
     # Check every package before copying any release assets or creating a draft.
-    for path, _, abis in sources:
+    for path, suffix, abis in sources:
         validate_apk(run(str(buildtools / 'aapt'), 'dump', 'badging', str(path)),
                      run(str(buildtools / 'apksigner'), 'verify', '--verbose', '--min-sdk-version',
                          str(21 if abis else 23), '--print-certs', str(path)), version, code, 21 if abis else 23)
-        validate_apk_abis(path, abis)
+        validate_apk_abis(path, suffix, abis)
     apks = []
     for path, suffix, _ in sources:
         target = out / f'hongguotv-kotlin-{version}-{suffix}.apk'
@@ -197,7 +204,7 @@ def prepare(tag):
         bundle.write(archive, f'hongguotv-{tag}/third-party/{archive.name}')
     checks = out / 'SHA256SUMS'
     checks.write_text(''.join(f'{sha256(p)}  {p.name}\n' for p in (*apks, source, manifest)))
-    (out / 'release-notes.md').write_text(f'''hongguoTV {version}（versionCode {code}），Android 5.0+。\n\n{NOTES}\n\n原发布证书签名，可同签名覆盖安装并保留本机记录。旧 0.9 更新器不识别 API21 元数据，首次需手动安装，请勿先卸载。\n\n源码提交：{commit}。附 Android 6+ ARM32（android6-arm32-v7a）、ARM64（android6-arm64-v8a）及通用包（android6），均无 FFmpeg；Android 5 兼容通用包（android5）保留 FFmpeg。无原生库时 ARM 分包的可执行代码可能相同，分包仍由 Gradle ABI 输出生成，不通过重命名通用包代替。新版客户端按系统版本更新，旧客户端先经兼容包升级。附对应完整源码 ZIP（含 GPL-3.0 和第三方许可）、update.json、SHA256SUMS。已通过自动化测试、Release 静态检查和正式签名构建；电视真机兼容性由设备测试继续验证。\n\n构建要求与步骤见源码 kotlin-tv/AUTO_UPDATES.md；版本取自该标签的 Gradle 配置，不使用运行次数改写版本。\n''')
+    (out / 'release-notes.md').write_text(f'''hongguoTV {version}（versionCode {code}），Android 5.0+。\n\n{NOTES}\n\n原发布证书签名，可同签名覆盖安装并保留本机记录。旧 0.9 更新器不识别 API21 元数据，首次需手动安装，请勿先卸载。\n\n源码提交：{commit}。附 Android 6+ ARM32（android6-arm32-v7a）、ARM64（android6-arm64-v8a）及通用包（android6），均包含 Rust 播放内核。Android 5 兼容通用包（android5）同时携带旧系统所需的 FFmpeg 扩展。两个 ARM 分包分别携带适配对应 ABI 的 Rust 内核。新版客户端按系统版本更新，旧客户端先经兼容包升级。附对应完整源码 ZIP（含 GPL-3.0 和第三方许可）、update.json、SHA256SUMS。已通过自动化测试、Release 静态检查和正式签名构建；电视真机兼容性由设备测试继续验证。\n\n构建要求与步骤见源码 kotlin-tv/AUTO_UPDATES.md；版本取自该标签的 Gradle 配置，不使用运行次数改写版本。\n''')
     return data, [*apks, source, manifest, checks]
 
 

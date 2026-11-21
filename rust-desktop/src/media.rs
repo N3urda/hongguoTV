@@ -5,6 +5,7 @@ use anyhow::{Context, Result, ensure};
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::Response;
+use hongguo_playback::range::{ByteRange, validate_response};
 use reqwest::{Client, Url};
 use tokio::sync::OwnedSemaphorePermit;
 use tokio_util::sync::CancellationToken;
@@ -12,71 +13,6 @@ use tokio_util::sync::CancellationToken;
 use crate::catalog::read_limited;
 
 const MAX_MEDIA_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ByteRange {
-    start: u64,
-    end: u64,
-}
-
-impl ByteRange {
-    fn whole(total: u64) -> Self {
-        Self {
-            start: 0,
-            end: total - 1,
-        }
-    }
-
-    fn from_header(raw: &str, total: u64) -> Option<Self> {
-        let (left, right) = raw.trim().strip_prefix("bytes=")?.split_once('-')?;
-        if left.is_empty() {
-            let suffix = parse_number(right)?;
-            return (suffix > 0).then(|| Self {
-                start: total.saturating_sub(suffix),
-                end: total - 1,
-            });
-        }
-        let start = parse_number(left)?;
-        let end = if right.is_empty() {
-            total - 1
-        } else {
-            parse_number(right)?.min(total - 1)
-        };
-        (start <= end && start < total).then_some(Self { start, end })
-    }
-
-    fn len(self) -> u64 {
-        self.end - self.start + 1
-    }
-
-    fn header(self) -> String {
-        format!("bytes={}-{}", self.start, self.end)
-    }
-
-    fn content_range(self, total: u64) -> String {
-        format!("bytes {}-{}/{total}", self.start, self.end)
-    }
-}
-
-fn parse_number(text: &str) -> Option<u64> {
-    if text.bytes().all(|byte| byte.is_ascii_digit()) {
-        text.parse().ok()
-    } else {
-        None
-    }
-}
-
-fn read_content_range(headers: &HeaderMap) -> Option<(ByteRange, u64)> {
-    let text = headers.get(header::CONTENT_RANGE)?.to_str().ok()?;
-    let (part, size) = text.strip_prefix("bytes ")?.split_once('/')?;
-    let (start, end) = part.split_once('-')?;
-    let range = ByteRange {
-        start: parse_number(start)?,
-        end: parse_number(end)?,
-    };
-    let size = parse_number(size)?;
-    (range.start <= range.end && range.end < size).then_some((range, size))
-}
 
 pub struct RemoteVideo {
     client: Client,
@@ -119,8 +55,14 @@ impl RemoteVideo {
             "官网视频请求失败（HTTP {}）",
             response.status().as_u16()
         );
-        let (returned, total) =
-            read_content_range(response.headers()).context("官网视频分段信息异常")?;
+        let content_range = response
+            .headers()
+            .get(header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        let expected_total = (self.total > 0).then_some(self.total);
+        let (returned, total) = validate_response(content_range, part, expected_total)
+            .map_err(|_| anyhow::anyhow!("官网视频分段信息异常"))?;
         let mime = response
             .headers()
             .get(header::CONTENT_TYPE)
@@ -128,11 +70,10 @@ impl RemoteVideo {
         ensure!(
             returned == part
                 && total <= MAX_MEDIA_BYTES
-                && (self.total == 0 || self.total == total)
                 && mime.is_some_and(|value| value.split(';').next() == Some("video/mp4"))
                 && response
                     .content_length()
-                    .is_none_or(|length| length == part.len()),
+                    .is_none_or(|length| length == part.length()),
             "官网视频分段信息异常"
         );
         Ok((response, total))
@@ -147,7 +88,10 @@ impl RemoteVideo {
     ) -> Result<Response> {
         let range_header = headers.get(header::RANGE);
         let range = match range_header {
-            None => ByteRange::whole(self.total),
+            None => ByteRange {
+                start: 0,
+                end: self.total - 1,
+            },
             Some(value) => match value
                 .to_str()
                 .ok()
@@ -170,7 +114,7 @@ impl RemoteVideo {
                 StatusCode::OK
             })
             .header(header::CONTENT_TYPE, "video/mp4")
-            .header(header::CONTENT_LENGTH, range.len().to_string())
+            .header(header::CONTENT_LENGTH, range.length().to_string())
             .header(header::ACCEPT_RANGES, "bytes")
             .header(header::CACHE_CONTROL, "no-store");
         let builder = if range_header.is_some() {
@@ -188,7 +132,7 @@ impl RemoteVideo {
             .context("播放会话已关闭")??;
         let body = Body::from_stream(async_stream::stream! {
             let _permit = permit;
-            let mut remaining = range.len();
+            let mut remaining = range.length();
             while remaining > 0 {
                 let result = tokio::select! {
                     _ = cancellation.cancelled() => break,
@@ -213,45 +157,6 @@ impl RemoteVideo {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn supports_single_ranges_required_for_player_seek() {
-        assert_eq!(
-            ByteRange::from_header("bytes=4-", 10),
-            Some(ByteRange { start: 4, end: 9 })
-        );
-        assert_eq!(
-            ByteRange::from_header("bytes=-3", 10),
-            Some(ByteRange { start: 7, end: 9 })
-        );
-        assert_eq!(
-            ByteRange::from_header("bytes=0-59", 10),
-            Some(ByteRange { start: 0, end: 9 })
-        );
-        for bad in [
-            "bytes=-0",
-            "bytes=9-0",
-            "bytes=10-",
-            "bytes=+1-",
-            "bytes=0-1,2-",
-        ] {
-            assert!(ByteRange::from_header(bad, 10).is_none(), "{bad}");
-        }
-    }
-
-    #[test]
-    fn rejects_unbounded_and_reversed_upstream_ranges() {
-        let mut headers = HeaderMap::new();
-        for invalid in ["bytes 0-10/*", "bytes 1-0/10", "bytes 0-10/10"] {
-            headers.insert(header::CONTENT_RANGE, invalid.parse().unwrap());
-            assert!(read_content_range(&headers).is_none());
-        }
-        headers.insert(header::CONTENT_RANGE, "bytes 0-1/12".parse().unwrap());
-        assert_eq!(
-            read_content_range(&headers),
-            Some((ByteRange { start: 0, end: 1 }, 12))
-        );
-    }
 
     #[tokio::test]
     async fn relays_ranges_and_head_through_the_same_player_entry_point() {

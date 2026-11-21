@@ -39,3 +39,4 @@ keystore.properties
 
 # Rust desktop build output
 /rust-desktop/target/
+/rust-core/target/

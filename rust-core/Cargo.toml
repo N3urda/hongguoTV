@@ -1,0 +1,19 @@
+[package]
+name = "hongguo-playback"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "GPL-3.0-only"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+android-jni = ["dep:jni"]
+
+[dependencies]
+jni = { version = "0.21.1", optional = true }
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -112,6 +112,15 @@ impl LibraryStore {
         Ok(self.data()?.clone())
     }
 
+    pub fn history_for(&self, id: &str) -> Result<Option<History>> {
+        Ok(self
+            .data()?
+            .history
+            .iter()
+            .find(|entry| entry.series.id == id)
+            .cloned())
+    }
+
     fn update(&self, change: impl FnOnce(&mut Library)) -> Result<()> {
         let mut current = self.data()?;
         let mut next = current.clone();

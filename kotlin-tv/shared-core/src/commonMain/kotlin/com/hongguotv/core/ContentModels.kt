@@ -34,6 +34,8 @@ data class CatalogPage(
 
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String, val backupUrl: String? = null)
 
+private val AVC_LABELS = setOf("h264", "avc", "avc1", "avc3")
+
 /** One playable rendition; width/height are the coded dimensions when the API reports them. */
 data class Rendition(
     val quality: Int,
@@ -44,6 +46,8 @@ data class Rendition(
     val key: ByteArray?,
     val backupUrl: String? = null,
 ) {
+    internal val isAvc get() = codec in AVC_LABELS
+
     fun toStreamInfo() = StreamInfo(url, key, if (quality > 0) "${quality}P" else "自动", backupUrl)
 }
 
@@ -55,10 +59,12 @@ class StreamLadder(val renditions: List<Rendition>) {
     // Ascending order: a greater element is the better tier (higher quality, h264 over others).
     // maxWithOrNull picks the best tier; minWithOrNull yields the closest-below fallback.
     private val better =
-        compareBy<Rendition> { it.quality }.thenBy { if (it.codec in AVC_LABELS) 1 else 0 }
+        compareBy<Rendition> { it.quality }.thenBy { if (it.isAvc) 1 else 0 }
 
     fun select(maxQuality: Int, supported: (Rendition) -> Boolean = { true }): Rendition? {
-        val pool = renditions.filter(supported).ifEmpty { renditions }
+        val compatible = BooleanArray(renditions.size) { supported(renditions[it]) }
+        nativeRenditionIndex(renditions, compatible, maxQuality)?.let { return renditions[it] }
+        val pool = renditions.filterIndexed { index, _ -> compatible[index] }.ifEmpty { renditions }
         return pool.filter { it.quality in 1..maxQuality }.maxWithOrNull(better)
             ?: pool.filter { it.quality <= 0 }.maxWithOrNull(better)
             ?: pool.minWithOrNull(better)
@@ -75,9 +81,5 @@ class StreamLadder(val renditions: List<Rendition>) {
                 .filter { it !== pick && it.quality <= pick.quality }
                 .sortedWith(better.reversed())
         return listOf(pick) + alternates
-    }
-
-    companion object {
-        private val AVC_LABELS = setOf("h264", "avc", "avc1", "avc3")
     }
 }
