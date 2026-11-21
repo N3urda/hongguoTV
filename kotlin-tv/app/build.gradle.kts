@@ -6,7 +6,13 @@ plugins {
 }
 
 val legacyAudio = providers.gradleProperty("legacyAudio").map { it.toBooleanStrict() }.getOrElse(false)
-if (!legacyAudio) layout.buildDirectory.set(file("build/platform"))
+val debugDevice = providers.gradleProperty("debugDevice").getOrElse("universal")
+require(debugDevice in setOf("universal", "phone", "tv")) { "debugDevice must be universal, phone, or tv" }
+val outputSuffix = listOfNotNull(
+    "platform".takeUnless { legacyAudio },
+    debugDevice.takeUnless { it == "universal" },
+).joinToString("/")
+if (outputSuffix.isNotEmpty()) layout.buildDirectory.set(file("build/$outputSuffix"))
 val ndkRevision = "27.1.12297006"
 val rustCore = rootProject.layout.projectDirectory.dir("../rust-core")
 val rustJni = layout.buildDirectory.dir("rust-jni")
@@ -25,6 +31,9 @@ android {
     compileSdk = 36
     ndkVersion = ndkRevision
     sourceSets.getByName("main").jniLibs.srcDir(rustJni)
+    if (debugDevice == "phone") {
+        sourceSets.getByName("debug").manifest.srcFile("src/phone/AndroidManifest.xml")
+    }
     defaultConfig {
         applicationId = "com.hongguotv.nativeapp"
         testInstrumentationRunner = "com.hongguotv.nativeapp.LivePlaybackInstrumentation"
@@ -32,6 +41,7 @@ android {
         minSdk = 21
         if (!legacyAudio) minSdk = 23
         buildConfigField("boolean", "LEGACY_AUDIO", legacyAudio.toString())
+        buildConfigField("boolean", "FORCE_TV_CONTROLS", "false")
         targetSdk = 36
         versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 32
         versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.11"
@@ -69,7 +79,7 @@ android {
         getByName("debug") {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-rust-debug"
-            manifestPlaceholders["appLabel"] = "hongguoTV Rust"
+            buildConfigField("boolean", "FORCE_TV_CONTROLS", (debugDevice == "tv").toString())
         }
         getByName("release") {
             signingConfig = signingConfigs.getByName("delivery")

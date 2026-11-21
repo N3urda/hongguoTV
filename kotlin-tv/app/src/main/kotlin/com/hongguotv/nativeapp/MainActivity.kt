@@ -42,7 +42,8 @@ class MainActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newFixedThreadPool(3)
     private val touchPlayback by lazy {
-        packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN) &&
+        !BuildConfig.FORCE_TV_CONTROLS &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN) &&
             !packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
     }
     private val repository = ContentRepository(playbackSession = PlaybackDeviceSession.shared)

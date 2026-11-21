@@ -29,6 +29,8 @@ rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-andro
 ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
+手机和电视的本地试用包使用 `-PdebugDevice=phone` 或 `-PdebugDevice=tv` 构建，安装后均显示为 `hongguoTV`。电视包保留 Android TV 及普通启动器入口，并使用遥控播放菜单。配合 `-PlegacyAudio=true` 时，产物分别位于 `app/build/phone/outputs/apk/debug/` 和 `app/build/tv/outputs/apk/debug/`。两个试用包使用同一个测试包名，可分别覆盖同签名的旧试用版并保留记录。
+
 设备验收可通过 `:app:assembleDebug :app:assembleDebugAndroidTest -PlegacyAudio=true` 构建兼容版及其测试包。通过 ADB 安装两包后运行共享内核验收。
 
 ```sh
