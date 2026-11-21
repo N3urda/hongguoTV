@@ -22,6 +22,15 @@ class TvSocial(
     private val readReviews: (String, String) -> JSONObject =
         PublicComments(okhttp3.OkHttpClient())::read,
 ) {
+    private companion object {
+        const val DEFAULT_FONT_DP = 24
+        const val DEFAULT_TRAVEL_MS = 7000
+        const val DEFAULT_OPACITY = 85
+        const val DEFAULT_STROKE_DP = 2
+        const val DEFAULT_LINE_HEIGHT_TENTHS = 16
+        const val MAX_LANES = 12
+    }
+
     private val emoji = CommentEmoji(activity)
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
@@ -74,6 +83,7 @@ class TvSocial(
     fun attach(root: android.widget.FrameLayout) {
         overlay?.let { (it.parent as? android.view.ViewGroup)?.removeView(it) }
         overlay = BulletView().also { root.addView(it, FrameLayout.LayoutParams(-1, -1)) }
+        updateOverlayRows()
     }
 
     fun foreground(value: Boolean) {
@@ -110,6 +120,14 @@ class TvSocial(
         worker.shutdownNow()
     }
 
+    private fun updateOverlayRows() {
+        val view = overlay ?: return
+        view.setRows(pages.values.flatMap { page ->
+            val rows = page.getJSONArray("items")
+            (0 until rows.length()).map { rows.getJSONObject(it) }
+        })
+    }
+
     private fun loadTimed(ids: Pair<String, String>, start: Long, duration: Long) {
         loading = true
         val ticket = generation
@@ -129,12 +147,7 @@ class TvSocial(
                     while (pages.size > 128) pages.remove(
                         pages.keys.maxBy { kotlin.math.abs(it - start) }
                     )
-                    val rows =
-                        pages.values.flatMap { value ->
-                            val a = value.getJSONArray("items")
-                            (0 until a.length()).map { a.getJSONObject(it) }
-                        }
-                    overlay?.setRows(rows)
+                    updateOverlayRows()
                 }
             } catch (_: Exception) {
                 main.post {
@@ -179,22 +192,55 @@ class TvSocial(
             }
         body.addView(label("弹幕设置", 22f))
         val refreshers = mutableListOf<() -> Unit>()
-        fun option(title: () -> String, parent: LinearLayout = body, action: () -> Unit) {
-            lateinit var b: TextView
-            b =
-                button(title()) {
-                    action()
-                    refreshers.forEach { it() }
-                    overlay?.setRows(
-                        pages.values.flatMap {
-                            val a = it.getJSONArray("items")
-                            (0 until a.length()).map { i -> a.getJSONObject(i) }
-                        }
-                    )
-                    overlay?.invalidate()
+        fun refreshOptions() {
+            refreshers.forEach { it() }
+            overlay?.updateLayout()
+        }
+        fun option(title: () -> String, parent: LinearLayout = body, action: () -> Unit): TextView {
+            val row = button(title()) {
+                action()
+                refreshOptions()
+            }
+            refreshers += { row.text = title() }
+            parent.addView(row)
+            return row
+        }
+        fun <T> cycle(
+            steps: List<T>,
+            current: () -> T,
+            title: (T) -> String,
+            parent: LinearLayout = body,
+            save: (T) -> Unit,
+        ) {
+            fun step(direction: Int) {
+                val index = steps.indexOf(current())
+                val next = if (index >= 0) (index + direction + steps.size) % steps.size
+                    else if (direction > 0) 0 else steps.lastIndex
+                save(steps[next])
+            }
+            option({ title(current()) }, parent) { step(1) }.setOnKeyListener { _, key, event ->
+                val direction = when (key) {
+                    KeyEvent.KEYCODE_DPAD_LEFT -> -1
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> 1
+                    else -> return@setOnKeyListener false
                 }
-            refreshers += { b.text = title() }
-            parent.addView(b)
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    step(direction)
+                    refreshOptions()
+                }
+                true
+            }
+        }
+        fun numberOption(
+            key: String,
+            default: Int,
+            steps: Iterable<Int>,
+            title: (Int) -> String,
+            parent: LinearLayout = body,
+        ) {
+            cycle(steps.toList(), { prefs.getInt(key, default) }, title, parent) {
+                prefs.edit().putInt(key, it).apply()
+            }
         }
         fun section(title: String): LinearLayout {
             val content = LinearLayout(activity).apply {
@@ -215,43 +261,35 @@ class TvSocial(
         option({ "弹幕：${if(prefs.getBoolean("enabled",true)) "开" else "关"}" }) {
             prefs.edit().putBoolean("enabled", !prefs.getBoolean("enabled", true)).apply()
         }
-        option({ "字号：${prefs.getInt("font",24)}" }) {
-            val n = prefs.getInt("font", 24)
-            prefs.edit().putInt("font", if (n >= 32) 20 else n + 4).apply()
+        cycle(DanmakuArea.entries, { DanmakuArea.fromPreference(prefs.getString("area", null)) },
+            { "显示区域：${it.label}" }) {
+            prefs.edit().putString("area", it.preference).apply()
         }
-        option({
-            val lanes = prefs.getInt("lanes", 0)
-            "密度：${when (lanes) { 4 -> "少"; 0 -> "标准（自动）"; 12 -> "多"; else -> "自定义 $lanes 行" }}"
-        }) {
-            val steps = listOf(4, 0, 12)
-            val current = steps.indexOf(prefs.getInt("lanes", 0))
-            prefs.edit().putInt("lanes", steps[(current + 1) % steps.size]).apply()
-        }
-        option({ "区域：${when (prefs.getString("area", "top")) { "middle" -> "中部"; "bottom" -> "下部"; "full" -> "全屏"; else -> "上部" }}" }) {
-            val order = listOf("top", "middle", "bottom", "full")
-            val next = order[(order.indexOf(prefs.getString("area", "top")) + 1) % order.size]
-            prefs.edit().putString("area", next).apply()
-        }
-        option({ "相同弹幕合并：${if (prefs.getBoolean("merge", true)) "开" else "关"}" }) {
-            prefs.edit().putBoolean("merge", !prefs.getBoolean("merge", true)).apply()
+        numberOption("lanes", 0, listOf(2, 4, 0, MAX_LANES), { lanes ->
+            val density = when (lanes) {
+                2 -> "极少（$lanes 行）"
+                4 -> "少"
+                0 -> "标准（自动）"
+                MAX_LANES -> "多"
+                else -> "自定义 $lanes 行"
+            }
+            "密度：$density"
+        })
+        numberOption("font", DEFAULT_FONT_DP, 16..40 step 4, { "字号：$it" })
+        numberOption("alpha", DEFAULT_OPACITY, 20..100 step 5, { "不透明度：$it%" })
+        numberOption("travel", DEFAULT_TRAVEL_MS, listOf(5000, 7000, 9000, 12000, 15000),
+            { "滚动时长：${it / 1000} 秒" })
+        option({ "防重叠：${if (prefs.getBoolean("avoidOverlap", true)) "开" else "关"}" }) {
+            prefs.edit().putBoolean("avoidOverlap", !prefs.getBoolean("avoidOverlap", true)).apply()
         }
         val advanced = section("更多设置")
-        option({ "精确行数：${if (prefs.getInt("lanes", 0) > 0) "${prefs.getInt("lanes", 0)} 行" else "自动"}" }, advanced) {
-            // 0 表示按屏幕高度自动计算；其余为固定值，避免旧版本只有 1–4 行可选。
-            val steps = listOf(0, 4, 6, 8, 10, 12)
-            val index = steps.indexOf(prefs.getInt("lanes", 0)).let { if (it >= 0) it else 0 }
-            prefs.edit().putInt("lanes", steps[(index + 1) % steps.size]).apply()
-        }
-        option({ "不透明度：${prefs.getInt("alpha", 85)}%" }, advanced) {
-            val steps = listOf(60, 75, 85, 100)
-            val next = steps[(steps.indexOf(prefs.getInt("alpha", 85)) + 1) % steps.size]
-            prefs.edit().putInt("alpha", next).apply()
-        }
-        option({ "速度：${if(prefs.getInt("travel",12000)==12000) "慢速（12 秒）" else "标准（9 秒）"}" }, advanced) {
-            prefs
-                .edit()
-                .putInt("travel", if (prefs.getInt("travel", 12000) == 12000) 9000 else 12000)
-                .apply()
+        numberOption("lanes", 0, 0..MAX_LANES step 2,
+            { "精确行数：${if (it > 0) "$it 行" else "自动"}" }, advanced)
+        numberOption("lineHeight", DEFAULT_LINE_HEIGHT_TENTHS, 12..20 step 2,
+            { "弹幕行高：${it / 10f}×" }, advanced)
+        numberOption("stroke", DEFAULT_STROKE_DP, 0..3, { "描边粗细：${if (it == 0) "关" else it}" }, advanced)
+        option({ "相同弹幕合并：${if (prefs.getBoolean("merge", true)) "开" else "关"}" }, advanced) {
+            prefs.edit().putBoolean("merge", !prefs.getBoolean("merge", true)).apply()
         }
         val troubleshooting = section("弹幕排查")
         troubleshooting.addView(
@@ -270,7 +308,7 @@ class TvSocial(
             android.app.AlertDialog.Builder(activity).setTitle("弹幕读取诊断")
                 .setMessage(report).setPositiveButton("关闭", null).show()
         })
-        body.addView(label("真实时间轴弹幕；无内容时不使用普通评论代替。", 14f))
+        body.addView(label("方向键左右调节选项", 14f))
         body.addView(button("关闭") { d.dismiss() })
         d.setContentView(ScrollView(activity).apply { addView(body) })
         d.setOnDismissListener {
@@ -475,86 +513,101 @@ class TvSocial(
 
     private inner class BulletView : View(activity) {
         var running = false
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
-
-
-        /** 轨道与文本在 setRows 时算好；绘制只做坐标换算，避免每帧重新分配。 */
-        private var scheduled: List<ScheduledDanmaku> = emptyList()
-
-        private fun areaTop(): Int =
-            when (prefs.getString("area", "top")) {
-                "middle" -> dp(220)
-                "bottom" -> dp(420)
-                "full" -> dp(65)
-                else -> dp(65)
-            }
-
-        private fun areaHeight(): Int {
-            val top = areaTop()
-            val full = height - top
-            return when (prefs.getString("area", "top")) {
-                "middle", "bottom" -> (full * 0.6f).toInt()
-                else -> full
-            }
+        private val fill = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+            typeface = Typeface.DEFAULT_BOLD
+            color = Color.WHITE
         }
+        private val outline = Paint(fill).apply {
+            style = Paint.Style.STROKE
+            strokeJoin = Paint.Join.ROUND
+            color = Color.BLACK
+        }
+        private var items: List<DanmakuItem> = emptyList()
+        private var scheduled: List<ScheduledDanmaku> = emptyList()
+        private var region = DanmakuRegion(0, 0)
+        private var travelMs = DEFAULT_TRAVEL_MS
+        private var firstBaseline = 0f
+        private var lineHeightPx = 0
 
         fun setRows(values: List<JSONObject>) {
-            val travel = prefs.getInt("travel", 12000)
-            val textSize = dp(prefs.getInt("font", 24))
+            items = values.mapNotNull {
+                val text = it.optString("text").trim()
+                val at = it.optLong("timeMS", -1)
+                if (text.isEmpty() || at < 0) null
+                else DanmakuItem(it.optString("id"), text, at)
+            }
+            updateLayout()
+        }
+
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            updateLayout()
+        }
+
+        fun updateLayout() {
+            val textSizePx = dp(prefs.getInt("font", DEFAULT_FONT_DP).coerceIn(16, 40))
+            val strokePx = dp(prefs.getInt("stroke", DEFAULT_STROKE_DP).coerceIn(0, 3))
+            val alpha = prefs.getInt("alpha", DEFAULT_OPACITY).coerceIn(20, 100) * 255 / 100
+            fill.textSize = textSizePx.toFloat()
+            fill.alpha = alpha
+            outline.textSize = fill.textSize
+            outline.alpha = alpha
+            outline.strokeWidth = strokePx.toFloat()
+
+            val metrics = fill.fontMetricsInt
+            val textHeightPx = (metrics.bottom - metrics.top + strokePx).coerceAtLeast(1)
+            val lineHeightTenths = prefs.getInt("lineHeight", DEFAULT_LINE_HEIGHT_TENTHS).coerceIn(12, 20)
+            lineHeightPx = maxOf(textHeightPx, (textSizePx * lineHeightTenths + 9) / 10)
+            region = DanmakuArea.fromPreference(prefs.getString("area", null)).region(
+                viewHeightPx = height,
+                topInsetPx = minOf(dp(65), height / 8),
+                bottomInsetPx = minOf(dp(44), height / 8),
+                textHeightPx = textHeightPx,
+            )
+            firstBaseline = region.topPx - metrics.top + strokePx / 2f
+            travelMs = prefs.getInt("travel", DEFAULT_TRAVEL_MS).coerceIn(1000, 30000)
             val configured = prefs.getInt("lanes", 0)
-            val lanes =
-                if (configured > 0) configured
-                else DanmakuLayout.laneCountFor(areaHeight(), textSize, 0)
-            val items =
-                values.mapNotNull {
-                    val text = it.optString("text").trim()
-                    val at = it.optLong("timeMS", -1)
-                    if (text.isEmpty() || at < 0) null
-                    else DanmakuItem(it.optString("id"), text, at)
-                }
-            scheduled =
-                DanmakuLayout.assign(
-                    items = items,
-                    lanes = lanes,
-                    travelMs = travel,
-                    merge = prefs.getBoolean("merge", true),
-                )
+            val maxRows = if (configured > 0) minOf(configured, MAX_LANES) else MAX_LANES
+            val lanes = region.laneCount(textHeightPx, lineHeightPx, maxRows)
+            scheduled = DanmakuLayout.assign(
+                items = items,
+                lanes = lanes,
+                travelMs = travelMs,
+                viewportWidthPx = width,
+                gapPx = dp(8) + strokePx,
+                merge = prefs.getBoolean("merge", true),
+                allowOverlap = !prefs.getBoolean("avoidOverlap", true),
+                measureText = fill::measureText,
+            )
             invalidate()
         }
 
         fun diagnostics(): String {
             val now = player()?.currentPosition ?: 0
-            val visible = scheduled.count { now >= it.startMs && now < it.endMs }
+            val visible = DanmakuLayout.firstStartingAfter(scheduled, now) -
+                DanmakuLayout.firstStartingAfter(scheduled, now - travelMs)
             return "合并排程 ${scheduled.size} 条，当前时间范围内 $visible 条\n播放 ${now / 1000} 秒，画布 ${width}×${height}"
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             val p = player() ?: return
-            if (!active || !prefs.getBoolean("enabled", true)) return
+            if (!active || scheduled.isEmpty() || !prefs.getBoolean("enabled", true)) return
             val now = p.currentPosition
-            val travel = prefs.getInt("travel", 12000).coerceAtLeast(1)
-            paint.textSize = dp(prefs.getInt("font", 24)).toFloat()
-            val alpha = (prefs.getInt("alpha", 85).coerceIn(20, 100) * 255 / 100)
-            val lineHeight = (paint.textSize + dp(12)).toInt()
-            val top = areaTop()
-            // 只绘制当前有效的弹幕，不因缓存总量大而按索引丢弃。
-            for (item in scheduled) {
-                if (now < item.startMs || now >= item.endMs) continue
-                val x =
-                    width -
-                        (width + paint.measureText(item.text)) *
-                            (now - item.startMs).toFloat() / travel
-                val y = (top + item.lane * lineHeight).toFloat()
-                paint.style = Paint.Style.STROKE
-                paint.strokeWidth = dp(2).toFloat()
-                paint.color = Color.BLACK
-                paint.alpha = alpha
-                canvas.drawText(item.text, x, y, paint)
-                paint.style = Paint.Style.FILL
-                paint.color = Color.WHITE
-                paint.alpha = alpha
-                canvas.drawText(item.text, x, y, paint)
+            val first = DanmakuLayout.firstStartingAfter(scheduled, now - travelMs)
+            val end = DanmakuLayout.firstStartingAfter(scheduled, now)
+            if (first < end) {
+                val saveCount = canvas.save()
+                canvas.clipRect(0, region.topPx, width, region.topPx + region.heightPx)
+                val hasOutline = outline.strokeWidth > 0f
+                for (index in first until end) {
+                    val item = scheduled[index]
+                    val x = item.xAt(now, width)
+                    val y = firstBaseline + item.lane * lineHeightPx
+                    if (hasOutline) canvas.drawText(item.text, x, y, outline)
+                    canvas.drawText(item.text, x, y, fill)
+                }
+                canvas.restoreToCount(saveCount)
             }
             if (running && isAttachedToWindow) postInvalidateOnAnimation()
         }
