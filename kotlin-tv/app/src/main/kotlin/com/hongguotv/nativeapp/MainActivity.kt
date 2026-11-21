@@ -444,8 +444,7 @@ class MainActivity : Activity() {
     private var playbackReady = false
     private var pausedForLifecycle = false
     private lateinit var hud: LinearLayout
-    private var persistentProgress: LinearLayout? = null
-    private var persistentTime: TextView? = null
+    private var seekHint: TextView? = null
     private var persistentBar: ProgressBar? = null
     private lateinit var playbackText: TextView
     private lateinit var progressBar: ProgressBar
@@ -2990,6 +2989,7 @@ class MainActivity : Activity() {
             video = null
             closeTransport(playbackHttp)
             playbackHttp = null
+            hideSeekHint()
             main.removeCallbacks(hideHud)
             main.removeCallbacks(seekRunnable)
             pendingSeek = null
@@ -3052,17 +3052,20 @@ class MainActivity : Activity() {
             root.addView(view, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
             view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyVideoRotation() }
             view.post { if (playerView === view) applyVideoRotation() }
-            persistentTime = text("", 12f, Color.WHITE)
-            persistentBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000; progressTintList = android.content.res.ColorStateList.valueOf(accent) }
-            persistentProgress = column().apply {
+            persistentBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = 1000
+                progressTintList = android.content.res.ColorStateList.valueOf(accent)
                 isFocusable = false
-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                setPadding(dp(12), dp(4), dp(12), dp(6))
-                setBackgroundColor(Color.argb(160, 0, 0, 0))
-                addView(persistentTime); addView(persistentBar, lp(-1, dp(3)))
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 visibility = View.GONE
             }
-            root.addView(persistentProgress, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+            root.addView(persistentBar, FrameLayout.LayoutParams(-1, dp(3), Gravity.BOTTOM))
+            seekHint = text("", 18f, Color.WHITE).apply {
+                setPadding(dp(10), dp(4), dp(10), dp(4))
+                background = rounded(Color.argb(150, 11, 15, 21))
+                visibility = View.GONE
+            }
+            root.addView(seekHint, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
             social.attach(root)
             playbackClock = TextClock(this).apply {
                 format12Hour = "HH:mm"
@@ -3581,6 +3584,7 @@ class MainActivity : Activity() {
         if (p.currentMediaItemIndex > 0) p.removeMediaItems(0, p.currentMediaItemIndex)
         previous?.close()
         closeTransport(previousHttp)
+        hideSeekHint()
         applyOpenedStream(next, library.maxQuality)
         autoDowngrades = 0
         pendingSeek = null
@@ -4314,6 +4318,7 @@ class MainActivity : Activity() {
 
     private fun showHud() {
         if (screen != "player") return
+        hideSeekHint()
         hideAutoplayOverlay = false
         hud.visibility = View.VISIBLE
         updateClock()
@@ -4534,15 +4539,20 @@ class MainActivity : Activity() {
         }, onBack = if (anchor.tag == "playback-settings") ({ showPlaybackSettings(anchor) }) else null)
     }
     private fun updatePersistentProgress() {
-        if (persistentProgress == null || !library.isLoaded) return
-        val visible=PlaybackProgressDisplay.visible(library.alwaysShowProgress,screen=="player",hud.visibility==View.VISIBLE,playError)
-        persistentProgress?.visibility=if(visible) View.VISIBLE else View.GONE
-        if(!visible) return
-        val duration=player?.duration?.coerceAtLeast(0) ?: 0L
-        val position=currentPosition().coerceAtLeast(0)
-        persistentTime?.text=if(playbackReady) "${formatTime(position)} / ${if(duration>0) formatTime(duration) else "--:--"}" else "正在准备…"
-        persistentBar?.progress=PlaybackProgressDisplay.value(position,duration)
+        val bar = persistentBar ?: return
+        if (!library.isLoaded) return
+        val visible = PlaybackProgressDisplay.visible(library.alwaysShowProgress, screen == "player", hud.visibility == View.VISIBLE, playError)
+        bar.visibility = if (visible) View.VISIBLE else View.GONE
+        if (visible) bar.progress = PlaybackProgressDisplay.value(currentPosition(), player?.duration ?: 0L)
     }
+
+    private fun hideSeekHint() {
+        seekHint?.apply {
+            animate().cancel()
+            visibility = View.GONE
+        }
+    }
+
     private fun frameResizeMode() =
         when (library.frameMode) {
             VideoFrameMode.FIT -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -4572,15 +4582,27 @@ class MainActivity : Activity() {
         val duration = p.duration
         if (duration <= 0) return
         val step = if (repeat > 4) 30000 else 10000
-        pendingSeek =
+        val target =
             ((pendingSeek ?: p.currentPosition) + direction * step).coerceIn(
                 0,
                 (duration - 500).coerceAtLeast(0),
             )
         main.removeCallbacks(seekRunnable)
+        pendingSeek = target
         main.postDelayed(seekRunnable, 250)
-        updatePlaybackText()
-        showHud()
+        if (hud.visibility == View.VISIBLE) {
+            updatePlaybackText()
+            return
+        }
+        updatePersistentProgress()
+        seekHint?.apply {
+            animate().cancel()
+            alpha = 1f
+            text = formatTime(target)
+            visibility = View.VISIBLE
+            animate().alpha(0f).setStartDelay(900).setDuration(180)
+                .withEndAction { visibility = View.GONE }.start()
+        }
     }
 
     private fun showPanel() {
@@ -4877,6 +4899,7 @@ class MainActivity : Activity() {
         episodePanel = null
         oldPanel?.dismiss()
         foreground = wasForeground
+        hideSeekHint()
         main.removeCallbacks(hideHud)
         main.removeCallbacks(seekRunnable)
         pendingSeek = null
@@ -4886,8 +4909,7 @@ class MainActivity : Activity() {
         video = null
         playerView?.player = null
         playerView = null
-        persistentProgress = null
-        persistentTime = null
+        seekHint = null
         persistentBar = null
         player?.release()
         player = null
