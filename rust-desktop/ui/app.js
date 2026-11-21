@@ -946,7 +946,7 @@ function qualityOptions(view, playback) {
   view.quality.disabled = !playback || playback.qualities.length <= 1;
   if (!playback) return;
   for (const quality of playback.qualities) {
-    const option = node("option", "", quality + "P");
+    const option = node("option", "", quality > 0 ? quality + "P" : "自动");
     option.value = quality;
     view.quality.append(option);
   }
@@ -1041,7 +1041,7 @@ async function openPlayer(episode, position = 0, prepared) {
   }
   const controller = new AbortController();
   state.prepare = controller;
-  const loading = node("p", "watch-message", "正在打开试看…");
+  const loading = node("p", "watch-message", "正在准备播放…");
   loading.setAttribute("role", "status");
   view.stage.replaceChildren(loading);
   try {
@@ -1115,7 +1115,8 @@ async function openPlayer(episode, position = 0, prepared) {
     if (!view.sleepStopped) {
       const source = playback.qualities.length === 1 ? "仅提供 " : "";
       const mode = playback.scope === "full" ? "正片" : "公开试看";
-      view.episodeLabel.textContent = `${label}${mode} · ${source}${playback.quality}P`;
+      const quality = playback.quality > 0 ? `${playback.quality}P` : "自动";
+      view.episodeLabel.textContent = `${label}${mode} · ${source}${quality}`;
     }
     qualityOptions(view, playback);
     if (!prepared) video.src = `media/${playback.token}`;

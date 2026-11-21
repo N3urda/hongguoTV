@@ -87,6 +87,7 @@ pub(crate) async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hongguo_playback::source::{PlaybackScope, SelectedSource};
     use reqwest::{Client, Url};
 
     #[tokio::test]
@@ -154,6 +155,88 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn opens_authorized_backup_and_keeps_all_reads_on_that_file() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed = attempts.clone();
+        let mut fixture = [0; 64];
+        fixture[4..8].copy_from_slice(b"ftyp");
+        fixture[60..].copy_from_slice(b"tail");
+        let router = axum::Router::new()
+            .route(
+                "/primary",
+                axum::routing::get(move || {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    async { StatusCode::SERVICE_UNAVAILABLE }
+                }),
+            )
+            .route(
+                "/backup",
+                axum::routing::get(move |headers: HeaderMap| async move {
+                    let part = ByteRange::from_header(headers[header::RANGE].to_str().unwrap(), 64)
+                        .unwrap();
+                    Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(header::CONTENT_TYPE, "video/mp4")
+                        .header(header::CONTENT_RANGE, part.content_range(64))
+                        .body(Body::from(
+                            fixture[part.start as usize..=part.end as usize].to_vec(),
+                        ))
+                        .unwrap()
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let base = Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let mut source = SelectedSource {
+            url: base.join("primary").unwrap(),
+            backup_url: Some(base.join("backup").unwrap()),
+            referer: None,
+            quality: 720,
+            qualities: vec![720],
+            scope: PlaybackScope::Full,
+        };
+        let media = RemoteMp4::open_source(Client::new(), &source)
+            .await
+            .unwrap();
+        assert_eq!(media.size(), 64);
+        assert_eq!(
+            media
+                .read_range(ByteRange { start: 60, end: 63 })
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+            b"tail"[..]
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        source.backup_url = Some(base.join("missing").unwrap());
+        let error = RemoteMp4::open_source(Client::new(), &source)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.to_string(), "主源和备用源均无法播放");
+        source.url = base.join("backup").unwrap();
+        assert!(RemoteMp4::open_source(Client::new(), &source).await.is_ok());
+        source.url = base.join("primary").unwrap();
+        source.backup_url = None;
+        assert!(
+            RemoteMp4::open_source(Client::new(), &source)
+                .await
+                .is_err()
         );
         task.abort();
     }

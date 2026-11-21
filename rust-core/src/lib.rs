@@ -3,6 +3,9 @@ use std::cmp::Reverse;
 
 pub mod range;
 
+#[cfg(feature = "models")]
+pub mod model;
+
 #[cfg(feature = "web")]
 pub mod source;
 #[cfg(feature = "web")]

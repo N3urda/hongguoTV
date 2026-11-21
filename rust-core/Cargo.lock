@@ -356,10 +356,12 @@ name = "hongguo-playback"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "jni",
  "reqwest",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]

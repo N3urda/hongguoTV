@@ -36,7 +36,7 @@ python rust-desktop/package.py --target x86_64-pc-windows-msvc --webview2-bootst
 
 本机收藏和试看进度保存在 macOS 的 `~/Library/Application Support/HongguoRust/` 或 Windows 的 `%LOCALAPPDATA%\HongguoRust\`，测试可用 `HONGGUO_RUST_DATA_DIR` 指向独立目录。关闭播放器和打开下一集会保存已读进度。
 
-`rust-core` 负责目录和分集查询、取源结果、选档和远端 MP4 分段读取。桌面负责窗口、会话、账号凭据和本机资料。Android 手机及 Android TV 通过 JNI 共用续播、选档和视频分段规则，继续使用 Android 播放适配。Android 安装包使用 [Android 构建入口](../kotlin-tv/README.md#构建)。
+`rust-core` 负责目录和分集查询、播放模型解析、选档、主备地址和远端 MP4 分段读取。`models` feature 可独立解析播放模型，不依赖 HTTP 客户端。桌面负责窗口、会话、账号凭据和本机资料。Android 手机及 Android TV 通过 JNI 共用续播、选档和视频分段规则，继续使用 Android 播放适配；新模型解析器尚未接入 Android JNI。Android 安装包使用 [Android 构建入口](../kotlin-tv/README.md#构建)。
 
 ## 授权正片源
 
@@ -51,9 +51,40 @@ python rust-desktop/package.py --target x86_64-pc-windows-msvc --webview2-bootst
       "series": "100",
       "episode": "200",
       "sources": [
-        {"quality": 720, "url": "https://media.example/episode-200-720.mp4"}
+        {
+          "quality": 720,
+          "url": "https://media.example/episode-200-720.mp4",
+          "backup_url": "https://media.example/backup/episode-200-720.mp4"
+        }
       ]
     }
   ]
 }
 ```
+
+每个分集也可以用 `video_model` 代替 `sources`，接收内容方提供的模型对象或 JSON 字符串。以下为单个分集条目，外层清单仍须配置 `version` 和 `origins`：
+
+```json
+{
+  "series": "100",
+  "episode": "200",
+  "video_model": {
+    "video_list": [
+      {
+        "quality_desc": "720p",
+        "codec_type": "h264",
+        "vwidth": 720,
+        "vheight": 1280,
+        "main_url": "https://media.example/episode-200-720.mp4",
+        "backup_url_1": "https://media.example/backup/episode-200-720.mp4"
+      }
+    ]
+  }
+}
+```
+
+模型解析支持对象或数组形式的 `video_list`、普通 HTTPS 地址及其 Base64 编码，并保留有效条目的清晰度、编码和尺寸。同档位的不同编码由 core 按已有清晰度上限及兼容规则选择；尺寸按短边推导清晰度，未提供清晰度时显示“自动”。加密条目和不兼容的 bytevc2 条目会被跳过，全都不可用时返回明确错误。
+
+主、备用地址都须在 `origins` 中。打开主源失败时只尝试该档位的备用地址；开始播放后分段读取固定使用同一个文件，避免混用文件内容。批量接口的已授权响应可通过 `PlaybackModel::decode_response` 按分集编号解析，错误响应或缺失分集不会替换成其他集。
+
+这部分提供模型解析和播放适配，未接入红果 App 的正片取源接口。模型解析器不执行设备注册、请求签名、受保护地址解密或视频解密。

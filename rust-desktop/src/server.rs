@@ -636,7 +636,7 @@ async fn play(
         PlaybackScope::Full => app.full_media.clone(),
         PlaybackScope::Preview => app.site.media_client.clone(),
     };
-    let media = RemoteMp4::open(client, source.url, source.referer)
+    let media = RemoteMp4::open_source(client, &source)
         .await
         .map_err(ApiError::upstream)?;
     let token = Uuid::new_v4();

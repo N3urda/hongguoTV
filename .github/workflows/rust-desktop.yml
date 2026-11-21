@@ -34,6 +34,7 @@ jobs:
       - run: cargo +stable fmt --manifest-path ../rust-core/Cargo.toml --check
       - run: cargo +stable clippy --manifest-path ../rust-core/Cargo.toml --locked --all-targets --features web,android-jni -- -D warnings
       - run: cargo +stable test --manifest-path ../rust-core/Cargo.toml --locked --features web
+      - run: cargo +stable test --manifest-path ../rust-core/Cargo.toml --locked --features models
       - run: cargo +stable test --manifest-path ../rust-core/Cargo.toml --locked --features android-jni
       - run: cargo +stable fmt --check
       - run: cargo +stable clippy --locked --no-default-features --all-targets -- -D warnings

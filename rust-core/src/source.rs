@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs::File,
     io::Read,
     path::Path,
@@ -11,6 +11,7 @@ use anyhow::{Context, Result, ensure};
 use reqwest::{Client, ClientBuilder, Response, StatusCode, Url, header, redirect};
 use serde::{Deserialize, Serialize};
 
+use crate::model::{PlaybackModel, PlaybackVariant};
 use crate::range::{ByteRange, validate_response};
 use crate::{Rendition, select_rendition};
 
@@ -43,13 +44,14 @@ pub enum PlaybackScope {
 
 #[derive(Clone)]
 pub struct Ladder {
-    urls: BTreeMap<u16, Url>,
+    variants: Vec<PlaybackVariant>,
     referer: Option<Url>,
     scope: PlaybackScope,
 }
 
 pub struct SelectedSource {
     pub url: Url,
+    pub backup_url: Option<Url>,
     pub referer: Option<Url>,
     pub quality: u16,
     pub qualities: Vec<u16>,
@@ -59,32 +61,50 @@ pub struct SelectedSource {
 impl Ladder {
     pub(crate) fn preview(urls: BTreeMap<u16, Url>, page: Url) -> Self {
         Self {
-            urls,
+            variants: urls
+                .into_iter()
+                .map(|(quality, url)| PlaybackVariant {
+                    quality,
+                    url,
+                    backup_url: None,
+                    codec: String::new(),
+                    width: None,
+                    height: None,
+                })
+                .collect(),
             referer: Some(page),
             scope: PlaybackScope::Preview,
         }
     }
 
-    pub fn select(mut self, maximum: u16, exact: Option<u16>) -> Option<SelectedSource> {
-        let qualities: Vec<_> = self.urls.keys().copied().collect();
-        let quality = match exact {
-            Some(quality) => quality,
-            None => {
-                let profiles: Vec<_> = qualities
-                    .iter()
-                    .map(|quality| Rendition {
-                        quality: i32::from(*quality),
-                        avc: false,
-                        supported: true,
-                    })
-                    .collect();
-                qualities[select_rendition(&profiles, i32::from(maximum))?]
-            }
-        };
+    pub fn select(self, maximum: u16, exact: Option<u16>) -> Option<SelectedSource> {
+        let qualities: Vec<_> = self
+            .variants
+            .iter()
+            .map(|row| row.quality)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut variants: Vec<_> = self
+            .variants
+            .into_iter()
+            .filter(|row| exact.is_none_or(|quality| quality == row.quality))
+            .collect();
+        let profiles: Vec<_> = variants
+            .iter()
+            .map(|row| Rendition {
+                quality: i32::from(row.quality),
+                avc: row.is_avc(),
+                supported: true,
+            })
+            .collect();
+        let index = select_rendition(&profiles, i32::from(exact.unwrap_or(maximum)))?;
+        let row = variants.swap_remove(index);
         Some(SelectedSource {
-            url: self.urls.remove(&quality)?,
+            url: row.url,
+            backup_url: row.backup_url,
             referer: self.referer,
-            quality,
+            quality: row.quality,
             qualities,
             scope: self.scope,
         })
@@ -111,7 +131,8 @@ struct SourceManifest {
 struct EpisodeSources {
     series: String,
     episode: String,
-    sources: Vec<SourceRow>,
+    sources: Option<Vec<SourceRow>>,
+    video_model: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -119,6 +140,7 @@ struct EpisodeSources {
 struct SourceRow {
     quality: u16,
     url: String,
+    backup_url: Option<String>,
 }
 
 impl AuthorizedSources {
@@ -155,24 +177,48 @@ impl AuthorizedSources {
                 valid_id(&row.series) && valid_id(&row.episode),
                 "正式源分集编号无效"
             );
-            ensure!(
-                !row.sources.is_empty() && row.sources.len() <= 16,
-                "正式源清晰度列表无效"
-            );
-            let mut urls = BTreeMap::new();
-            for source in row.sources {
-                let url = https_url(&source.url)?;
+            let variants = match (row.sources, row.video_model) {
+                (Some(sources), None) => {
+                    ensure!(
+                        !sources.is_empty() && sources.len() <= 16,
+                        "正式源清晰度列表无效"
+                    );
+                    let mut qualities = HashSet::new();
+                    sources
+                        .into_iter()
+                        .map(|source| {
+                            ensure!(
+                                source.quality > 0 && qualities.insert(source.quality),
+                                "正式源清晰度无效或重复"
+                            );
+                            Ok(PlaybackVariant {
+                                quality: source.quality,
+                                url: https_url(&source.url)?,
+                                backup_url: source
+                                    .backup_url
+                                    .as_deref()
+                                    .map(https_url)
+                                    .transpose()?,
+                                codec: String::new(),
+                                width: None,
+                                height: None,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?
+                }
+                (None, Some(model)) => PlaybackModel::from_value(&model)?.into_variants(),
+                _ => anyhow::bail!("分集须提供 sources 或 video_model 中的一种"),
+            };
+            for variant in &variants {
                 ensure!(
-                    origins.contains(&url.origin()),
+                    std::iter::once(&variant.url)
+                        .chain(variant.backup_url.iter())
+                        .all(|url| origins.contains(&url.origin())),
                     "正式源地址超出已配置的域名"
-                );
-                ensure!(
-                    source.quality > 0 && urls.insert(source.quality, url).is_none(),
-                    "正式源清晰度无效或重复"
                 );
             }
             let ladder = Ladder {
-                urls,
+                variants,
                 referer: None,
                 scope: PlaybackScope::Full,
             };
@@ -238,6 +284,21 @@ pub struct RemoteMp4 {
 }
 
 impl RemoteMp4 {
+    /// Try the same rendition's authorized backup only while opening the source.
+    /// Once opened, all ranges stay on that file; bytes from different files are
+    /// never spliced together after a mid-stream failure.
+    pub async fn open_source(client: Client, source: &SelectedSource) -> Result<Self> {
+        match Self::open(client.clone(), source.url.clone(), source.referer.clone()).await {
+            Ok(media) => Ok(media),
+            Err(primary) => match source.backup_url.as_ref().filter(|url| *url != &source.url) {
+                Some(backup) => Self::open(client, backup.clone(), source.referer.clone())
+                    .await
+                    .context("主源和备用源均无法播放"),
+                None => Err(primary),
+            },
+        }
+    }
+
     pub async fn open(client: Client, url: Url, referer: Option<Url>) -> Result<Self> {
         let mut media = Self {
             client,
@@ -358,5 +419,55 @@ mod tests {
         ] {
             assert!(AuthorizedSources::decode(&manifest(address)).is_err());
         }
+    }
+
+    #[test]
+    fn model_ladders_keep_real_tiers_and_prefer_avc_at_the_requested_quality() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "version": 1, "origins": ["https://media.example", "https://backup.example"],
+            "episodes": [{"series": "100", "episode": "200", "video_model": {
+                "video_list": [
+                    {"quality_desc": "720p", "codec_type": "hevc", "main_url": "https://media.example/hevc.mp4"},
+                    {"quality_desc": "720p", "codec_type": "avc1", "main_url": "https://media.example/avc.mp4", "backup_url_1": "https://backup.example/avc.mp4"},
+                    {"quality_desc": "1080p", "codec_type": "h264", "main_url": "https://media.example/1080.mp4"}
+                ]
+            }}]
+        })).unwrap();
+        let sources = AuthorizedSources::decode(&bytes).unwrap();
+        let ladder = sources.for_episode("100", "200").unwrap();
+        let selected = ladder.clone().select(720, None).unwrap();
+        assert_eq!(selected.qualities, [720, 1080]);
+        assert_eq!(selected.url.path(), "/avc.mp4");
+        assert_eq!(
+            selected.backup_url.unwrap().host_str(),
+            Some("backup.example")
+        );
+        assert_eq!(
+            ladder.clone().select(480, Some(720)).unwrap().url.path(),
+            "/avc.mp4"
+        );
+        assert_eq!(ladder.clone().select(480, None).unwrap().quality, 720);
+        assert!(ladder.clone().select(1080, Some(480)).is_none());
+    }
+
+    #[test]
+    fn validates_backup_origins_and_rejects_ambiguous_episode_configuration() {
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&manifest("https://media.example/b.mp4")).unwrap();
+        manifest["episodes"][0]["sources"][0]["backup_url"] =
+            "https://unlisted.example/a.mp4".into();
+        assert!(AuthorizedSources::decode(&serde_json::to_vec(&manifest).unwrap()).is_err());
+        let episode = &mut manifest["episodes"][0];
+        episode.as_object_mut().unwrap().remove("sources");
+        episode["video_model"] = serde_json::json!({"video_list": [{
+            "quality_desc": "720", "main_url": "https://media.example/a.mp4",
+            "backup_url_1": "https://unlisted.example/a.mp4"
+        }]});
+        assert!(AuthorizedSources::decode(&serde_json::to_vec(&manifest).unwrap()).is_err());
+        manifest["episodes"][0]["video_model"]["video_list"][0]["backup_url_1"] =
+            "https://media.example/backup.mp4".into();
+        assert!(AuthorizedSources::decode(&serde_json::to_vec(&manifest).unwrap()).is_ok());
+        manifest["episodes"][0]["sources"] = serde_json::json!([]);
+        assert!(AuthorizedSources::decode(&serde_json::to_vec(&manifest).unwrap()).is_err());
     }
 }
