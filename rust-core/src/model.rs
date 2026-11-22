@@ -73,7 +73,22 @@ impl PlaybackModel {
         let root = decode_json(bytes)?;
         check_status(&root)?;
         let data = root.get("data").ok_or(ModelError::InvalidResponse)?;
-        let entries = data.get("1004").unwrap_or(data);
+        Self::from_batch_entry(data.get("1004").unwrap_or(data), episode)
+    }
+
+    #[cfg(feature = "registered")]
+    pub(crate) fn decode_tab_response(bytes: &[u8], episode: &str) -> Result<Self, ModelError> {
+        let root = decode_json(bytes)?;
+        check_status(&root)?;
+        if root.get("Code").or_else(|| root.get("code")).is_none() {
+            return Err(ModelError::InvalidResponse);
+        }
+        let data = root.get("data").ok_or(ModelError::InvalidResponse)?;
+        check_status(data)?;
+        Self::from_batch_entry(data.get("video_model_data").unwrap_or(data), episode)
+    }
+
+    fn from_batch_entry(entries: &Value, episode: &str) -> Result<Self, ModelError> {
         let entry = entries.get(episode).ok_or(ModelError::EpisodeMissing)?;
         check_status(entry)?;
         Self::from_value(

@@ -16,7 +16,7 @@ let decoded = media.decode_chunk(absolute_offset, &chunk)?;
 ```
 
 - 首次前台播放执行 `ttEncrypt(gzip(JSON))` 注册，校验 device/installation ID。并发注册合并；身份只保留在内存，不携带账号 Cookie。
-- 优先请求移动端 v5 模型，签名绑定最终查询、gzip 后正文与当前身份；`device_level=1` 请求可兼容档位。空响应或没有可播档位时回退一次至单集 Gorgon/Argus/Ladon 模型，必要时读取该模型提供的 `fallback_api`。
+- 优先请求移动端 v5 模型，签名绑定最终查询、gzip 后正文与当前身份；`device_level=1` 请求可兼容档位。主接口返回空正文时使用同一身份请求 v5 签名的 `video_tab` GET，签名输入为空字节。主接口返回模型但没有可播档位时，使用单集 Gorgon/Argus/Ladon 模型，必要时读取该模型提供的 `fallback_api`。
 - HTTP 拒绝、业务拒绝、Retry-After、错集、格式错误不会触发跨接口重试。连续空响应可在后续前台请求更换身份；注册有 30 秒冷却，失败不覆盖旧身份。整个取流过程有 12 秒上限，取消会终止正在等待的请求。
 - 模型支持对象、JSON/Base64 字符串，按请求分集匹配，保留清晰度、编码、主备地址与内存密钥；跳过 bytevc2 和损坏的单个档位。地址密钥和媒体 URL 不发送到桌面界面。
 - CENC 使用 MP4 样本/子样本索引和 AES-CTR；支持非对齐 Range、拖动进度和原编码标记恢复。准备源时验证并限制索引大小，开始播放后固定同一文件。

@@ -26,6 +26,8 @@ use tokio::{sync::Mutex, time::Instant};
 use uuid::Uuid;
 
 const REGISTER: &str = "https://log5-applog-lf.fqnovel.com/service/2/device_register/?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1";
+const TAB: &str =
+    "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/";
 const MODEL: &str = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_model/v1/";
 const UA: &str = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)";
 const LIMIT: usize = 2 * 1024 * 1024;
@@ -52,6 +54,7 @@ pub struct RegisteredSource {
     session: Mutex<Session>,
     register_url: Url,
     model_url: Url,
+    tab_url: Url,
     mobile_url: Option<Url>,
     signer: crate::v5::Signer,
 }
@@ -71,6 +74,7 @@ impl RegisteredSource {
             session: Mutex::new(Session::default()),
             register_url: Url::parse(REGISTER)?,
             model_url: Url::parse(MODEL)?,
+            tab_url: Url::parse(TAB)?,
             mobile_url: Some(Url::parse(
                 "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1",
             )?),
@@ -142,12 +146,10 @@ impl RegisteredSource {
         let device = self.identity().await?;
         let result = if let Some(url) = &self.mobile_url {
             match self.fetch_mobile(url.clone(), episode, &device).await {
+                Err(error) if error.is::<EmptyResponse>() => self.fetch_tab(episode, &device).await,
                 Err(error)
-                    if error.is::<EmptyResponse>()
-                        || matches!(
-                            error.downcast_ref::<ModelError>(),
-                            Some(ModelError::NoPlayableSource)
-                        ) =>
+                    if error.downcast_ref::<ModelError>()
+                        == Some(&ModelError::NoPlayableSource) =>
                 {
                     self.fetch(episode, &device).await
                 }
@@ -178,23 +180,7 @@ impl RegisteredSource {
         episode: &str,
         device: &Device,
     ) -> Result<PlaybackModel> {
-        let values = [
-            ("aid", "8662"),
-            ("app_name", "novelread"),
-            ("version_code", "74332"),
-            ("version_name", "7.4.3.32"),
-            ("channel", "vivo_8662_64"),
-            ("device_platform", "android"),
-            ("device_type", "PGT-AN10"),
-            ("os_version", "12"),
-            ("update_version_code", "74332"),
-            ("iid", &device.install_id),
-            ("cdid", &device.cdid),
-            ("device_id", &device.device_id),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_owned(), v.to_owned()))
-        .collect::<Vec<_>>();
+        let values = mobile_query(device);
         let payload = json!({"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":[episode]},"dr_scene":"player"});
         let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
         gzip.write_all(&serde_json::to_vec(&payload)?)?;
@@ -217,6 +203,44 @@ impl RegisteredSource {
             .await
             .context("播放信息读取失败，请稍后重试")?;
         PlaybackModel::decode_response(&bytes, episode).map_err(Into::into)
+    }
+
+    async fn fetch_tab(&self, episode: &str, device: &Device) -> Result<PlaybackModel> {
+        let mut values = mobile_query(device);
+        values.extend(
+            [
+                ("video_id", episode),
+                ("video_id_type", "0"),
+                ("device_level", "1"),
+                ("need_all_video_definition", "1"),
+                ("need_mp4_align", "0"),
+                ("use_os_player", "0"),
+                ("video_platform", "1024"),
+                ("source", "0"),
+                ("from_video_id", ""),
+            ]
+            .map(|(key, value)| (key.to_owned(), value.to_owned())),
+        );
+        // The empty body is used for the v5 digest only. No POST headers go on the wire.
+        let (query, mut headers) = self.signer.sign(&values, &[], now_ms())?;
+        headers.remove("x-ss-stub");
+        let mut url = self.tab_url.clone();
+        url.set_query(Some(&query));
+        let mut request = self.client.get(url)
+            .header("User-Agent", "com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)")
+            .header("Accept", "application/json; charset=utf-8")
+            .header("Accept-Language", "zh-CN,zh;q=0.9");
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("备用播放模型连接失败"))?;
+        let bytes = response_bytes(response)
+            .await
+            .context("备用播放信息读取失败")?;
+        PlaybackModel::decode_tab_response(&bytes, episode).map_err(Into::into)
     }
 
     async fn fetch(&self, episode: &str, device: &Device) -> Result<PlaybackModel> {
@@ -269,6 +293,26 @@ impl RegisteredSource {
         }
     }
 }
+fn mobile_query(device: &Device) -> Vec<(String, String)> {
+    [
+        ("aid", "8662"),
+        ("app_name", "novelread"),
+        ("version_code", "74332"),
+        ("version_name", "7.4.3.32"),
+        ("channel", "vivo_8662_64"),
+        ("device_platform", "android"),
+        ("device_type", "PGT-AN10"),
+        ("os_version", "12"),
+        ("update_version_code", "74332"),
+        ("iid", &device.install_id),
+        ("cdid", &device.cdid),
+        ("device_id", &device.device_id),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect()
+}
+
 #[derive(Debug)]
 struct EmptyResponse;
 impl std::fmt::Display for EmptyResponse {
@@ -447,6 +491,7 @@ mod tests {
         status: u16,
         body: &'static str,
         backoff: bool,
+        tab_body: &'static str,
     ) -> Fixture {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
@@ -512,6 +557,45 @@ mod tests {
                     assert_eq!(payload["biz_param"]["device_level"], 1);
                     assert_eq!(payload["mixed_video_id_map"]["1004"][0], "123");
                     (status, body)
+                } else if headers.starts_with("get /tab?") {
+                    m.fetch_add(1, Ordering::SeqCst);
+                    assert!(payload.is_empty());
+                    assert!(headers.contains("x-medusa:") && headers.contains("x-helios:"));
+                    for header in ["x-ss-stub:", "content-type:", "content-encoding:"] {
+                        assert!(!headers.contains(header));
+                    }
+                    let path = raw_headers
+                        .lines()
+                        .next()
+                        .unwrap()
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap();
+                    let query: BTreeMap<_, _> = Url::parse("https://example.invalid")
+                        .unwrap()
+                        .join(path)
+                        .unwrap()
+                        .query_pairs()
+                        .into_owned()
+                        .collect();
+                    for (key, value) in [
+                        ("video_id", "123"),
+                        ("video_id_type", "0"),
+                        ("device_level", "1"),
+                        ("need_all_video_definition", "1"),
+                        ("video_platform", "1024"),
+                        ("use_os_player", "0"),
+                        ("need_mp4_align", "0"),
+                        ("source", "0"),
+                        ("from_video_id", ""),
+                        ("version_code", "74332"),
+                        ("device_id", "333"),
+                        ("iid", "444"),
+                    ] {
+                        assert_eq!(query.get(key).map(String::as_str), Some(value));
+                    }
+                    assert!(Uuid::parse_str(&query["cdid"]).is_ok());
+                    (200, tab_body)
                 } else {
                     m.fetch_add(1, Ordering::SeqCst);
                     assert!(headers.starts_with("post /model?"));
@@ -562,6 +646,7 @@ mod tests {
                 session: Mutex::new(Session::default()),
                 register_url: base.join("register").unwrap(),
                 model_url: base.join("model").unwrap(),
+                tab_url: base.join("tab").unwrap(),
                 mobile_url: None,
                 signer: crate::v5::Signer::new(now_ms()),
             }),
@@ -571,26 +656,44 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn mobile_primary_binds_gzip_and_rejection_does_not_fall_back() {
-        for (status, body, backoff, calls, success) in [
+    async fn mobile_primary_binds_gzip_and_empty_response_uses_v5_tab() {
+        for (status, body, backoff, calls, success, tab_body) in [
             (
                 200,
                 r#"{"code":0,"data":{"1004":{"123":{"video_model":{"video_list":[{"main_url":"https://media.example/clip.mp4","codec_type":"h264"}]}}}}}"#,
                 false,
                 1,
                 true,
+                "",
             ),
-            (403, "", false, 1, false),
-            (429, "", false, 1, false),
-            (200, r#"{"code":110001}"#, false, 1, false),
-            (200, "", true, 1, false),
-            (200, "", false, 2, false),
+            (403, "", false, 1, false, ""),
+            (429, "", false, 1, false, ""),
+            (200, r#"{"code":110001}"#, false, 1, false, ""),
+            (200, "", true, 1, false, ""),
+            (200, "", false, 2, false, ""),
+            (
+                200,
+                "",
+                false,
+                2,
+                true,
+                r#"{"code":0,"data":{"video_model_data":{"123":{"video_model":{"video_list":[{"main_url":"https://media.example/clip.mp4","codec_type":"h264"}]}}}}}"#,
+            ),
+            (
+                200,
+                "",
+                false,
+                2,
+                false,
+                r#"{"code":0,"data":{"video_model_data":{"999":{"video_model":{"video_list":[{"main_url":"https://media.example/clip.mp4"}]}}}}}"#,
+            ),
         ] {
             let mut f = fixture(
                 r#"{"device_id":333,"install_id":444}"#,
                 status,
                 body,
                 backoff,
+                tab_body,
             )
             .await;
             let source = Arc::get_mut(&mut f.source).unwrap();
@@ -607,6 +710,7 @@ mod tests {
             200,
             GOOD,
             false,
+            "",
         )
         .await;
         let (a, b, c) = tokio::join!(
@@ -638,6 +742,7 @@ mod tests {
                 status,
                 body,
                 backoff,
+                "",
             )
             .await;
             for _ in 0..3 {
@@ -650,7 +755,14 @@ mod tests {
     }
     #[tokio::test]
     async fn invalid_registration_is_not_saved_and_is_cooled_down() {
-        let f = fixture(r#"{"device_id":"000","install_id":444}"#, 200, GOOD, false).await;
+        let f = fixture(
+            r#"{"device_id":"000","install_id":444}"#,
+            200,
+            GOOD,
+            false,
+            "",
+        )
+        .await;
         for _ in 0..3 {
             assert!(f.source.ladder("123").await.is_err());
         }
@@ -660,7 +772,7 @@ mod tests {
     }
     #[tokio::test]
     async fn persistent_empty_rotates_only_on_later_foreground_call_after_cooldown() {
-        let f = fixture(r#"{"device_id":333,"install_id":444}"#, 200, "", false).await;
+        let f = fixture(r#"{"device_id":333,"install_id":444}"#, 200, "", false, "").await;
         for _ in 0..3 {
             assert!(f.source.ladder("123").await.is_err());
         }

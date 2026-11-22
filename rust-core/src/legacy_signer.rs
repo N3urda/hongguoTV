@@ -209,7 +209,7 @@ impl Signer {
                 .finish()
                 .replace('+', "%20")
                 .replace("%7E", "~");
-            if (iv(&sm3(query.as_bytes()), &digest, ts) & 15) % 3 != 0 {
+            if !(iv(&sm3(query.as_bytes()), &digest, ts) & 15).is_multiple_of(3) {
                 continue;
             }
             let mut rng = rand::rngs::OsRng;
