@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     net::Ipv4Addr,
     path::Path,
     sync::Arc,
@@ -17,9 +17,12 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use hongguo_playback::resume_target;
-use hongguo_playback::social::{DanmakuPage, ProviderRejection, Reservation, Social};
+use hongguo_playback::social::{
+    DanmakuPage, DiscoveryCursor, DiscoveryGroup, ProviderRejection, Reservation, Social,
+    valid_discovery_filters,
+};
 use hongguo_playback::source::{
-    AuthorizedSources, PlaybackScope, RemoteMp4, authorized_media_client,
+    AuthorizedSources, PlaybackScope, RemoteMp4, SelectedSource, authorized_media_client,
 };
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
@@ -34,6 +37,9 @@ use crate::catalog::{Category, Detail, PreviewUnavailable, RankBoard, Series, Si
 use crate::library::{LibraryStore, Preferences, WatchPosition};
 use crate::media;
 use crate::updates;
+
+#[path = "cloud_library.rs"]
+mod cloud_library;
 
 const MAX_SESSIONS: usize = 4;
 
@@ -78,7 +84,11 @@ struct Session {
     series: Series,
     episode: String,
     number: usize,
+    episode_count: usize,
+    account_revision: Uuid,
+    last_cloud_upload: Option<Instant>,
     media: Arc<RemoteMp4>,
+    source: SelectedSource,
     scope: PlaybackScope,
     cancel: CancellationToken,
     last_sequence: u64,
@@ -96,6 +106,8 @@ struct App {
     registered: Arc<hongguo_playback::registered::RegisteredSource>,
     site: Site,
     social: Arc<Social>,
+    discovery_cursors: Arc<Mutex<VecDeque<DiscoveryContinuation>>>,
+    cloud: Arc<cloud_library::CloudLibrary>,
     reservation_writes: Arc<Mutex<(Uuid, HashMap<String, ReservationStatus>)>>,
     account: Arc<Account>,
     store: Arc<LibraryStore>,
@@ -148,6 +160,8 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
     let registered = Arc::new(hongguo_playback::registered::RegisteredSource::new()?);
     let app = App {
         social: Arc::new(Social::new(registered.clone())?),
+        discovery_cursors: Arc::default(),
+        cloud: Arc::default(),
         registered,
         reservation_writes: Arc::new(Mutex::new((Uuid::nil(), HashMap::new()))),
         site: Site::new().context("无法初始化官网连接")?,
@@ -223,6 +237,16 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
             }),
         )
         .route("/api/catalog", get(catalog))
+        .route(
+            "/discovery.js",
+            get(|| async {
+                asset(
+                    "text/javascript; charset=utf-8",
+                    include_bytes!("../ui/discovery.js"),
+                )
+            }),
+        )
+        .route("/api/discovery", post(discovery))
         .route("/api/search/suggestions", get(search_suggestions))
         .route(
             "/api/search/recent",
@@ -256,6 +280,11 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
             get(episode_comments),
         )
         .route("/api/library", get(library))
+        .route("/api/cloud-history", get(cloud_library::cloud_history))
+        .route(
+            "/api/cloud-favorite",
+            get(cloud_library::cloud_favorites).post(cloud_library::cloud_favorite),
+        )
         .route(
             "/api/library/backup",
             get(export_backup).post(import_backup),
@@ -265,6 +294,8 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
         .route("/api/play", post(play))
         .route("/api/play/{token}", delete(stop))
         .route("/api/play/{token}/progress", post(progress))
+        .route("/api/play/{token}/recover", post(recover))
+        .route("/api/play/{token}/next-season", get(next_season))
         .route("/api/play/{token}/danmaku", get(danmaku))
         .route("/media/{token}", get(video))
         .with_state(app);
@@ -314,6 +345,72 @@ async fn guard(request: Request, next: Next, authority: &str, origin: &str) -> R
 
 fn asset(content_type: &'static str, bytes: &'static [u8]) -> Response {
     ([(header::CONTENT_TYPE, content_type)], Body::from(bytes)).into_response()
+}
+
+#[derive(Deserialize)]
+struct DiscoveryQuery {
+    filters: BTreeMap<String, String>,
+    cursor: Option<Uuid>,
+}
+
+struct DiscoveryContinuation {
+    id: Uuid,
+    issued: Instant,
+    filters: BTreeMap<String, String>,
+    cursor: DiscoveryCursor,
+}
+
+#[derive(Serialize)]
+struct DiscoveryResponse {
+    items: Vec<Series>,
+    groups: Vec<DiscoveryGroup>,
+    next: Option<Uuid>,
+}
+
+async fn discovery(
+    State(app): State<App>,
+    Json(query): Json<DiscoveryQuery>,
+) -> ApiResult<Json<DiscoveryResponse>> {
+    if !valid_discovery_filters(&query.filters) {
+        return Err(ApiError::bad_request("筛选条件无效"));
+    }
+    let continuation = if let Some(id) = query.cursor {
+        let mut rows = app.discovery_cursors.lock().await;
+        rows.retain(|row| row.issued.elapsed() < Duration::from_secs(1800));
+        let row = rows
+            .iter()
+            .find(|row| row.id == id && row.filters == query.filters)
+            .ok_or_else(|| ApiError::bad_request("筛选续页已失效，请刷新结果"))?;
+        Some(row.cursor.clone())
+    } else {
+        None
+    };
+    let page = app
+        .social
+        .discover(&query.filters, continuation.as_ref())
+        .await
+        .map_err(ApiError::upstream)?;
+    let next = if let Some(cursor) = page.next {
+        let mut rows = app.discovery_cursors.lock().await;
+        let id = Uuid::new_v4();
+        if rows.len() >= 256 {
+            rows.pop_front();
+        }
+        rows.push_back(DiscoveryContinuation {
+            id,
+            issued: Instant::now(),
+            filters: query.filters,
+            cursor,
+        });
+        Some(id)
+    } else {
+        None
+    };
+    Ok(Json(DiscoveryResponse {
+        items: page.items,
+        groups: page.groups,
+        next,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -526,16 +623,36 @@ struct DetailResponse {
     resume: Option<PlaybackResume>,
 }
 
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ResumeSource {
+    #[default]
+    All,
+    Local,
+    Account,
+}
+
+#[derive(Deserialize)]
+struct DetailQuery {
+    #[serde(default)]
+    resume: ResumeSource,
+}
+
 async fn detail(
     State(app): State<App>,
     RoutePath(id): RoutePath<String>,
+    Query(query): Query<DetailQuery>,
 ) -> ApiResult<impl IntoResponse> {
     if !valid_id(&id) {
         return Err(ApiError::bad_request("剧集编号无效"));
     }
     let site = app.account_site().await;
     let detail = app.detail(&site, &id).await.map_err(ApiError::upstream)?;
-    let history = app.store.history_for(&id).map_err(ApiError::storage)?;
+    let history = if query.resume == ResumeSource::Account {
+        None
+    } else {
+        app.store.history_for(&id).map_err(ApiError::storage)?
+    };
     let has_full = detail.episodes.iter().any(|episode| episode.full);
     let available: Vec<_> = detail
         .episodes
@@ -560,12 +677,41 @@ async fn detail(
         .as_ref()
         .map_or(0, |entry| i64::try_from(entry.position).unwrap_or(i64::MAX));
     let completed = history.as_ref().is_some_and(|entry| entry.completed);
+    let cloud = if query.resume == ResumeSource::Local {
+        None
+    } else {
+        cloud_library::cached_resume(&app, &id).await
+    };
+    let (matched, position, completed) = cloud
+        .filter(|row| row.updated_at > 0 && position_is_newer(&history, row.updated_at))
+        .and_then(|row| {
+            let index = available
+                .iter()
+                .position(|episode| episode.full && episode.id == row.episode)
+                .or_else(|| {
+                    available
+                        .iter()
+                        .position(|episode| episode.full && episode.number == row.number)
+                })?;
+            Some((
+                Some(index),
+                i64::try_from(row.position).unwrap_or(i64::MAX),
+                row.completed,
+            ))
+        })
+        .unwrap_or((matched, position, completed));
     let resume =
         resume_target(available.len(), matched, position, completed).map(|target| PlaybackResume {
             episode: available[target.index].id.clone(),
             position: target.position,
         });
     Ok(Json(DetailResponse { detail, resume }))
+}
+
+fn position_is_newer(local: &Option<crate::library::History>, updated_at: u64) -> bool {
+    local
+        .as_ref()
+        .is_none_or(|entry| !entry.full_source || updated_at > entry.updated_at)
 }
 
 async fn related_works(
@@ -855,6 +1001,7 @@ struct Selection {
 
 #[derive(Serialize)]
 struct Playback {
+    recoverable: bool,
     token: Uuid,
     quality: u16,
     qualities: Vec<u16>,
@@ -880,6 +1027,7 @@ async fn play(
         .detail(&site, &selection.series)
         .await
         .map_err(ApiError::upstream)?;
+    let episode_count = detail.episodes.len();
     let episode = detail
         .episodes
         .into_iter()
@@ -924,23 +1072,117 @@ async fn play(
     if sessions.len() == MAX_SESSIONS {
         sessions.pop_front();
     }
+    let recoverable = media.can_recover(&source);
     sessions.push_back(Session {
         token,
         series: detail.series,
         episode: episode.id,
         number: episode.number,
+        episode_count,
+        account_revision: authorization,
+        last_cloud_upload: None,
         media: Arc::new(media),
+        source: source.clone(),
         scope: source.scope,
         cancel: CancellationToken::new(),
         last_sequence: 0,
         last_used: Instant::now(),
     });
     Ok(Json(Playback {
+        recoverable,
         token,
         quality: source.quality,
         qualities: source.qualities,
         scope: source.scope,
     }))
+}
+
+async fn recover(
+    State(app): State<App>,
+    RoutePath(token): RoutePath<Uuid>,
+) -> ApiResult<Json<Playback>> {
+    let _permit = app.prepares.try_acquire().map_err(|_| {
+        ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            "正在打开其他分集，请稍后重试".to_owned(),
+        )
+    })?;
+    let (media, source, cancel) = {
+        let sessions = app.sessions.lock().await;
+        let current = sessions
+            .iter()
+            .find(|row| row.token == token)
+            .ok_or_else(ApiError::gone)?;
+        (
+            current.media.clone(),
+            current.source.clone(),
+            current.cancel.clone(),
+        )
+    };
+    let media = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(ApiError::gone()),
+        result = media.recover(&source) => result.map_err(ApiError::upstream)?,
+    };
+    let mut sessions = app.sessions.lock().await;
+    let current = sessions
+        .iter()
+        .find(|row| row.token == token)
+        .ok_or_else(ApiError::gone)?;
+    if current.account_revision != app.account.authorization().await.0 {
+        return Err(ApiError::gone());
+    }
+    let next = Session {
+        token: Uuid::new_v4(),
+        series: current.series.clone(),
+        episode: current.episode.clone(),
+        number: current.number,
+        episode_count: current.episode_count,
+        account_revision: current.account_revision,
+        last_cloud_upload: current.last_cloud_upload,
+        media: Arc::new(media),
+        source,
+        scope: current.scope,
+        cancel: CancellationToken::new(),
+        last_sequence: 0,
+        last_used: Instant::now(),
+    };
+    let playback = Playback {
+        recoverable: false,
+        token: next.token,
+        quality: next.source.quality,
+        qualities: next.source.qualities.clone(),
+        scope: next.scope,
+    };
+    if sessions.len() == MAX_SESSIONS
+        && let Some(index) = sessions.iter().position(|row| row.token != token)
+    {
+        sessions.remove(index);
+    }
+    sessions.push_back(next);
+    Ok(Json(playback))
+}
+
+async fn next_season(
+    State(app): State<App>,
+    RoutePath(token): RoutePath<Uuid>,
+) -> ApiResult<Json<Option<hongguo_playback::social::RelatedWork>>> {
+    let (series, cancel) = {
+        let sessions = app.sessions.lock().await;
+        let current = sessions
+            .iter()
+            .find(|row| row.token == token)
+            .ok_or_else(ApiError::gone)?;
+        if current.number != current.episode_count || current.scope != PlaybackScope::Full {
+            return Ok(Json(None));
+        }
+        (current.series.clone(), current.cancel.clone())
+    };
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(ApiError::gone()),
+        result = app.social.next_season(&series) => result.map(Json).map_err(ApiError::upstream),
+    }
 }
 
 async fn stop(State(app): State<App>, RoutePath(token): RoutePath<Uuid>) -> StatusCode {
@@ -974,16 +1216,43 @@ async fn progress(
         session.number,
         session.scope,
     );
-    tokio::task::spawn_blocking(move || {
-        app.store
-            .record(&series, &episode, number, &position, scope)
-    })
-    .await
-    .context("无法保存播放进度")
-    .map_err(ApiError::storage)?
-    .map_err(ApiError::storage)?;
+    let upload = scope == PlaybackScope::Full
+        && position.sync
+        && position.position >= 500
+        && app
+            .store
+            .preferences()
+            .is_ok_and(|prefs| prefs.cloud_progress)
+        && (position.flush
+            || session
+                .last_cloud_upload
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(15)));
+    let row = upload.then(|| hongguo_playback::social::CloudProgress {
+        series: series.clone(),
+        episode: episode.clone(),
+        number,
+        position: position.position,
+        duration: position.duration,
+        completed: position.completed,
+        episode_count: session.episode_count,
+        updated_at: crate::library::now_ms(),
+    });
+    let store = app.store.clone();
+    tokio::task::spawn_blocking(move || store.record(&series, &episode, number, &position, scope))
+        .await
+        .context("无法保存播放进度")
+        .map_err(ApiError::storage)?
+        .map_err(ApiError::storage)?;
     session.last_sequence = sequence;
     session.last_used = Instant::now();
+    let revision = session.account_revision;
+    if row.is_some() {
+        session.last_cloud_upload = Some(session.last_used);
+    }
+    drop(sessions);
+    if let Some(row) = row {
+        cloud_library::queue_progress(app, revision, row).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

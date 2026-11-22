@@ -48,12 +48,10 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
     private val sleepTimer = SleepTimer { System.nanoTime() / 1_000_000 }
     var sleepLabel by mutableStateOf("定时关闭：关闭"); private set
     var frame by mutableStateOf(VideoFrameMode.fromStored(library.preference("frame", "FIT"))); private set
-    var rotation by mutableStateOf(0); private set
     fun sleep(minutes: Int) { sleepTimer.afterMinutes(minutes); sleepLabel = sleepTimer.label() }
     fun sleepEpisode() { sleepTimer.afterEpisodes(1); sleepLabel = sleepTimer.label() }
     fun cancelSleep() { sleepTimer.cancel(); sleepLabel = sleepTimer.label() }
     fun chooseFrame(value: VideoFrameMode) { frame = value; library.preference("frame", value.name); property("keepaspect", value != VideoFrameMode.FILL); property("panscan", if (value == VideoFrameMode.ZOOM) 1.0 else 0.0) }
-    fun rotate() { rotation = (rotation + 90) % 360; property("video-rotate", rotation) }
 
     fun resume(detail: Detail) {
         if (detail.episodes.isEmpty()) return
@@ -124,7 +122,6 @@ class DesktopPlayback(private val scope: CoroutineScope, private val repository:
                         property("speed", speed)
                         property("keepaspect", frame != VideoFrameMode.FILL)
                         property("panscan", if (frame == VideoFrameMode.ZOOM) 1.0 else 0.0)
-                        property("video-rotate", rotation)
                         presentationApplied = true
                     }
                     paused = !snapshot.playWhenReady

@@ -49,6 +49,7 @@ pub struct Ladder {
     scope: PlaybackScope,
 }
 
+#[derive(Clone)]
 pub struct SelectedSource {
     pub url: Url,
     pub backup_url: Option<Url>,
@@ -312,6 +313,25 @@ impl RemoteMp4 {
                 None => Err(primary),
             },
         }
+    }
+
+    pub fn can_recover(&self, source: &SelectedSource) -> bool {
+        source
+            .backup_url
+            .as_ref()
+            .is_some_and(|other| other != &self.url)
+    }
+
+    /// Open an independent decoder/range session for the same rendition's alternate file.
+    pub async fn recover(&self, source: &SelectedSource) -> Result<Self> {
+        let other = source
+            .backup_url
+            .as_ref()
+            .filter(|other| *other != &self.url)
+            .context("此画质暂无可用备用源")?;
+        Self::open_selected(self.client.clone(), other.clone(), source)
+            .await
+            .context("备用源暂时无法播放")
     }
 
     async fn open_selected(client: Client, url: Url, source: &SelectedSource) -> Result<Self> {

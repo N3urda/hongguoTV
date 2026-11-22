@@ -167,6 +167,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recovers_by_opening_an_independent_file_after_a_read_fails() {
+        use axum::response::IntoResponse;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let broken = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = broken.clone();
+        let primary = move |headers: HeaderMap| {
+            let failed = flag.load(Ordering::SeqCst);
+            async move {
+                if failed {
+                    StatusCode::SERVICE_UNAVAILABLE.into_response()
+                } else {
+                    mock_mp4_range(headers, *b"main")
+                }
+            }
+        };
+        let backup = |headers: HeaderMap| async move { mock_mp4_range(headers, *b"back") };
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let base = Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let router = axum::Router::new()
+            .route("/main", axum::routing::get(primary))
+            .route("/backup", axum::routing::get(backup));
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let source = SelectedSource {
+            url: base.join("main").unwrap(),
+            backup_url: Some(base.join("backup").unwrap()),
+            referer: None,
+            quality: 720,
+            qualities: vec![720],
+            scope: PlaybackScope::Full,
+            key: None,
+        };
+        let original = RemoteMp4::open_source(Client::new(), &source)
+            .await
+            .unwrap();
+        let tail = ByteRange { start: 60, end: 63 };
+        assert_eq!(
+            original
+                .read_range(tail)
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+            &b"main"[..]
+        );
+        assert!(original.can_recover(&source));
+        broken.store(true, Ordering::SeqCst);
+        assert!(original.read_range(tail).await.is_err());
+
+        let recovered = original.recover(&source).await.unwrap();
+        assert_eq!(
+            recovered
+                .read_range(tail)
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+            &b"back"[..]
+        );
+        assert!(!recovered.can_recover(&source));
+        assert!(original.read_range(tail).await.is_err());
+        task.abort();
+    }
+
+    fn mock_mp4_range(headers: HeaderMap, tail: [u8; 4]) -> Response {
+        let mut fixture = [0; 64];
+        fixture[4..8].copy_from_slice(b"ftyp");
+        fixture[60..].copy_from_slice(&tail);
+        let part = ByteRange::from_header(headers[header::RANGE].to_str().unwrap(), 64).unwrap();
+        Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_TYPE, "video/mp4")
+            .header(header::CONTENT_RANGE, part.content_range(64))
+            .body(Body::from(
+                fixture[part.start as usize..=part.end as usize].to_vec(),
+            ))
+            .unwrap()
+    }
+
+    #[tokio::test]
     async fn opens_authorized_backup_and_keeps_all_reads_on_that_file() {
         use std::sync::{
             Arc,

@@ -70,6 +70,8 @@ pub(crate) struct Preferences {
     pub(crate) frame: FrameMode,
     pub(crate) rotation: u16,
     pub(crate) auto_next: bool,
+    pub(crate) season_autoplay: bool,
+    pub(crate) cloud_progress: bool,
     pub(crate) danmaku: bool,
     pub(crate) danmaku_area: u16,
     pub(crate) danmaku_font: u16,
@@ -90,6 +92,8 @@ impl Default for Preferences {
             frame: FrameMode::Fit,
             rotation: 0,
             auto_next: true,
+            season_autoplay: false,
+            cloud_progress: false,
             danmaku: true,
             danmaku_area: 50,
             danmaku_font: 24,
@@ -172,6 +176,10 @@ pub struct WatchPosition {
     #[serde(default)]
     pub completed: bool,
     pub sequence: u64,
+    #[serde(default)]
+    pub sync: bool,
+    #[serde(default)]
+    pub flush: bool,
 }
 
 impl WatchPosition {
@@ -411,6 +419,8 @@ mod tests {
                         duration: 30000,
                         completed: false,
                         sequence: 1,
+                        sync: false,
+                        flush: false,
                     },
                     PlaybackScope::Full,
                 )
@@ -425,6 +435,8 @@ mod tests {
                         duration: 10000,
                         completed: false,
                         sequence: 1,
+                        sync: false,
+                        flush: false,
                     },
                     PlaybackScope::Preview,
                 )

@@ -3,7 +3,6 @@ import { danmakuOptions } from "./danmaku.js";
 // SPDX-License-Identifier: GPL-3.0-only
 export const speedSteps = [75, 100, 125, 150, 175, 200, 300];
 export const frameOptions = [["fit", "完整画面"], ["crop", "等比铺满"], ["stretch", "拉伸铺满"]];
-export const rotationOptions = [0, 90, 180, 270].map(degrees => [degrees, degrees + "°"]);
 
 export function settingsPage(signal, ui) {
   const { node, button } = ui;
@@ -250,9 +249,10 @@ function preferencePanel(panel, signal, ui, section) {
     rows.append(node("p", "meta quality-hint", "播放器根据官网为该分集提供的档位选流。"));
     row("speed", "默认播放倍速", speedSteps.map(rate => [rate, `${rate / 100}×`]));
     row("frame", "画面模式", frameOptions);
-    row("rotation", "画面旋转", rotationOptions);
     row("show_progress", "常驻播放进度");
     row("auto_next", "自动连播");
+    row("season_autoplay", "跨季自动连播");
+    row("cloud_progress", "同步正片进度到当前红果账户");
     row("danmaku", "时间轴弹幕");
     for (const [key, label, options] of danmakuOptions) row(key, label, options);
   }

@@ -293,7 +293,6 @@ private fun CatalogToolbar(state: DesktopState, discovery: Boolean) {
                 TextButton(onClick = { settingsMenu = true }) { Text("画面 / 定时关闭") }
                 DropdownMenu(settingsMenu, { settingsMenu = false }) {
                     VideoFrameMode.entries.forEach { mode -> DropdownMenuItem(text = { Text(mode.label) }, onClick = { player.chooseFrame(mode); settingsMenu = false }) }
-                    DropdownMenuItem(text = { Text("旋转 90°") }, onClick = { player.rotate(); settingsMenu = false })
                     listOf(15, 30, 60).forEach { minutes -> DropdownMenuItem(text = { Text("$minutes 分钟后停止") }, onClick = { player.sleep(minutes); settingsMenu = false }) }
                     DropdownMenuItem(text = { Text("播完本集停止") }, onClick = { player.sleepEpisode(); settingsMenu = false })
                     DropdownMenuItem(text = { Text("取消定时关闭") }, onClick = { player.cancelSleep(); settingsMenu = false })

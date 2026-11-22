@@ -24,6 +24,15 @@ use crate::{
     web::Series,
 };
 
+#[path = "cloud_library.rs"]
+mod cloud_library;
+#[path = "discovery.rs"]
+mod discovery;
+pub use discovery::{DiscoveryCursor, DiscoveryGroup, valid_discovery_filters};
+#[path = "seasons.rs"]
+mod seasons;
+pub use cloud_library::{CloudFavorite, CloudProgress};
+
 const ACCOUNT_ORIGIN: &str = "https://api5-normal-sinfonlinea.fqnovel.com";
 const COMMENTS_ORIGIN: &str = "https://api5-normal-sinfonlineb.fqnovel.com";
 const MAX_DURATION: u64 = 86_400_000;
@@ -145,6 +154,11 @@ impl Social {
             }
         }
         bail!("相关作品暂时无法加载，请重试")
+    }
+
+    pub async fn next_season(&self, current: &Series) -> Result<Option<RelatedWork>> {
+        let related = self.related(&current.id).await?;
+        Ok(seasons::following(current, &related).cloned())
     }
 
     pub async fn reservations(
