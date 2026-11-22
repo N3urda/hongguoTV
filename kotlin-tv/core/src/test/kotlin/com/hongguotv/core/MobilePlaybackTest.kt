@@ -4,6 +4,7 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.util.zip.GZIPInputStream
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
@@ -105,6 +106,43 @@ class MobilePlaybackTest {
         for (parameter in listOf("iid", "device_id", "cdid")) {
             assertEquals(requests[0].url.queryParameter(parameter), requests[1].url.queryParameter(parameter))
         }
+        val recovery = requests[1]
+        for (parameter in listOf("version_name", "version_code", "channel", "device_type", "os_version")) {
+            assertEquals(requests[0].url.queryParameter(parameter), recovery.url.queryParameter(parameter))
+        }
+        // The previous fallback passed all response fixtures while still emitting v3 signatures.
+        val ts = recovery.header("x-khronos")!!.toInt()
+        val medusa = decode64(recovery.header("x-medusa")!!)
+        assertEquals(5, medusa.i32(0, true) xor ts)
+        assertEquals(0, Signer(mobileV5 = true).branch(recovery.url.encodedQuery!!, ByteArray(0), ts))
+        assertNull(recovery.body)
+        for (header in listOf("Cookie", "Content-Encoding", "Content-Type", "x-ss-stub", "x-argus", "x-gorgon")) {
+            assertNull(header, recovery.header(header))
+        }
+    }
+
+    @Test fun videoTabSignsTheFinalEpisodeQueryWithEmptyBytesAndHonorsCancellation() {
+        val request = MobilePlayback.videoTabRequest("123", device, "example.test", 1000,
+            MobilePlaybackSigner { url, bytes, identity ->
+                assertTrue(bytes.isEmpty())
+                assertEquals(device, identity)
+                val parsed = url.toHttpUrl()
+                assertEquals("123", parsed.queryParameter("video_id"))
+                assertEquals("", parsed.queryParameter("from_video_id"))
+                MobileSignedRequest(parsed.newBuilder().setQueryParameter("_rticket", "1001").build().toString(),
+                    mapOf("x-medusa" to "signed-query", "x-ss-stub" to "empty-body-digest"))
+            }).build()
+        assertEquals("1001", request.url.queryParameter("_rticket"))
+        assertEquals("signed-query", request.header("x-medusa"))
+        assertNull(request.header("x-ss-stub"))
+
+        val scope = RequestScope()
+        val requests = mutableListOf<Request>()
+        val repo = repositoryWithModels("", requests = requests)
+        assertThrows(IOException::class.java) {
+            scope.run { repo.streamLadderWithCompatibility("123", onPrimaryEmpty = scope::cancel) }
+        }
+        assertEquals(listOf("POST"), requests.map { it.method })
     }
 
     @Test fun bothEmptyModelsRetainResponseDiagnosticsForRecovery() {
