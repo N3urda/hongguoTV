@@ -8,7 +8,11 @@ internal object TimedCommentWindows {
     fun next(pages: List<JSONObject>, position: Long, duration: Long): Long? {
         var cursor = ((position - 12000).coerceAtLeast(0) / 30000) * 30000
         val until = minOf(duration, position + 10000)
-        val ranges = pages.map { it.getLong("startMS") to it.getLong("nextMS") }
+        val ranges = pages.mapNotNull { page ->
+            if (page.has("durationMS") && page.optLong("durationMS") != duration) return@mapNotNull null
+            val end = if (page.optBoolean("hasMore", true)) page.getLong("nextMS") else duration
+            page.getLong("startMS") to minOf(end, duration)
+        }
         while (cursor < until) {
             val coveredUntil = ranges.filter { it.first <= cursor && it.second > cursor }
                 .maxOfOrNull { it.second } ?: return cursor

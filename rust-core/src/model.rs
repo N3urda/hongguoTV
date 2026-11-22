@@ -73,6 +73,7 @@ impl PlaybackModel {
         let root = decode_json(bytes)?;
         check_status(&root)?;
         let data = root.get("data").ok_or(ModelError::InvalidResponse)?;
+        check_status(data)?;
         Self::from_batch_entry(data.get("1004").unwrap_or(data), episode)
     }
 
@@ -89,7 +90,7 @@ impl PlaybackModel {
     }
 
     fn from_batch_entry(entries: &Value, episode: &str) -> Result<Self, ModelError> {
-        let entry = entries.get(episode).ok_or(ModelError::EpisodeMissing)?;
+        let entry = batch_entry(entries, episode)?;
         check_status(entry)?;
         Self::from_value(
             entry
@@ -118,7 +119,7 @@ impl PlaybackModel {
             }
             data
         } else {
-            entries.get(episode).ok_or(ModelError::EpisodeMissing)?
+            batch_entry(entries, episode)?
         };
         check_status(entry)?;
         object_model(entry.get("video_model").unwrap_or(entry)).map(Cow::into_owned)
@@ -155,6 +156,11 @@ impl PlaybackModel {
         }
         Ok(Self { variants })
     }
+}
+
+fn batch_entry<'a>(entries: &'a Value, episode: &str) -> Result<&'a Value, ModelError> {
+    check_status(entries)?;
+    entries.get(episode).ok_or(ModelError::EpisodeMissing)
 }
 
 fn object_model(value: &Value) -> Result<Cow<'_, Value>, ModelError> {
@@ -397,13 +403,30 @@ mod tests {
     #[test]
     fn rejects_service_errors_before_using_any_sources() {
         let good = json!({"video_list": [{"main_url": "https://media.example/a.mp4"}]});
-        for (root_code, entry_code, expected) in [(403, 0, 403), (0, 401, 401)] {
-            let bytes = serde_json::to_vec(&json!({"code": root_code, "data": {
-                "200": {"code": entry_code, "video_model": good}
-            }}))
-            .unwrap();
-            assert!(
-                matches!(PlaybackModel::decode_response(&bytes, "200"), Err(ModelError::Rejected(code)) if code == expected)
+        let entry = json!({"video_model": good});
+        for (payload, expected) in [
+            (
+                json!({"code": 403, "data": {"200": entry}}),
+                ModelError::Rejected(403),
+            ),
+            (
+                json!({"data": {"code": "402", "200": entry}}),
+                ModelError::Rejected(402),
+            ),
+            (
+                json!({"data": {"1004": {"code": 401, "200": entry}}}),
+                ModelError::Rejected(401),
+            ),
+            (
+                json!({"data": {"200": {"code": 404, "video_model": good}}}),
+                ModelError::Rejected(404),
+            ),
+            (json!({"data": {"1004": []}}), ModelError::InvalidResponse),
+            (json!({"data": {"1004": {}}}), ModelError::EpisodeMissing),
+        ] {
+            assert_eq!(
+                PlaybackModel::decode_response(&serde_json::to_vec(&payload).unwrap(), "200").err(),
+                Some(expected)
             );
         }
         assert!(matches!(

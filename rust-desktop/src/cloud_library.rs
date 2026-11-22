@@ -179,10 +179,10 @@ pub(super) async fn cloud_favorite(
     ensure_current(&app, revision).await?;
     writes.1.insert(choice.id.clone(), choice.saved);
     if let Err(error) = request.submit().await
-        && error.is::<ProviderRejection>()
+        && error.is_explicit_rejection()
     {
         writes.1.remove(&choice.id);
-        return Err(ApiError::upstream(error));
+        return Err(ApiError::upstream(error.into()));
     }
     for attempt in 0..2 {
         if attempt == 1 {
@@ -265,7 +265,7 @@ async fn drain_progress(app: App) {
                 app.store.preferences()?.cloud_progress,
                 "观看进度同步已关闭"
             );
-            request.submit().await
+            request.submit().await.map_err(anyhow::Error::from)
         }
         .await;
         if revision != app.account.authorization().await.0 {

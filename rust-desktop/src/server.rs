@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use hongguo_playback::resume_target;
 use hongguo_playback::social::{
-    DanmakuPage, DiscoveryCursor, DiscoveryGroup, ProviderRejection, Reservation, Social,
+    Danmaku, DanmakuCursor, DiscoveryCursor, DiscoveryGroup, Reservation, Social,
     valid_discovery_filters,
 };
 use hongguo_playback::source::{
@@ -87,6 +87,7 @@ struct Session {
     episode_count: usize,
     account_revision: Uuid,
     last_cloud_upload: Option<Instant>,
+    danmaku_cursors: VecDeque<(Uuid, DanmakuCursor)>,
     media: Arc<RemoteMp4>,
     source: SelectedSource,
     scope: PlaybackScope,
@@ -157,7 +158,12 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
         .map(|path| AuthorizedSources::load(Path::new(&path)))
         .transpose()?
         .unwrap_or_default();
-    let registered = Arc::new(hongguo_playback::registered::RegisteredSource::new()?);
+    let store = Arc::new(LibraryStore::open(data_dir)?);
+    let registered = hongguo_playback::registered::RegisteredSource::new()?;
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let registered =
+        registered.with_profile_store(crate::vault::AnonymousProfileVault::new(data_dir));
+    let registered = Arc::new(registered);
     let app = App {
         social: Arc::new(Social::new(registered.clone())?),
         discovery_cursors: Arc::default(),
@@ -165,7 +171,7 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
         registered,
         reservation_writes: Arc::new(Mutex::new((Uuid::nil(), HashMap::new()))),
         site: Site::new().context("无法初始化官网连接")?,
-        store: Arc::new(LibraryStore::open(data_dir)?),
+        store,
         account: Arc::new(Account::new(data_dir)?),
         sources: Arc::new(sources),
         full_media: authorized_media_client()?,
@@ -356,7 +362,6 @@ struct DiscoveryQuery {
 struct DiscoveryContinuation {
     id: Uuid,
     issued: Instant,
-    filters: BTreeMap<String, String>,
     cursor: DiscoveryCursor,
 }
 
@@ -379,7 +384,7 @@ async fn discovery(
         rows.retain(|row| row.issued.elapsed() < Duration::from_secs(1800));
         let row = rows
             .iter()
-            .find(|row| row.id == id && row.filters == query.filters)
+            .find(|row| row.id == id && row.cursor.matches_filters(&query.filters))
             .ok_or_else(|| ApiError::bad_request("筛选续页已失效，请刷新结果"))?;
         Some(row.cursor.clone())
     } else {
@@ -399,7 +404,6 @@ async fn discovery(
         rows.push_back(DiscoveryContinuation {
             id,
             issued: Instant::now(),
-            filters: query.filters,
             cursor,
         });
         Some(id)
@@ -820,9 +824,9 @@ async fn reserve(
                 states.insert(selection.id.clone(), ReservationStatus::Submitted);
                 ReservationStatus::Submitted
             }
-            Err(error) if error.is::<ProviderRejection>() => {
+            Err(error) if error.is_explicit_rejection() => {
                 states.remove(&selection.id);
-                return Err(ApiError::upstream(error));
+                return Err(ApiError::upstream(error.into()));
             }
             Err(_) => ReservationStatus::Unknown,
         });
@@ -851,37 +855,82 @@ async fn reserve(
 struct DanmakuQuery {
     start: u64,
     duration: u64,
-    #[serde(default)]
-    cursor: String,
+    cursor: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct DanmakuResponse {
+    next_ms: u64,
+    next_cursor: Option<Uuid>,
+    items: Vec<Danmaku>,
 }
 
 async fn danmaku(
     State(app): State<App>,
     RoutePath(token): RoutePath<Uuid>,
     Query(query): Query<DanmakuQuery>,
-) -> ApiResult<Json<DanmakuPage>> {
-    if query.start >= query.duration || query.duration > 86_400_000 || query.cursor.len() > 16_384 {
+) -> ApiResult<Json<DanmakuResponse>> {
+    if query.start >= query.duration || query.duration > 86_400_000 {
         return Err(ApiError::bad_request("弹幕请求范围无效"));
     }
-    let (series, episode, cancel) = {
+    let (series, episode, cancel, cursor) = {
         let sessions = app.sessions.lock().await;
         let session = sessions
             .iter()
             .find(|row| row.token == token && row.last_used.elapsed().as_secs() < 3600)
             .ok_or_else(ApiError::gone)?;
+        let cursor = if let Some(id) = query.cursor {
+            let (_, cursor) = session
+                .danmaku_cursors
+                .iter()
+                .find(|(key, cursor)| {
+                    *key == id
+                        && cursor.matches_position(
+                            &session.series.id,
+                            &session.episode,
+                            query.start,
+                            query.duration,
+                        )
+                })
+                .ok_or_else(|| ApiError::bad_request("弹幕续页已失效"))?;
+            Some(cursor.clone())
+        } else {
+            None
+        };
         (
             session.series.id.clone(),
             session.episode.clone(),
             session.cancel.clone(),
+            cursor,
         )
     };
-    tokio::select! {
+    let page = tokio::select! {
         biased;
-        _ = cancel.cancelled() => Err(ApiError::gone()),
-        page = app.social.danmaku(&series, &episode, query.start, query.duration, &query.cursor) => {
-            page.map(Json).map_err(ApiError::upstream)
+        _ = cancel.cancelled() => return Err(ApiError::gone()),
+        page = app.social.danmaku(&series, &episode, query.start, query.duration, cursor.as_ref()) => {
+            page.map_err(ApiError::upstream)?
         }
-    }
+    };
+    let next_cursor = if let Some(cursor) = page.next_cursor {
+        let mut sessions = app.sessions.lock().await;
+        let session = sessions
+            .iter_mut()
+            .find(|row| row.token == token)
+            .ok_or_else(ApiError::gone)?;
+        let id = Uuid::new_v4();
+        if session.danmaku_cursors.len() >= 8 {
+            session.danmaku_cursors.pop_front();
+        }
+        session.danmaku_cursors.push_back((id, cursor));
+        Some(id)
+    } else {
+        None
+    };
+    Ok(Json(DanmakuResponse {
+        next_ms: page.next_ms,
+        next_cursor,
+        items: page.items,
+    }))
 }
 
 async fn library(State(app): State<App>) -> ApiResult<impl IntoResponse> {
@@ -1045,7 +1094,7 @@ async fn play(
                 .registered
                 .ladder(&episode.id)
                 .await
-                .map_err(ApiError::upstream)?,
+                .map_err(|error| ApiError::upstream(error.into()))?,
         },
         PlaybackScope::Preview => site
             .public_media(&selection.series, &episode.id)
@@ -1081,6 +1130,7 @@ async fn play(
         episode_count,
         account_revision: authorization,
         last_cloud_upload: None,
+        danmaku_cursors: VecDeque::new(),
         media: Arc::new(media),
         source: source.clone(),
         scope: source.scope,
@@ -1140,6 +1190,7 @@ async fn recover(
         episode_count: current.episode_count,
         account_revision: current.account_revision,
         last_cloud_upload: current.last_cloud_upload,
+        danmaku_cursors: VecDeque::new(),
         media: Arc::new(media),
         source,
         scope: current.scope,

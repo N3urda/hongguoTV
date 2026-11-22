@@ -121,4 +121,29 @@ class TimedCommentsTest {
             fail("non-advancing window accepted")
         } catch (_: IllegalArgumentException) {}
     }
+
+    @Test
+    fun emptyWindowsCanContinueAndExplicitEndStopsWithoutTimestamp() {
+        fun page(hasMore: Boolean, extra: JSONObject) = JSONObject().put("code", 0).put(
+            "data", JSONObject().put("data_list", JSONArray()).put("extra", extra)
+                .put("common_list_info", JSONObject().put("has_more", hasMore).put("cursor", "next")),
+        )
+        val empty = TimedComments.parse(
+            page(true, JSONObject().put("next_query_danmaku_list_time", 30000)),
+            "123456", "234567", 0, 90000,
+        )
+        assertEquals(0, empty.getJSONArray("items").length())
+        assertEquals("next", TimedComments.continuation(empty, "123456", "234567", 30000, 90000))
+        assertNull(TimedComments.continuation(empty, "123456", "456789", 30000, 90000))
+        assertNull(TimedComments.continuation(empty, "123456", "234567", 20000, 90000))
+        assertNull(TimedComments.continuation(empty, "123456", "234567", 30000, 80000))
+
+        val end = TimedComments.parse(page(false, JSONObject()), "123456", "234567", 30000, 90000)
+        assertEquals(90000L, end.getLong("nextMS"))
+        assertFalse(end.getBoolean("hasMore"))
+        assertEquals("", end.getString("nextCursor"))
+        assertThrows(IllegalArgumentException::class.java) {
+            TimedComments.parse(page(true, JSONObject()), "123456", "234567", 30000, 90000)
+        }
+    }
 }

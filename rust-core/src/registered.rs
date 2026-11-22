@@ -5,9 +5,9 @@
 use crate::{
     crypto,
     model::{ModelError, PlaybackModel},
-    source::{Ladder, read_limited, valid_id},
+    source::{Ladder, ResponseReadError, read_response_limited, valid_id},
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::Context;
 use flate2::{Compression, write::GzEncoder};
 use rand::RngCore;
 use reqwest::{
@@ -18,12 +18,16 @@ use reqwest::{
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    io::Write,
+    fmt,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{sync::Mutex, time::Instant};
 use uuid::Uuid;
+
+mod profile;
+pub use profile::DeviceProfileStore;
+use profile::ProfileStorage;
 
 const REGISTER: &str = "https://log5-applog-lf.fqnovel.com/service/2/device_register/?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1";
 const TAB: &str =
@@ -31,6 +35,66 @@ const TAB: &str =
 const MODEL: &str = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_model/v1/";
 const UA: &str = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)";
 const LIMIT: usize = 2 * 1024 * 1024;
+
+/// Failures while obtaining a registered playback model, before opening the media.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum PlaybackError {
+    InvalidEpisode,
+    Timeout,
+    Network,
+    HttpStatus(u16),
+    RetryLater,
+    EmptyResponse,
+    ResponseTooLarge,
+    DeviceUnavailable,
+    InvalidDeviceResponse,
+    Preparation,
+    Model(ModelError),
+}
+
+impl fmt::Display for PlaybackError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidEpisode => f.write_str("分集编号无效"),
+            Self::Timeout => f.write_str("注册源取流超时，请稍后重试"),
+            Self::Network => f.write_str("连接注册源失败，请检查网络后重试"),
+            Self::HttpStatus(status) => write!(f, "注册源请求失败（HTTP {status}）"),
+            Self::RetryLater => f.write_str("注册源要求稍后重试"),
+            Self::EmptyResponse => f.write_str("注册源返回空响应，请稍后重试"),
+            Self::ResponseTooLarge => f.write_str("注册源响应超过大小限制"),
+            Self::DeviceUnavailable => f.write_str("播放设备注册暂不可用，请稍后重试"),
+            Self::InvalidDeviceResponse => f.write_str("播放设备注册响应无效"),
+            Self::Preparation => f.write_str("无法准备注册源请求"),
+            Self::Model(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for PlaybackError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Model(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<ModelError> for PlaybackError {
+    fn from(error: ModelError) -> Self {
+        Self::Model(error)
+    }
+}
+
+impl PlaybackError {
+    fn from_request(error: reqwest::Error) -> Self {
+        if error.is_timeout() {
+            Self::Timeout
+        } else {
+            Self::Network
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Device {
@@ -44,6 +108,7 @@ struct Session {
     device: Option<Arc<Device>>,
     empty_rounds: u8,
     retry_after: Option<Instant>,
+    storage: ProfileStorage,
 }
 
 /// Registers lazily on foreground playback; concurrent requests share the identity.
@@ -59,7 +124,7 @@ pub struct RegisteredSource {
     signer: crate::v5::Signer,
 }
 impl RegisteredSource {
-    pub fn new() -> Result<Self> {
+    pub fn new() -> anyhow::Result<Self> {
         let client = Client::builder()
             .https_only(true)
             .redirect(redirect::Policy::none())
@@ -81,37 +146,51 @@ impl RegisteredSource {
             signer: crate::v5::Signer::new(now_ms()),
         })
     }
-    pub async fn ladder(&self, episode: &str) -> Result<Ladder> {
-        ensure!(valid_id(episode), "分集编号无效");
+
+    /// Enables lazy restore and best-effort persistence of the anonymous device.
+    /// Build one source per application so the identity and writes are shared.
+    pub fn with_profile_store(mut self, store: impl DeviceProfileStore + 'static) -> Self {
+        self.session.get_mut().storage = ProfileStorage::Unread(Arc::new(store));
+        self
+    }
+
+    pub async fn ladder(&self, episode: &str) -> Result<Ladder, PlaybackError> {
+        if !valid_id(episode) {
+            return Err(PlaybackError::InvalidEpisode);
+        }
         tokio::time::timeout(Duration::from_secs(12), self.resolve(episode))
             .await
-            .map_err(|_| anyhow::anyhow!("注册源取流超时，请稍后重试"))?
+            .map_err(|_| PlaybackError::Timeout)?
     }
-    pub(crate) async fn identity(&self) -> Result<Arc<Device>> {
+    pub(crate) async fn identity(&self) -> Result<Arc<Device>, PlaybackError> {
         let mut state = self.session.lock().await;
+        if state.device.is_none()
+            && let Some(device) = state.storage.restore().await
+        {
+            state.device = Some(device);
+        }
         let cooling = state.retry_after.is_some_and(|at| Instant::now() < at);
         if let Some(device) = &state.device {
             if state.empty_rounds < 2 || cooling {
                 return Ok(device.clone());
             }
         } else if cooling {
-            bail!("播放设备注册暂不可用，请稍后重试");
+            return Err(PlaybackError::DeviceUnavailable);
         }
         // Set before await so cancellation cannot create an unbounded registration loop.
         state.retry_after = Some(Instant::now() + Duration::from_secs(30));
         let fresh = Arc::new(self.register().await?);
         state.device = Some(fresh.clone());
         state.empty_rounds = 0;
+        state.storage.save(&fresh);
         Ok(fresh)
     }
-    async fn register(&self) -> Result<Device> {
+    async fn register(&self) -> Result<Device, PlaybackError> {
         let now = now_ms();
         let json = registration_payload(now);
-        let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
-        gzip.write_all(&serde_json::to_vec(&json)?)?;
         let mut random = [0; 32];
         rand::rngs::OsRng.fill_bytes(&mut random);
-        let body = crypto::tt_encrypt(&gzip.finish()?, &random);
+        let body = crypto::tt_encrypt(&gzip_json(&json)?, &random);
         let response = self
             .client
             .post(self.register_url.clone())
@@ -131,26 +210,21 @@ impl RegisteredSource {
             .body(body)
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("播放设备注册连接失败"))?;
+            .map_err(PlaybackError::from_request)?;
         let cookie = registration_cookie(response.headers());
-        let bytes = response_bytes(response)
-            .await
-            .context("播放设备注册失败，请稍后重试")?;
+        let bytes = response_bytes(response).await?;
         let value: Value =
-            serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("播放设备注册响应无效"))?;
+            serde_json::from_slice(&bytes).map_err(|_| PlaybackError::InvalidDeviceResponse)?;
         let mut device = parse_device(&value)?;
         device.cookie = cookie;
         Ok(device)
     }
-    async fn resolve(&self, episode: &str) -> Result<Ladder> {
+    async fn resolve(&self, episode: &str) -> Result<Ladder, PlaybackError> {
         let device = self.identity().await?;
         let result = if let Some(url) = &self.mobile_url {
             match self.fetch_mobile(url.clone(), episode, &device).await {
-                Err(error) if error.is::<EmptyResponse>() => self.fetch_tab(episode, &device).await,
-                Err(error)
-                    if error.downcast_ref::<ModelError>()
-                        == Some(&ModelError::NoPlayableSource) =>
-                {
+                Err(PlaybackError::EmptyResponse) => self.fetch_tab(episode, &device).await,
+                Err(PlaybackError::Model(ModelError::NoPlayableSource)) => {
                     self.fetch(episode, &device).await
                 }
                 result => result,
@@ -166,7 +240,7 @@ impl RegisteredSource {
         {
             match &result {
                 Ok(_) => state.empty_rounds = 0,
-                Err(error) if error.is::<EmptyResponse>() => {
+                Err(PlaybackError::EmptyResponse) => {
                     state.empty_rounds = state.empty_rounds.saturating_add(1)
                 }
                 _ => state.empty_rounds = 0,
@@ -179,13 +253,14 @@ impl RegisteredSource {
         mut url: Url,
         episode: &str,
         device: &Device,
-    ) -> Result<PlaybackModel> {
+    ) -> Result<PlaybackModel, PlaybackError> {
         let values = mobile_query(device);
         let payload = json!({"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":[episode]},"dr_scene":"player"});
-        let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
-        gzip.write_all(&serde_json::to_vec(&payload)?)?;
-        let body = gzip.finish()?;
-        let (query, headers) = self.signer.sign(&values, &body, now_ms())?;
+        let body = gzip_json(&payload)?;
+        let (query, headers) = self
+            .signer
+            .sign(&values, &body, now_ms())
+            .map_err(|_| PlaybackError::Preparation)?;
         url.set_query(Some(&query));
         let mut request=self.client.post(url)
             .header("User-Agent","com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)")
@@ -198,14 +273,16 @@ impl RegisteredSource {
             .body(body)
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("移动播放模型连接失败"))?;
-        let bytes = response_bytes(response)
-            .await
-            .context("播放信息读取失败，请稍后重试")?;
+            .map_err(PlaybackError::from_request)?;
+        let bytes = response_bytes(response).await?;
         PlaybackModel::decode_response(&bytes, episode).map_err(Into::into)
     }
 
-    async fn fetch_tab(&self, episode: &str, device: &Device) -> Result<PlaybackModel> {
+    async fn fetch_tab(
+        &self,
+        episode: &str,
+        device: &Device,
+    ) -> Result<PlaybackModel, PlaybackError> {
         let mut values = mobile_query(device);
         values.extend(
             [
@@ -222,7 +299,10 @@ impl RegisteredSource {
             .map(|(key, value)| (key.to_owned(), value.to_owned())),
         );
         // The empty body is used for the v5 digest only. No POST headers go on the wire.
-        let (query, mut headers) = self.signer.sign(&values, &[], now_ms())?;
+        let (query, mut headers) = self
+            .signer
+            .sign(&values, &[], now_ms())
+            .map_err(|_| PlaybackError::Preparation)?;
         headers.remove("x-ss-stub");
         let mut url = self.tab_url.clone();
         url.set_query(Some(&query));
@@ -233,17 +313,12 @@ impl RegisteredSource {
         for (key, value) in headers {
             request = request.header(key, value);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|_| anyhow::anyhow!("备用播放模型连接失败"))?;
-        let bytes = response_bytes(response)
-            .await
-            .context("备用播放信息读取失败")?;
+        let response = request.send().await.map_err(PlaybackError::from_request)?;
+        let bytes = response_bytes(response).await?;
         PlaybackModel::decode_tab_response(&bytes, episode).map_err(Into::into)
     }
 
-    async fn fetch(&self, episode: &str, device: &Device) -> Result<PlaybackModel> {
+    async fn fetch(&self, episode: &str, device: &Device) -> Result<PlaybackModel, PlaybackError> {
         let now = now_ms();
         let query = playback_query(device, now);
         let body=format!("{{\"biz_param\":{{\"need_all_video_definition\":true,\"video_platform\":3}},\"content_type\":1,\"video_id\":\"{episode}\"}}").into_bytes();
@@ -265,28 +340,26 @@ impl RegisteredSource {
             .body(body)
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("注册源播放信息连接失败"))?;
-        let bytes = response_bytes(response)
-            .await
-            .context("播放信息读取失败，请稍后重试")?;
+            .map_err(PlaybackError::from_request)?;
+        let bytes = response_bytes(response).await?;
         let model = PlaybackModel::single_model(&bytes, episode)?;
         match PlaybackModel::from_value(&model) {
             Ok(model) => Ok(model),
-            Err(ModelError::NoPlayableSource | ModelError::InvalidResponse) => {
-                let url = fallback_url(&model).context("没有可播放的视频资源")?;
+            Err(error @ (ModelError::NoPlayableSource | ModelError::InvalidResponse)) => {
+                let url = fallback_url(&model).ok_or(error)?;
                 let response = self
                     .client
                     .get(url)
                     .send()
                     .await
-                    .map_err(|_| anyhow::anyhow!("兼容播放信息连接失败"))?;
+                    .map_err(PlaybackError::from_request)?;
                 let bytes = response_bytes(response).await?;
-                let root: Value = serde_json::from_slice(&bytes)
-                    .map_err(|_| anyhow::anyhow!("兼容播放信息格式异常"))?;
+                let root: Value =
+                    serde_json::from_slice(&bytes).map_err(|_| ModelError::InvalidResponse)?;
                 crate::model::check_status(&root)?;
                 let info = root
                     .pointer("/video_info/data")
-                    .context("没有兼容播放模型")?;
+                    .ok_or(ModelError::InvalidResponse)?;
                 PlaybackModel::from_value(info).map_err(Into::into)
             }
             Err(error) => Err(error.into()),
@@ -313,27 +386,31 @@ fn mobile_query(device: &Device) -> Vec<(String, String)> {
     .collect()
 }
 
-#[derive(Debug)]
-struct EmptyResponse;
-impl std::fmt::Display for EmptyResponse {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("注册源返回空响应，请稍后重试")
-    }
+fn gzip_json(value: &Value) -> Result<Vec<u8>, PlaybackError> {
+    use std::io::Write;
+    let bytes = serde_json::to_vec(value).map_err(|_| PlaybackError::Preparation)?;
+    let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
+    gzip.write_all(&bytes)
+        .map_err(|_| PlaybackError::Preparation)?;
+    gzip.finish().map_err(|_| PlaybackError::Preparation)
 }
-impl std::error::Error for EmptyResponse {}
-async fn response_bytes(response: reqwest::Response) -> Result<Vec<u8>> {
-    ensure!(
-        response.status().is_success(),
-        "注册源请求失败（HTTP {}）",
-        response.status().as_u16()
-    );
-    ensure!(
-        !response.headers().contains_key("retry-after"),
-        "注册源要求稍后重试"
-    );
-    let bytes = read_limited(response, LIMIT).await?;
+
+async fn response_bytes(response: reqwest::Response) -> Result<Vec<u8>, PlaybackError> {
+    if !response.status().is_success() {
+        return Err(PlaybackError::HttpStatus(response.status().as_u16()));
+    }
+    if response.headers().contains_key("retry-after") {
+        return Err(PlaybackError::RetryLater);
+    }
+    let bytes = read_response_limited(response, LIMIT)
+        .await
+        .map_err(|error| match error {
+            ResponseReadError::TooLarge => PlaybackError::ResponseTooLarge,
+            ResponseReadError::Timeout => PlaybackError::Timeout,
+            ResponseReadError::Network => PlaybackError::Network,
+        })?;
     if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Err(EmptyResponse.into());
+        return Err(PlaybackError::EmptyResponse);
     }
     Ok(bytes)
 }
@@ -343,9 +420,12 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
-fn parse_device(value: &Value) -> Result<Device> {
-    crate::model::check_status(value)?;
-    let id = |name: &str| -> Result<String> {
+fn parse_device(value: &Value) -> Result<Device, PlaybackError> {
+    crate::model::check_status(value).map_err(|error| match error {
+        ModelError::InvalidResponse => PlaybackError::InvalidDeviceResponse,
+        error => error.into(),
+    })?;
+    let id = |name: &str| -> Result<String, PlaybackError> {
         let v = value
             .get(format!("{name}_str"))
             .filter(|v| v.as_str().is_some_and(|s| !s.is_empty()))
@@ -355,10 +435,9 @@ fn parse_device(value: &Value) -> Result<Device> {
             Some(Value::Number(n)) => n.to_string(),
             _ => String::new(),
         };
-        ensure!(
-            valid_id(&text) && text.bytes().any(|b| b != b'0'),
-            "注册源没有返回有效设备身份"
-        );
+        if !valid_device_id(&text) {
+            return Err(PlaybackError::InvalidDeviceResponse);
+        }
         Ok(text)
     };
     Ok(Device {
@@ -368,6 +447,18 @@ fn parse_device(value: &Value) -> Result<Device> {
         cookie: None,
     })
 }
+
+fn valid_device_id(value: &str) -> bool {
+    valid_id(value) && value.bytes().any(|b| b != b'0')
+}
+
+fn is_anonymous_cookie(name: &str) -> bool {
+    matches!(
+        name,
+        "install_id" | "ttreq" | "store-region" | "store-region-src"
+    )
+}
+
 fn registration_cookie(headers: &HeaderMap) -> Option<HeaderValue> {
     let mut cookies = BTreeMap::new();
     for header in headers.get_all(SET_COOKIE) {
@@ -376,10 +467,7 @@ fn registration_cookie(headers: &HeaderMap) -> Option<HeaderValue> {
                 .split(';')
                 .next()
                 .and_then(|part| part.split_once('='))
-            && matches!(
-                name,
-                "install_id" | "ttreq" | "store-region" | "store-region-src"
-            )
+            && is_anonymous_cookie(name)
         {
             cookies.insert(name, value);
         }
@@ -475,6 +563,25 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     const GOOD: &str = r#"{"code":0,"data":{"video_model":{"video_list":[{"main_url":"https://media.example/clip.mp4","codec_type":"h264","vwidth":720,"vheight":1280}]}}}"#;
+
+    #[derive(Clone, Default)]
+    struct MemoryProfileStore {
+        bytes: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+        saved: Arc<tokio::sync::Notify>,
+    }
+
+    impl DeviceProfileStore for MemoryProfileStore {
+        fn load(&self) -> anyhow::Result<Option<Vec<u8>>> {
+            Ok(self.bytes.lock().unwrap().clone())
+        }
+
+        fn save(&self, profile: &[u8]) -> anyhow::Result<()> {
+            *self.bytes.lock().unwrap() = Some(profile.to_vec());
+            self.saved.notify_one();
+            Ok(())
+        }
+    }
+
     struct Fixture {
         source: Arc<RegisteredSource>,
         registers: Arc<AtomicUsize>,
@@ -492,6 +599,7 @@ mod tests {
         body: &'static str,
         backoff: bool,
         tab_body: &'static str,
+        store: Option<MemoryProfileStore>,
     ) -> Fixture {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
@@ -633,23 +741,33 @@ mod tests {
                 } else {
                     ""
                 };
+                let cookies = if is_register {
+                    "Set-Cookie: ttreq=guest-fixture; Path=/\r\nSet-Cookie: sessionid=private-fixture; HttpOnly\r\n"
+                } else {
+                    ""
+                };
                 let response = format!(
-                    "HTTP/1.1 {code} Fixture\r\nContent-Length: {}\r\n{retry}Connection: close\r\n\r\n{response}",
+                    "HTTP/1.1 {code} Fixture\r\nContent-Length: {}\r\n{retry}{cookies}Connection: close\r\n\r\n{response}",
                     response.len()
                 );
                 socket.write_all(response.as_bytes()).await.unwrap();
             }
         });
+        let source = RegisteredSource {
+            client: Client::builder().no_proxy().build().unwrap(),
+            session: Mutex::new(Session::default()),
+            register_url: base.join("register").unwrap(),
+            model_url: base.join("model").unwrap(),
+            tab_url: base.join("tab").unwrap(),
+            mobile_url: None,
+            signer: crate::v5::Signer::new(now_ms()),
+        };
+        let source = match store {
+            Some(store) => source.with_profile_store(store),
+            None => source,
+        };
         Fixture {
-            source: Arc::new(RegisteredSource {
-                client: Client::builder().no_proxy().build().unwrap(),
-                session: Mutex::new(Session::default()),
-                register_url: base.join("register").unwrap(),
-                model_url: base.join("model").unwrap(),
-                tab_url: base.join("tab").unwrap(),
-                mobile_url: None,
-                signer: crate::v5::Signer::new(now_ms()),
-            }),
+            source: Arc::new(source),
             registers,
             models,
             task,
@@ -657,26 +775,51 @@ mod tests {
     }
     #[tokio::test]
     async fn mobile_primary_binds_gzip_and_empty_response_uses_v5_tab() {
-        for (status, body, backoff, calls, success, tab_body) in [
+        use PlaybackError as Error;
+
+        for (status, body, backoff, calls, failure, tab_body) in [
             (
                 200,
                 r#"{"code":0,"data":{"1004":{"123":{"video_model":{"video_list":[{"main_url":"https://media.example/clip.mp4","codec_type":"h264"}]}}}}}"#,
                 false,
                 1,
-                true,
+                None,
                 "",
             ),
-            (403, "", false, 1, false, ""),
-            (429, "", false, 1, false, ""),
-            (200, r#"{"code":110001}"#, false, 1, false, ""),
-            (200, "", true, 1, false, ""),
-            (200, "", false, 2, false, ""),
+            (403, "", false, 1, Some(Error::HttpStatus(403)), ""),
+            (429, "", false, 1, Some(Error::HttpStatus(429)), ""),
+            (
+                200,
+                r#"{"code":110001}"#,
+                false,
+                1,
+                Some(ModelError::Rejected(110001).into()),
+                "",
+            ),
+            (200, "", true, 1, Some(Error::RetryLater), ""),
+            (200, " \n\t", false, 2, Some(Error::EmptyResponse), ""),
+            (
+                200,
+                "{",
+                false,
+                1,
+                Some(ModelError::InvalidResponse.into()),
+                "",
+            ),
+            (
+                200,
+                r#"{"code":0,"data":{"1004":{"123":{"video_list":[]}}}}"#,
+                false,
+                2,
+                Some(ModelError::NoPlayableSource.into()),
+                "",
+            ),
             (
                 200,
                 "",
                 false,
                 2,
-                true,
+                None,
                 r#"{"code":0,"data":{"video_model_data":{"123":{"video_model":{"video_list":[{"main_url":"https://media.example/clip.mp4","codec_type":"h264"}]}}}}}"#,
             ),
             (
@@ -684,7 +827,7 @@ mod tests {
                 "",
                 false,
                 2,
-                false,
+                Some(ModelError::EpisodeMissing.into()),
                 r#"{"code":0,"data":{"video_model_data":{"999":{"video_model":{"video_list":[{"main_url":"https://media.example/clip.mp4"}]}}}}}"#,
             ),
         ] {
@@ -694,11 +837,12 @@ mod tests {
                 body,
                 backoff,
                 tab_body,
+                None,
             )
             .await;
             let source = Arc::get_mut(&mut f.source).unwrap();
             source.mobile_url = Some(source.model_url.join("mobile").unwrap());
-            assert_eq!(f.source.ladder("123").await.is_ok(), success);
+            assert_eq!(f.source.ladder("123").await.err(), failure);
             assert_eq!(f.models.load(Ordering::SeqCst), calls);
             assert_eq!(f.registers.load(Ordering::SeqCst), 1);
         }
@@ -711,6 +855,7 @@ mod tests {
             GOOD,
             false,
             "",
+            None,
         )
         .await;
         let (a, b, c) = tokio::join!(
@@ -743,6 +888,7 @@ mod tests {
                 body,
                 backoff,
                 "",
+                None,
             )
             .await;
             for _ in 0..3 {
@@ -755,24 +901,146 @@ mod tests {
     }
     #[tokio::test]
     async fn invalid_registration_is_not_saved_and_is_cooled_down() {
+        let store = MemoryProfileStore::default();
         let f = fixture(
             r#"{"device_id":"000","install_id":444}"#,
             200,
             GOOD,
             false,
             "",
+            Some(store.clone()),
         )
         .await;
-        for _ in 0..3 {
-            assert!(f.source.ladder("123").await.is_err());
+        assert_eq!(
+            f.source.ladder("bad").await.err(),
+            Some(PlaybackError::InvalidEpisode)
+        );
+        assert_eq!(f.registers.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            f.source.ladder("123").await.err(),
+            Some(PlaybackError::InvalidDeviceResponse)
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                f.source.ladder("123").await.err(),
+                Some(PlaybackError::DeviceUnavailable)
+            );
         }
         assert!(f.source.session.lock().await.device.is_none());
+        assert!(store.load().unwrap().is_none());
         assert_eq!(f.registers.load(Ordering::SeqCst), 1);
         assert_eq!(f.models.load(Ordering::SeqCst), 0);
     }
     #[tokio::test]
+    async fn distinguishes_an_oversized_response_from_a_stalled_body() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        for (length, error) in [
+            (LIMIT + 1, PlaybackError::ResponseTooLarge),
+            (4, PlaybackError::Timeout),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut request = BufReader::new(socket);
+                let mut line = String::new();
+                loop {
+                    assert_ne!(request.read_line(&mut line).await.unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    line.clear();
+                }
+                let headers = format!("HTTP/1.1 200 OK\r\nContent-Length: {length}\r\n\r\n");
+                request
+                    .get_mut()
+                    .write_all(headers.as_bytes())
+                    .await
+                    .unwrap();
+                std::future::pending::<()>().await;
+            });
+            let client = Client::builder()
+                .no_proxy()
+                .read_timeout(Duration::from_millis(500))
+                .build()
+                .unwrap();
+            let response = client.get(url).send().await.unwrap();
+            let result = response_bytes(response).await;
+            server.abort();
+            assert_eq!(result, Err(error));
+        }
+    }
+    #[tokio::test]
+    async fn reopens_anonymous_profile_without_registering_again() {
+        let store = MemoryProfileStore::default();
+        let cold = fixture(
+            r#"{"device_id":333,"install_id":444}"#,
+            200,
+            GOOD,
+            false,
+            "",
+            Some(store.clone()),
+        )
+        .await;
+        assert!(cold.source.ladder("123").await.is_ok());
+        let original = cold.source.identity().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), store.saved.notified())
+            .await
+            .unwrap();
+        let saved = String::from_utf8(store.load().unwrap().unwrap()).unwrap();
+        assert!(saved.contains("ttreq=guest-fixture") && !saved.contains("private-fixture"));
+        drop(cold);
+
+        let reopened = fixture("", 200, GOOD, false, "", Some(store)).await;
+        assert_eq!(reopened.registers.load(Ordering::SeqCst), 0);
+        assert!(reopened.source.ladder("123").await.is_ok());
+        let restored = reopened.source.identity().await.unwrap();
+        assert!(restored.as_ref() == original.as_ref());
+        assert!(restored.cookie.as_ref().unwrap().is_sensitive());
+        assert_eq!(reopened.registers.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn leaves_invalid_stored_profile_intact_and_uses_memory() {
+        for (version, cookie) in [(2, "ttreq=fixture"), (1, "sessionid=private-fixture")] {
+            let store = MemoryProfileStore::default();
+            let saved = serde_json::to_vec(&json!({
+                "version": version, "device_id": "333", "install_id": "444",
+                "cdid": Uuid::new_v4().to_string(), "cookie": cookie,
+            }))
+            .unwrap();
+            store.save(&saved).unwrap();
+            let f = fixture(
+                r#"{"device_id":333,"install_id":444}"#,
+                200,
+                GOOD,
+                false,
+                "",
+                Some(store.clone()),
+            )
+            .await;
+            assert!(f.source.ladder("123").await.is_ok());
+            assert_eq!(f.registers.load(Ordering::SeqCst), 1);
+            assert!(matches!(
+                f.source.session.lock().await.storage,
+                ProfileStorage::Disabled
+            ));
+            assert_eq!(store.load().unwrap().unwrap(), saved);
+        }
+    }
+
+    #[tokio::test]
     async fn persistent_empty_rotates_only_on_later_foreground_call_after_cooldown() {
-        let f = fixture(r#"{"device_id":333,"install_id":444}"#, 200, "", false, "").await;
+        let f = fixture(
+            r#"{"device_id":333,"install_id":444}"#,
+            200,
+            "",
+            false,
+            "",
+            None,
+        )
+        .await;
         for _ in 0..3 {
             assert!(f.source.ladder("123").await.is_err());
         }

@@ -27,15 +27,7 @@ impl std::fmt::Display for PreviewUnavailable {
 
 impl std::error::Error for PreviewUnavailable {}
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Series {
-    pub id: String,
-    pub title: String,
-    pub cover: String,
-    pub description: String,
-    pub badge: String,
-    pub tags: Vec<String>,
-}
+pub use crate::catalog_rules::Series;
 
 #[derive(Debug, Serialize)]
 pub struct CatalogPage {
@@ -50,6 +42,12 @@ pub struct CatalogPage {
 pub struct DramaTopic {
     id: String,
     label: String,
+}
+
+impl DramaTopic {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -118,6 +116,12 @@ pub struct RankPage {
     items: Vec<RankRow>,
     updated: String,
     has_more: bool,
+}
+
+impl RankPage {
+    pub fn items(&self) -> &[RankRow] {
+        &self.items
+    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -235,31 +239,7 @@ impl Site {
             .append_pair("page", &page.to_string());
         let root: Value = serde_json::from_str(&self.text(url).await?)
             .map_err(|_| anyhow::anyhow!("搜索响应格式已变化"))?;
-        if let Some(actual) = number(&root["pageNum"]) {
-            ensure!(actual == u64::from(page), "搜索页码不匹配");
-        }
-        let rows = root["searchList"].as_array().context("搜索结果暂不可用")?;
-        let mut items = cards(rows);
-        let query = query.to_lowercase();
-        items.sort_by_key(|item| {
-            let title = item.title.to_lowercase();
-            if title == query {
-                0
-            } else if title.contains(&query) {
-                1
-            } else {
-                2
-            }
-        });
-        let has_more = root["hasMore"]
-            .as_bool()
-            .unwrap_or_else(|| u64::from(page) < number(&root["totalPages"]).unwrap_or(100));
-        Ok(CatalogPage {
-            items,
-            page,
-            has_more: !rows.is_empty() && has_more && page < 100,
-            topics: Vec::new(),
-        })
+        parse_search(&root, query, page)
     }
 
     pub async fn suggestions(&self, query: &str) -> Result<Vec<String>> {
@@ -538,6 +518,36 @@ fn valid_topic(topic: &str) -> bool {
         })
 }
 
+fn parse_search(root: &Value, query: &str, page: u32) -> Result<CatalogPage> {
+    ensure!(
+        root["pageNum"].is_null() || number(&root["pageNum"]) == Some(u64::from(page)),
+        "搜索页码不匹配"
+    );
+    let rows = root["searchList"].as_array().context("搜索结果暂不可用")?;
+    let mut items = cards(rows);
+    ensure!(rows.is_empty() || !items.is_empty(), "搜索条目格式已变化");
+    let query = query.trim().to_lowercase();
+    items.sort_by_key(|item| {
+        let title = item.title.to_lowercase();
+        if title == query {
+            0
+        } else if title.contains(&query) {
+            1
+        } else {
+            2
+        }
+    });
+    let has_more = root["hasMore"]
+        .as_bool()
+        .unwrap_or_else(|| u64::from(page) < number(&root["totalPages"]).unwrap_or(100));
+    Ok(CatalogPage {
+        items,
+        page,
+        has_more: !rows.is_empty() && has_more && page < 100,
+        topics: Vec::new(),
+    })
+}
+
 fn parse_discovery(
     section: &Value,
     category: Category,
@@ -718,6 +728,29 @@ fn parse_detail(source: &Value, id: &str) -> Result<Detail> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn search_distinguishes_an_empty_result_from_changed_rows() {
+        let raw = json!({"pageNum": "2", "totalPages": 3, "searchList": [
+            {"series_id": "1", "series_name": "样本续季"},
+            {"video_data": {"series_id": 7706512650816982040_u64, "series_title": "样本"}},
+            {"series_id": "1", "series_name": "重复卡片"},
+            {"ad": true}
+        ], "additional_field": true});
+        let page = parse_search(&raw, "样本", 2).unwrap();
+        assert_eq!(
+            page.items
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["7706512650816982040", "1"],
+        );
+        assert!(page.has_more);
+        assert!(parse_search(&raw, "样本", 1).is_err());
+        assert!(parse_search(&json!({"searchList":[{"changed":true}]}), "样本", 1).is_err());
+        let empty = parse_search(&json!({"searchList": []}), "样本", 1).unwrap();
+        assert!(empty.items.is_empty() && !empty.has_more);
+    }
 
     #[test]
     fn reads_router_data_without_running_scripts() {

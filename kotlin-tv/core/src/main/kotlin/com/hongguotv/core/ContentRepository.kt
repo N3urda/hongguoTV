@@ -437,6 +437,7 @@ constructor(
         return FilteredDiscoveryParser.parse(
             text(signed.url, signed, retryTransient = true),
             cursor,
+            selection,
         )
     }
 

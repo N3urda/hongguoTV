@@ -263,27 +263,53 @@ pub(crate) fn https_url(value: &str) -> Result<Url> {
     Ok(url)
 }
 
-pub fn valid_id(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 30 && value.bytes().all(|b| b.is_ascii_digit())
+pub use crate::valid_id;
+
+#[derive(Debug)]
+pub(crate) enum ResponseReadError {
+    TooLarge,
+    Timeout,
+    Network,
 }
 
-pub async fn read_limited(mut response: Response, max: usize) -> Result<Vec<u8>> {
-    ensure!(
-        response
-            .content_length()
-            .is_none_or(|size| size <= max as u64),
-        "响应超过大小限制"
-    );
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
+impl std::fmt::Display for ResponseReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge => f.write_str("响应超过大小限制"),
+            Self::Timeout | Self::Network => f.write_str("读取响应失败，请重试"),
+        }
+    }
+}
+
+impl std::error::Error for ResponseReadError {}
+
+pub async fn read_limited(response: Response, max: usize) -> Result<Vec<u8>> {
+    read_response_limited(response, max)
         .await
-        .map_err(|_| anyhow::anyhow!("读取响应失败，请重试"))?
+        .map_err(Into::into)
+}
+
+pub(crate) async fn read_response_limited(
+    mut response: Response,
+    max: usize,
+) -> Result<Vec<u8>, ResponseReadError> {
+    if response
+        .content_length()
+        .is_some_and(|size| size > max as u64)
     {
-        ensure!(
-            chunk.len() <= max.saturating_sub(bytes.len()),
-            "响应超过大小限制"
-        );
+        return Err(ResponseReadError::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        if error.is_timeout() {
+            ResponseReadError::Timeout
+        } else {
+            ResponseReadError::Network
+        }
+    })? {
+        if chunk.len() > max - bytes.len() {
+            return Err(ResponseReadError::TooLarge);
+        }
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)

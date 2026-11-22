@@ -1,0 +1,57 @@
+name: Check Rust public catalog contract
+
+on:
+  schedule:
+    - cron: '37 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      query:
+        description: 'Optional drama title to search for'
+        type: string
+      series:
+        description: 'Anonymous source check: public series ID'
+        type: string
+      episode:
+        description: 'Anonymous source check: matching episode ID'
+        type: string
+      duration_ms:
+        description: 'Anonymous source check: actual episode duration in milliseconds'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  public-catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal
+      - name: Check production catalog parsers
+        env:
+          CATALOG_QUERY: ${{ inputs.query }}
+        run: >
+          cargo +stable run --manifest-path rust-core/Cargo.toml --locked
+          --features web --example catalog_contract -- "$CATALOG_QUERY"
+
+  registered-source:
+    if: github.event_name == 'workflow_dispatch' && (inputs.series != '' || inputs.episode != '' || inputs.duration_ms != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal
+      - name: Check anonymous registered APIs
+        env:
+          CATALOG_SERIES: ${{ inputs.series }}
+          CATALOG_EPISODE: ${{ inputs.episode }}
+          CATALOG_DURATION_MS: ${{ inputs.duration_ms }}
+        run: >
+          cargo +stable run --manifest-path rust-core/Cargo.toml --locked
+          --features registered --example registered_contract --
+          "$CATALOG_SERIES" "$CATALOG_EPISODE" "$CATALOG_DURATION_MS"

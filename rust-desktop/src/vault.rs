@@ -7,12 +7,22 @@ use anyhow::Result;
 pub(crate) struct Vault {
     #[cfg(target_os = "macos")]
     profile: String,
+    #[cfg(target_os = "macos")]
+    service: &'static str,
     #[cfg(target_os = "windows")]
     file: std::path::PathBuf,
 }
 
 impl Vault {
     pub(crate) fn new(directory: &Path) -> Self {
+        Self::in_namespace(
+            directory,
+            "com.hongguotv.rust.web-account",
+            "web-account.dpapi",
+        )
+    }
+
+    fn in_namespace(directory: &Path, _service: &'static str, _file: &str) -> Self {
         #[cfg(target_os = "macos")]
         let profile = {
             use sha2::{Digest, Sha256};
@@ -29,19 +39,45 @@ impl Vault {
         Self {
             #[cfg(target_os = "macos")]
             profile,
+            #[cfg(target_os = "macos")]
+            service: _service,
             #[cfg(target_os = "windows")]
-            file: directory.join("web-account.dpapi"),
+            file: directory.join(_file),
         }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) struct AnonymousProfileVault(Vault);
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl AnonymousProfileVault {
+    pub(crate) fn new(directory: &Path) -> Self {
+        Self(Vault::in_namespace(
+            directory,
+            "com.hongguotv.rust.anonymous-device",
+            "anonymous-device.dpapi",
+        ))
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl hongguo_playback::registered::DeviceProfileStore for AnonymousProfileVault {
+    fn load(&self) -> Result<Option<Vec<u8>>> {
+        self.0.load()
+    }
+
+    fn save(&self, profile: &[u8]) -> Result<()> {
+        self.0.save(profile)
     }
 }
 
 #[cfg(target_os = "macos")]
 impl Vault {
-    const SERVICE: &str = "com.hongguotv.rust.web-account";
     const ITEM_NOT_FOUND: i32 = -25300;
 
     pub(crate) fn load(&self) -> Result<Option<Vec<u8>>> {
-        match security_framework::passwords::get_generic_password(Self::SERVICE, &self.profile) {
+        match security_framework::passwords::get_generic_password(self.service, &self.profile) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.code() == Self::ITEM_NOT_FOUND => Ok(None),
             Err(_) => anyhow::bail!("无法读取钥匙串中的登录态"),
@@ -49,12 +85,12 @@ impl Vault {
     }
 
     pub(crate) fn save(&self, bytes: &[u8]) -> Result<()> {
-        security_framework::passwords::set_generic_password(Self::SERVICE, &self.profile, bytes)
+        security_framework::passwords::set_generic_password(self.service, &self.profile, bytes)
             .map_err(|_| anyhow::anyhow!("无法将登录态保存到钥匙串"))
     }
 
     pub(crate) fn clear(&self) -> Result<()> {
-        match security_framework::passwords::delete_generic_password(Self::SERVICE, &self.profile) {
+        match security_framework::passwords::delete_generic_password(self.service, &self.profile) {
             Ok(()) => Ok(()),
             Err(error) if error.code() == Self::ITEM_NOT_FOUND => Ok(()),
             Err(_) => anyhow::bail!("无法从钥匙串删除登录态"),

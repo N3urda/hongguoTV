@@ -18,7 +18,7 @@ class TimedComments(
     fun read(series: String, episode: String, start: Long, duration: Long, cursor: String = ""): JSONObject {
         require(series.matches(Regex("[0-9]{6,30}")) && episode.matches(Regex("[0-9]{6,30}")))
         require(start >= 0 && duration > start && duration <= 86400000)
-        require(cursor.length <= 16384)
+        require(cursor.toByteArray(Charsets.UTF_8).size <= 16384)
         val key = "$series/$episode/$start/$duration/$cursor"
         synchronized(cache) {
             cache[key]
@@ -28,7 +28,7 @@ class TimedComments(
                 }
         }
         val payload =
-            JSONObject()
+            NativeCatalog.danmakuRequest(series, episode, start, duration, cursor) ?: JSONObject()
                 .put("comment_source", 601)
                 .put("server_channel", 1000)
                 .put("group_id", episode)
@@ -57,6 +57,15 @@ class TimedComments(
     }
 
     companion object {
+        fun continuation(page: JSONObject, series: String, episode: String, start: Long, duration: Long): String? =
+            if (
+                page.optBoolean("hasMore") &&
+                    page.optString("seriesID") == series &&
+                    page.optString("episodeID") == episode &&
+                    page.optLong("nextMS") == start &&
+                    page.optLong("durationMS") == duration
+            ) page.optString("nextCursor") else null
+
         fun parse(
             result: JSONObject,
             series: String,
@@ -64,11 +73,21 @@ class TimedComments(
             start: Long,
             duration: Long,
         ): JSONObject {
-            require(result.has("code") && result.getInt("code") == 0) { "弹幕接口未返回成功数据" }
+            NativeCatalog.danmakuPage(result, series, episode, start, duration)?.let { return it }
+            require(result.opt("code")?.toString()?.toLongOrNull() == 0L) { "弹幕接口未返回成功数据" }
             val data = result.getJSONObject("data")
-            val next = data.getJSONObject("extra").getLong("next_query_danmaku_list_time")
-            require(next > start && next <= 86400000) { "弹幕时间段无效" }
-            val end = minOf(next, duration)
+            val continuation = data.optJSONObject("common_list_info")
+            val more = continuation?.opt("has_more")?.toString()?.toBooleanStrictOrNull()
+            val nextValue = data.optJSONObject("extra")?.opt("next_query_danmaku_list_time")
+            val next = nextValue?.toString()?.toLongOrNull()
+            val end = when {
+                next != null && next > start && next <= 86400000 -> minOf(next, duration)
+                more == false && (nextValue == null || nextValue == JSONObject.NULL || next == 0L) -> duration
+                else -> throw IllegalArgumentException("弹幕时间段无效")
+            }
+            val canContinue = more == true && end < duration
+            val nextCursor = if (canContinue) continuation?.opt("cursor") as? String ?: "" else ""
+            require(nextCursor.toByteArray(Charsets.UTF_8).size <= 16384) { "弹幕续页格式无效" }
             val items = mutableListOf<JSONObject>()
             val seen = mutableSetOf<String>()
             val rows = data.getJSONArray("data_list")
@@ -91,18 +110,17 @@ class TimedComments(
                         .take(180)
                 if (id.isBlank() || text.isBlank() || !seen.add(id)) continue
                 items.add(JSONObject().put("id", id).put("text", text).put("timeMS", time))
-                if (items.size >= 90) break
             }
-            val continuation = data.optJSONObject("common_list_info")
             return JSONObject()
                 .put("rawCount", rows.length())
-                .put("nextCursor", continuation?.optString("cursor").orEmpty())
-                .put("hasMore", continuation?.optBoolean("has_more", false) ?: false)
+                .put("nextCursor", nextCursor)
+                .put("hasMore", canContinue)
                 .put("seriesID", series)
                 .put("episodeID", episode)
                 .put("startMS", start)
                 .put("nextMS", end)
-                .put("items", JSONArray(items.sortedBy { it.getLong("timeMS") }))
+                .put("durationMS", duration)
+                .put("items", JSONArray(items.sortedBy { it.getLong("timeMS") }.take(90)))
         }
     }
 }

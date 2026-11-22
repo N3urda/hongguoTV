@@ -32,9 +32,14 @@ object RustPlaybackCore {
     fun rangeTotal(header: String, start: Long, end: Long, expected: Long): Long? =
         if (available) nativeRangeTotal(header, start, end, expected) else null
 
+    /** Null indicates that this JVM does not package the native library. */
+    fun catalog(arguments: String, response: String): String? =
+        if (available) checkNotNull(nativeCatalog(arguments, response)) { "目录核心调用失败" } else null
+
     private external fun nativeResume(count: Int, matched: Int, position: Long, completed: Boolean): LongArray?
     private external fun nativeSelect(packed: IntArray, maximum: Int): Int
     private external fun nativeRangeTotal(header: String, start: Long, end: Long, expected: Long): Long
+    private external fun nativeCatalog(arguments: String, response: String): String?
 }
 
 internal actual fun nativeResumeTarget(count: Int, matched: Int, position: Long, completed: Boolean) =

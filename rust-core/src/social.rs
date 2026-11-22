@@ -18,8 +18,10 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::{
+    catalog_rules::danmaku::{danmaku_body, parse_danmaku, valid_window},
+    catalog_rules::{boolean, cover, number, string, unsigned},
     registered::{Device, RegisteredSource, now_ms},
-    source::{read_limited, valid_id},
+    source::{ResponseReadError, read_response_limited, valid_id},
     v5::Signer,
     web::Series,
 };
@@ -31,11 +33,11 @@ mod discovery;
 pub use discovery::{DiscoveryCursor, DiscoveryGroup, valid_discovery_filters};
 #[path = "seasons.rs"]
 mod seasons;
+pub use crate::catalog_rules::danmaku::Danmaku;
 pub use cloud_library::{CloudFavorite, CloudProgress};
 
 const ACCOUNT_ORIGIN: &str = "https://api5-normal-sinfonlinea.fqnovel.com";
 const COMMENTS_ORIGIN: &str = "https://api5-normal-sinfonlineb.fqnovel.com";
-const MAX_DURATION: u64 = 86_400_000;
 const RESPONSE_LIMIT: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Serialize)]
@@ -59,18 +61,31 @@ impl Reservation {
     }
 }
 
-#[derive(Clone, Serialize)]
-pub struct Danmaku {
-    pub id: String,
-    pub text: String,
-    pub time_ms: u64,
-}
-
-#[derive(Clone, Serialize)]
+#[derive(Clone)]
 pub struct DanmakuPage {
     pub next_ms: u64,
-    pub next_cursor: Option<String>,
+    pub next_cursor: Option<DanmakuCursor>,
     pub items: Vec<Danmaku>,
+}
+
+/// Continue a timed comment stream using the original episode and anonymous session.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DanmakuCursor {
+    series: String,
+    episode: String,
+    start: u64,
+    duration: u64,
+    upstream_cursor: String,
+    device: Arc<Device>,
+}
+
+impl DanmakuCursor {
+    pub fn matches_position(&self, series: &str, episode: &str, start: u64, duration: u64) -> bool {
+        self.series == series
+            && self.episode == episode
+            && self.start == start
+            && self.duration == duration
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -79,7 +94,7 @@ struct CommentKey {
     episode: String,
     start: u64,
     duration: u64,
-    cursor: String,
+    cursor: Option<DanmakuCursor>,
 }
 
 type Cache<K, V> = Mutex<VecDeque<(K, Instant, V)>>;
@@ -146,7 +161,16 @@ impl Social {
         ] {
             let url = format!("https://{host}/reading/bookapi/plan/v:version/");
             let request = self.signed(&url, values.clone(), None, "72232", false)?;
-            if let Ok(root) = response(request, "相关作品").await
+            let reply = response(request, "相关作品").await;
+            if let Err(error) = &reply
+                && matches!(
+                    error.kind(),
+                    ProviderErrorKind::RetryLater | ProviderErrorKind::HttpStatus(401 | 403 | 429)
+                )
+            {
+                return Err((*error).into());
+            }
+            if let Ok(root) = reply
                 && let Ok(works) = parse_related(&root, series)
             {
                 remember(&self.related, key, works.clone(), 24).await;
@@ -229,34 +253,32 @@ impl Social {
         episode: &str,
         start: u64,
         duration: u64,
-        cursor: &str,
+        cursor: Option<&DanmakuCursor>,
     ) -> Result<DanmakuPage> {
         ensure!(
-            valid_id(series)
-                && valid_id(episode)
-                && start < duration
-                && duration <= MAX_DURATION
-                && cursor.len() <= 16_384,
+            valid_id(series) && valid_id(episode) && valid_window(start, duration),
             "弹幕请求范围无效"
+        );
+        ensure!(
+            cursor.is_none_or(|cursor| cursor.matches_position(series, episode, start, duration)),
+            "弹幕续页与当前播放位置不匹配"
         );
         let key = CommentKey {
             series: series.into(),
             episode: episode.into(),
             start,
             duration,
-            cursor: cursor.into(),
+            cursor: cursor.cloned(),
         };
         if let Some(page) = cached(&self.comments, &key, 60).await {
             return Ok(page);
         }
-        let device = self.registered.identity().await?;
-        let payload = json!({
-            "comment_source": 601, "server_channel": 1000, "group_id": episode,
-            "group_type": 30, "comment_type": 20, "sort": 1, "count": 90, "cursor": cursor,
-            "aid": 8662, "compliance_status": 0,
-            "business_param": {"book_id": series, "start_offset_time": start,
-                "playlet_item_duration": duration, "need_danmaku_guide_type": [1, 3, 4, 2]},
-        });
+        let device = match cursor {
+            Some(cursor) => cursor.device.clone(),
+            None => self.registered.identity().await?,
+        };
+        let upstream_cursor = cursor.map_or("", |cursor| cursor.upstream_cursor.as_str());
+        let payload = danmaku_body(series, episode, start, duration, upstream_cursor);
         let mut request = self
             .signed(
                 &format!("{COMMENTS_ORIGIN}/novel/commentapi/comment/list/{episode}/v1/"),
@@ -270,13 +292,19 @@ impl Social {
         if let Some(cookie) = &device.cookie {
             request = request.header(COOKIE, cookie.clone());
         }
-        let page = parse_danmaku(
-            &response(request, "弹幕").await?,
-            episode,
-            start,
-            duration,
-            cursor,
-        )?;
+        let window = parse_danmaku(&response(request, "弹幕").await?, episode, start, duration)?;
+        let page = DanmakuPage {
+            next_ms: window.end_ms,
+            items: window.items,
+            next_cursor: window.continuation.map(|upstream_cursor| DanmakuCursor {
+                series: series.into(),
+                episode: episode.into(),
+                start: window.end_ms,
+                duration,
+                upstream_cursor,
+                device,
+            }),
+        };
         remember(&self.comments, key, page.clone(), 64).await;
         Ok(page)
     }
@@ -324,44 +352,102 @@ impl Social {
 pub struct ReservationRequest(RequestBuilder);
 
 impl ReservationRequest {
-    /// An explicit upstream rejection is safe to retry. A transport or response error has an unknown outcome.
-    pub async fn submit(self) -> Result<()> {
+    /// Treat failures other than an explicit rejection as an uncertain write.
+    pub async fn submit(self) -> Result<(), ProviderError> {
         response(self.0, "预约").await.map(|_| ())
     }
 }
 
-#[derive(Debug)]
-pub struct ProviderRejection {
-    operation: &'static str,
-    code: i64,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProviderErrorKind {
+    Network,
+    Timeout,
+    HttpStatus(u16),
+    RetryLater,
+    EmptyResponse,
+    ResponseTooLarge,
+    InvalidResponse,
+    MissingStatus,
+    Rejected(i64),
 }
 
-impl std::fmt::Display for ProviderRejection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}接口暂不可用（错误码 {}）", self.operation, self.code)
+/// A signed API failure with a static operation label and no request URL or response body.
+#[derive(Clone, Copy, Debug)]
+pub struct ProviderError {
+    operation: &'static str,
+    kind: ProviderErrorKind,
+}
+
+impl ProviderError {
+    pub fn kind(&self) -> ProviderErrorKind {
+        self.kind
+    }
+
+    /// True only when an upstream response explicitly reported a business rejection.
+    pub fn is_explicit_rejection(&self) -> bool {
+        matches!(self.kind, ProviderErrorKind::Rejected(_))
     }
 }
 
-impl std::error::Error for ProviderRejection {}
+impl std::fmt::Display for ProviderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use ProviderErrorKind::*;
+        let operation = self.operation;
+        match self.kind {
+            Network => write!(f, "{operation}连接失败"),
+            Timeout => write!(f, "{operation}请求超时"),
+            HttpStatus(status) => write!(f, "{operation}读取失败（HTTP {status}）"),
+            RetryLater => write!(f, "{operation}接口要求稍后重试"),
+            EmptyResponse => write!(f, "{operation}返回空响应"),
+            ResponseTooLarge => write!(f, "{operation}响应超过大小限制"),
+            InvalidResponse => write!(f, "{operation}响应格式无效"),
+            MissingStatus => write!(f, "{operation}响应缺少状态"),
+            Rejected(code) => write!(f, "{operation}接口暂不可用（错误码 {code}）"),
+        }
+    }
+}
 
-async fn response(request: RequestBuilder, operation: &'static str) -> Result<Value> {
-    let reply = request
-        .send()
+impl std::error::Error for ProviderError {}
+
+async fn response(
+    request: RequestBuilder,
+    operation: &'static str,
+) -> Result<Value, ProviderError> {
+    use ProviderErrorKind::*;
+    let error = |kind| ProviderError { operation, kind };
+    let reply = request.send().await.map_err(|failure| {
+        error(if failure.is_timeout() {
+            Timeout
+        } else {
+            Network
+        })
+    })?;
+    if !reply.status().is_success() {
+        return Err(error(HttpStatus(reply.status().as_u16())));
+    }
+    if reply.headers().contains_key(reqwest::header::RETRY_AFTER) {
+        return Err(error(RetryLater));
+    }
+    let bytes = read_response_limited(reply, RESPONSE_LIMIT)
         .await
-        .map_err(|_| anyhow!("{operation}连接失败"))?;
-    ensure!(
-        reply.status().is_success(),
-        "{operation}读取失败（HTTP {}）",
-        reply.status().as_u16()
-    );
-    let bytes = read_limited(reply, RESPONSE_LIMIT)
-        .await
-        .map_err(|_| anyhow!("{operation}响应读取失败"))?;
-    let root: Value =
-        serde_json::from_slice(&bytes).map_err(|_| anyhow!("{operation}响应格式无效"))?;
-    let code = number(&root["code"]).ok_or_else(|| anyhow!("{operation}响应缺少状态"))?;
+        .map_err(|failure| {
+            error(match failure {
+                ResponseReadError::Network => Network,
+                ResponseReadError::Timeout => Timeout,
+                ResponseReadError::TooLarge => ResponseTooLarge,
+            })
+        })?;
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Err(error(EmptyResponse));
+    }
+    let root: Value = serde_json::from_slice(&bytes).map_err(|_| error(InvalidResponse))?;
+    if !root.is_object() {
+        return Err(error(InvalidResponse));
+    }
+    let code = number(&root["code"]).ok_or_else(|| error(MissingStatus))?;
     if code != 0 {
-        return Err(ProviderRejection { operation, code }.into());
+        return Err(error(Rejected(code)));
     }
     Ok(root)
 }
@@ -430,53 +516,12 @@ async fn remember<K: PartialEq, V>(cache: &Cache<K, V>, key: K, value: V, limit:
     rows.push_back((key, Instant::now(), value));
 }
 
-fn number(value: &Value) -> Option<i64> {
-    value.as_i64().or_else(|| value.as_str()?.parse().ok())
-}
-
-fn unsigned(value: &Value) -> Option<u64> {
-    number(value)?.try_into().ok()
-}
-
-fn boolean(value: &Value) -> Option<bool> {
-    value.as_bool().or_else(|| match value.as_str()? {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => None,
-    })
-}
-
-fn string(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.trim().to_owned(),
-        Value::Number(n) => n.to_string(),
-        _ => String::new(),
-    }
-}
-
 fn first(values: &[&Value]) -> String {
     values
         .iter()
         .map(|value| string(value))
         .find(|value| !value.is_empty())
         .unwrap_or_default()
-}
-
-fn cover(value: &str) -> String {
-    let upgraded = if value.starts_with("//") {
-        format!("https:{value}")
-    } else {
-        value.replacen("http://", "https://", 1)
-    };
-    Url::parse(&upgraded)
-        .ok()
-        .filter(|url| {
-            url.scheme() == "https"
-                && url.host_str().is_some()
-                && url.username().is_empty()
-                && url.password().is_none()
-        })
-        .map_or_else(String::new, |url| url.to_string())
 }
 
 fn parse_related(root: &Value, current: &str) -> Result<Vec<RelatedWork>> {
@@ -617,70 +662,78 @@ fn parse_reservations(root: &Value, online: bool) -> Result<Vec<Reservation>> {
     Ok(result)
 }
 
-fn parse_danmaku(
-    root: &Value,
-    episode: &str,
-    start: u64,
-    duration: u64,
-    cursor: &str,
-) -> Result<DanmakuPage> {
-    let data = &root["data"];
-    let next = unsigned(&data["extra"]["next_query_danmaku_list_time"])
-        .filter(|next| *next > start && *next <= MAX_DURATION)
-        .context("弹幕时间段无效")?;
-    let next_ms = next.min(duration);
-    let rows = data["data_list"].as_array().context("弹幕数据格式已变化")?;
-    let mut seen = HashSet::new();
-    let mut items = Vec::new();
-    for row in rows.iter().take(300) {
-        let comment = &row["comment"];
-        let common = &comment["common"];
-        if string(&common["group_id"]) != episode || number(&common["status"]) != Some(1) {
-            continue;
-        }
-        let Some(time_ms) = unsigned(&comment["expand"]["offset_time"])
-            .filter(|time| (start..next_ms).contains(time))
-        else {
-            continue;
-        };
-        let id: String = string(&comment["comment_id"]).chars().take(120).collect();
-        let clean: String = string(&common["content"]["text"])
-            .chars()
-            .map(|ch| {
-                if ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}') {
-                    ' '
-                } else {
-                    ch
-                }
-            })
-            .collect();
-        let text: String = clean.trim().chars().take(180).collect();
-        if id.is_empty() || text.is_empty() || !seen.insert(id.clone()) {
-            continue;
-        }
-        items.push(Danmaku { id, text, time_ms });
-        if items.len() == 90 {
-            break;
-        }
-    }
-    items.sort_by_key(|item| item.time_ms);
-    let list = &data["common_list_info"];
-    let next_cursor = string(&list["cursor"]);
-    let next_cursor = (boolean(&list["has_more"]) == Some(true)
-        && !next_cursor.is_empty()
-        && next_cursor != cursor
-        && next_cursor.len() <= 16_384)
-        .then_some(next_cursor);
-    Ok(DanmakuPage {
-        next_ms,
-        next_cursor,
-        items,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reservation_write_distinguishes_rejection_from_unconfirmed_outcomes() {
+        use ProviderErrorKind::*;
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+        let client = Client::builder()
+            .no_proxy()
+            .retry(reqwest::retry::never())
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        for (status, headers, body, expected) in [
+            (200, "", r#"{"code":0}"#, None),
+            (
+                200,
+                "",
+                r#"{"code":"10403","message":"sensitive-reply"}"#,
+                Some(Rejected(10403)),
+            ),
+            (503, "", r#"{"code":10403}"#, Some(HttpStatus(503))),
+            (429, "", "", Some(HttpStatus(429))),
+            (200, "Retry-After: 10\r\n", "", Some(RetryLater)),
+            (200, "", "", Some(EmptyResponse)),
+            (200, "", "{", Some(InvalidResponse)),
+            (200, "", "{}", Some(MissingStatus)),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!(
+                "http://{}/reserve?device_id=sensitive-url",
+                listener.local_addr().unwrap()
+            );
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut request = BufReader::new(socket);
+                let mut line = String::new();
+                request.read_line(&mut line).await.unwrap();
+                assert!(line.starts_with("POST /reserve?"));
+                loop {
+                    line.clear();
+                    assert_ne!(request.read_line(&mut line).await.unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut payload = [0; 2];
+                request.read_exact(&mut payload).await.unwrap();
+                assert_eq!(&payload, b"{}");
+                let reply = format!(
+                    "HTTP/1.1 {status} Fixture\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                request.get_mut().write_all(reply.as_bytes()).await.unwrap();
+            });
+            let failure = ReservationRequest(client.post(url).body("{}"))
+                .submit()
+                .await
+                .err();
+            server.await.unwrap();
+            assert_eq!(failure.map(|error| error.kind()), expected);
+            if let Some(error) = failure {
+                assert_eq!(
+                    error.is_explicit_rejection(),
+                    matches!(expected, Some(Rejected(_)))
+                );
+                assert!(!format!("{error:?} {error}").contains("sensitive-"));
+            }
+        }
+    }
 
     #[test]
     fn related_work_only_exposes_actions_for_supported_types() {
@@ -730,43 +783,35 @@ mod tests {
         assert_eq!(rows[0].series.badge, "全 5 集");
     }
 
-    #[test]
-    fn timed_comments_are_bound_to_the_requested_episode_and_segment() {
-        let row = |id, group, status, offset, text| {
-            json!({"comment": {
-                "comment_id": id, "common": {"group_id": group, "status": status, "content": {"text": text}},
-                "expand": {"offset_time": offset}
-            }})
+    #[tokio::test]
+    async fn timed_cursor_rejects_other_episodes_and_seek_positions() {
+        let social = Social::new(Arc::new(RegisteredSource::new().unwrap())).unwrap();
+        let cursor = DanmakuCursor {
+            series: "101".into(),
+            episode: "201".into(),
+            start: 30_000,
+            duration: 90_000,
+            upstream_cursor: String::new(),
+            device: Arc::new(Device {
+                device_id: "123".into(),
+                install_id: "456".into(),
+                cdid: "fixture".into(),
+                cookie: None,
+            }),
         };
-        let root = json!({"data": {
-            "extra": {"next_query_danmaku_list_time": 30_000},
-            "common_list_info": {"cursor": "next", "has_more": true},
-            "data_list": [
-                row("later", "123456", 1, 14_000, "第二条"),
-                row("wrong", "222222", 1, 13_000, "其他集"),
-                row("hidden", "123456", 0, 13_000, "不可显示"),
-                row("first", "123456", 1, 11_000, "第一\n条"),
-                row("first", "123456", 1, 12_000, "重复"),
-                row("long", "123456", 1, 20_000, "已越过总时长"),
-                row("before", "123456", 1, 9_999, "已越过起点")
-            ]
-        }});
-        let page = parse_danmaku(&root, "123456", 10_000, 20_000, "").unwrap();
-        assert_eq!(page.next_ms, 20_000);
-        assert_eq!(page.next_cursor.as_deref(), Some("next"));
-        assert_eq!(
-            page.items
-                .iter()
-                .map(|item| item.text.as_str())
-                .collect::<Vec<_>>(),
-            ["第一 条", "第二条"]
-        );
-        assert!(parse_danmaku(&root, "123456", 30_000, 35_000, "").is_err());
-        assert!(
-            parse_danmaku(&root, "123456", 10_000, 20_000, "next")
-                .unwrap()
-                .next_cursor
-                .is_none()
-        );
+        assert!(cursor.matches_position("101", "201", 30_000, 90_000));
+        for (series, episode, start, duration) in [
+            ("102", "201", 30_000, 90_000),
+            ("101", "202", 30_000, 90_000),
+            ("101", "201", 20_000, 90_000),
+            ("101", "201", 30_000, 92_000),
+        ] {
+            let failure = social
+                .danmaku(series, episode, start, duration, Some(&cursor))
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(failure.to_string(), "弹幕续页与当前播放位置不匹配");
+        }
     }
 }

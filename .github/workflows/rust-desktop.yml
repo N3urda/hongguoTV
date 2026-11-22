@@ -32,7 +32,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
       - run: cargo +stable fmt --manifest-path ../rust-core/Cargo.toml --check
-      - run: cargo +stable clippy --manifest-path ../rust-core/Cargo.toml --locked --all-targets --features web,android-jni -- -D warnings
+      - run: cargo +stable clippy --manifest-path ../rust-core/Cargo.toml --locked --all-targets --all-features -- -D warnings
+      - run: cargo +stable test --manifest-path ../rust-core/Cargo.toml --locked --all-features
       - run: cargo +stable test --manifest-path ../rust-core/Cargo.toml --locked --features web
       - run: cargo +stable test --manifest-path ../rust-core/Cargo.toml --locked --features models
       - run: cargo +stable test --manifest-path ../rust-core/Cargo.toml --locked --features android-jni
@@ -40,6 +41,7 @@ jobs:
       - run: cargo +stable clippy --locked --no-default-features --all-targets -- -D warnings
       - run: cargo +stable test --locked --no-default-features
       - run: node --input-type=module --check < ui/app.js
+      - run: node --test tests/danmaku.test.mjs
       - run: node --input-type=module --check < ui/settings.js
 
   package:

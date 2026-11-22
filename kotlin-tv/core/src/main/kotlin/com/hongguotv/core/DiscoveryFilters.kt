@@ -26,6 +26,8 @@ data class DiscoverySelection(val values: Map<String, String> = emptyMap()) {
     }
 
     fun request(cursor: DiscoveryCursor?): JSONObject {
+        require(cursor == null || cursor.matches(this)) { "筛选条件已变化，请从第一页开始" }
+        NativeCatalog.discoveryRequest(values, cursor)?.let { return it }
         val selected = JSONObject()
         labels.keys.forEach { key ->
             selected.put(key, JSONArray().apply { values[key]?.let { put(it) } })
@@ -60,12 +62,19 @@ data class DiscoverySelection(val values: Map<String, String> = emptyMap()) {
     }
 }
 
-data class DiscoveryCursor(val offset: Int, val session: String, val page: Int) {
+data class DiscoveryCursor(
+    val offset: Int,
+    val session: String,
+    val page: Int,
+    private val filters: Map<String, String>? = null,
+) {
     init {
         require(offset > 0 && session.isNotBlank() && session.length <= 4096 && page in 2..100)
     }
 
     override fun toString() = "DiscoveryCursor(offset=$offset,page=$page)"
+
+    internal fun matches(selection: DiscoverySelection) = filters == null || filters == selection.values
 }
 
 data class FilteredDiscoveryPage(
@@ -89,7 +98,17 @@ class DiscoveryBrowserState {
 }
 
 internal object FilteredDiscoveryParser {
-    fun parse(raw: String, cursor: DiscoveryCursor?): FilteredDiscoveryPage {
+    fun parse(
+        raw: String,
+        cursor: DiscoveryCursor?,
+        selection: DiscoverySelection = DiscoverySelection(),
+    ): FilteredDiscoveryPage {
+        require(cursor == null || cursor.matches(selection)) { "筛选条件已变化，请从第一页开始" }
+        try {
+            NativeCatalog.discoveryPage(raw, cursor)?.let { return nativePage(it, selection) }
+        } catch (error: IllegalArgumentException) {
+            throw IOException(error.message)
+        }
         val root =
             try {
                 JSONObject(raw)
@@ -108,7 +127,8 @@ internal object FilteredDiscoveryParser {
                     if (!id.matches(Regex("[0-9]{1,30}")) || title.isBlank()) return@mapNotNull null
                     val tags =
                         runCatching {
-                                JSONArray(video.str("category_schema"))
+                                val schema = video.opt("category_schema")
+                                (schema as? JSONArray ?: JSONArray(video.str("category_schema")))
                                     .objects()
                                     .map { it.str("name") }
                                     .filter { it.isNotBlank() }
@@ -164,8 +184,32 @@ internal object FilteredDiscoveryParser {
                 val session = data.str("session_id").ifEmpty { cursor?.session.orEmpty() }
                 if (offset <= (cursor?.offset ?: 0) || session.isBlank() || session.length > 4096)
                     throw IOException("分类续页信息异常，请刷新重试")
-                DiscoveryCursor(offset, session, page + 1)
+                DiscoveryCursor(offset, session, page + 1, selection.values.toMap())
             } else null
+        return FilteredDiscoveryPage(items, groups, next)
+    }
+
+    private fun nativePage(root: JSONObject, selection: DiscoverySelection): FilteredDiscoveryPage {
+        val items = root.getJSONArray("items").objects().map { row ->
+            val tags = row.getJSONArray("tags")
+            Series(
+                row.getString("id"),
+                row.getString("title"),
+                row.getString("cover"),
+                row.getString("description"),
+                row.getString("badge"),
+                (0 until tags.length()).joinToString(" · ") { tags.getString(it) },
+            )
+        }
+        val groups = root.getJSONArray("groups").objects().map { row ->
+            DiscoveryGroup(row.getString("type"), row.getString("label"),
+                row.getJSONArray("options").objects().map {
+                    DiscoveryFilter(it.getString("id"), it.getString("label"))
+                })
+        }
+        val next = root.optJSONObject("next")?.let {
+            DiscoveryCursor(it.getInt("offset"), it.getString("session"), it.getInt("page"), selection.values.toMap())
+        }
         return FilteredDiscoveryPage(items, groups, next)
     }
 }

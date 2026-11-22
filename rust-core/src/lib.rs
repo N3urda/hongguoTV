@@ -4,6 +4,14 @@ use std::cmp::Reverse;
 
 pub mod range;
 
+#[cfg(feature = "catalog-rules")]
+mod catalog_rules;
+
+#[cfg(feature = "catalog-rules")]
+pub fn valid_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 30 && value.bytes().all(|b| b.is_ascii_digit())
+}
+
 #[cfg(feature = "models")]
 pub mod model;
 

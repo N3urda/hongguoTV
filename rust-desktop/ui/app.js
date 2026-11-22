@@ -1980,7 +1980,8 @@ async function openPlayer(episode, position = 0, prepared, feed) {
     video.addEventListener("error", () => recoverVideo(session, episode));
     view.stage.prepend(video);
     session.danmaku = attachDanmaku(view.stage, video, (start, duration, cursor, signal) => {
-      const params = new URLSearchParams({ start, duration, cursor });
+      const params = new URLSearchParams({ start, duration });
+      if (cursor) params.set("cursor", cursor);
       return request(`api/play/${session.token}/danmaku?${params}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(18_000)]) });
     }, () => state.preferences, unavailable => {
       view.danmakuNote.textContent = unavailable ? "弹幕暂时无法读取" : "";

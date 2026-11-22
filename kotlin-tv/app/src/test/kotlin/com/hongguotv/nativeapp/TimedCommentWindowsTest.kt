@@ -33,4 +33,11 @@ class TimedCommentWindowsTest {
         assertNull(TimedCommentWindows.next(listOf(page(0, 90000)), 89000, 90000))
         assertEquals(0L, TimedCommentWindows.next(listOf(page(5000, 5000)), 0, 90000))
     }
+
+    @Test
+    fun terminalWindowCoversRemainingTimeAndOldDurationsDoNotCoverNewPlayback() {
+        val terminal = page(30000, 45000).put("hasMore", false).put("durationMS", 90000)
+        assertNull(TimedCommentWindows.next(listOf(terminal), 77000, 90000))
+        assertEquals(60000L, TimedCommentWindows.next(listOf(terminal), 77000, 120000))
+    }
 }

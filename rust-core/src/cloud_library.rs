@@ -170,7 +170,8 @@ impl Social {
 pub struct CloudWrite(RequestBuilder, &'static str);
 
 impl CloudWrite {
-    pub async fn submit(self) -> Result<()> {
+    /// Read the remote state before attempting another write if submission is uncertain.
+    pub async fn submit(self) -> Result<(), ProviderError> {
         response(self.0, self.1).await.map(|_| ())
     }
 }

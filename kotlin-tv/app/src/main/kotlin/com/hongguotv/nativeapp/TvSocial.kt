@@ -134,8 +134,10 @@ class TvSocial(
         val request = RequestScope()
         scope = request
         // 在主线程取相邻区间游标，工作线程不读取正在变化的页面缓存。
-        val cursor = pages.values.filter { it.optLong("nextMS") == start }
-            .maxByOrNull { it.optLong("startMS") }?.optString("nextCursor").orEmpty()
+        val cursor = pages.values.asSequence().mapNotNull { page ->
+            TimedComments.continuation(page, ids.first, ids.second, start, duration)
+                ?.let { page.optLong("startMS") to it }
+        }.maxByOrNull { it.first }?.second.orEmpty()
         worker.submit {
             try {
                 val page = request.run { timed.read(ids.first, ids.second, start, duration, cursor) }

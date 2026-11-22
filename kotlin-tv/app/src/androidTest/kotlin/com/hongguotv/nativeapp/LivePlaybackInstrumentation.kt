@@ -15,19 +15,33 @@ import android.widget.TextView
 import androidx.media3.exoplayer.ExoPlayer
 import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.Detail
+import com.hongguotv.core.DiscoverySelection
 import com.hongguotv.core.Rendition
 import com.hongguotv.core.ResumePlayback
 import com.hongguotv.core.ResumeTarget
 import com.hongguotv.core.RustPlaybackCore
 import com.hongguotv.core.StreamLadder
+import com.hongguotv.core.TimedComments
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import org.json.JSONObject
 
 /** Check the packaged core and, in the live suite, the production player on real episodes. */
 class LivePlaybackInstrumentation : Instrumentation() {
     private var suite = "live"
+    private var catalogSample: Triple<String, String, Long>? = null
 
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         suite = arguments?.getString("suite") ?: "live"
+        val series = arguments?.getString("series")
+        val episode = arguments?.getString("episode")
+        val duration = arguments?.getString("duration_ms")?.toLongOrNull()
+        if (series != null && episode != null && duration != null) {
+            catalogSample = Triple(series, episode, duration)
+        }
         start()
     }
 
@@ -44,6 +58,23 @@ class LivePlaybackInstrumentation : Instrumentation() {
         check(RustPlaybackCore.rangeTotal("bytes 16-63/64", 16, 128, 64) == 64L)
         check(RustPlaybackCore.rangeTotal("bytes 17-63/64", 16, 128, 64) == -2L)
         check(RustPlaybackCore.rangeTotal("bytes 16-63/64", 16, 128, 65) == -3L)
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val body = okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8()
+            val selected = JSONObject(body).getJSONObject("select_items").getJSONArray("gender")
+            check(selected.getString(0) == "0")
+            val fixture = """{"code":0,"data":{"selector_rows":[{"type":"genre","items":[]}],
+                "video_data":[{"series_id":123456,"title":"校验短剧","category_schema":[{"name":"类型标签"}]}]}}"""
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200)
+                .message("OK").body(fixture.toResponseBody()).build()
+        }.build()
+        val discovery = ContentRepository(http).filteredDiscovery(DiscoverySelection(mapOf("gender" to "0")))
+        check(discovery.items.single().tags == "类型标签")
+        val terminal = JSONObject(
+            """{"code":0,"data":{"common_list_info":{"has_more":false},"data_list":[]}}"""
+        )
+        val timed = TimedComments.parse(terminal, "123456", "234567", 30000, 90000)
+        check(!timed.getBoolean("hasMore") && timed.getLong("nextMS") == 90000L)
     }
 
     override fun onStart() {
@@ -51,15 +82,34 @@ class LivePlaybackInstrumentation : Instrumentation() {
         var activity: MainActivity? = null
         try {
             check(targetContext.packageName.endsWith(".debug")) { "Use isolated debug app" }
-            check(suite in setOf("live", "rust")) { "Unknown instrumentation suite" }
+            check(suite in setOf("live", "rust", "catalog")) { "Unknown instrumentation suite" }
             verifyRustCore()
+            if (suite == "catalog") {
+                val (series, episode, duration) = checkNotNull(catalogSample) { "Provide series, episode and duration_ms" }
+                val repo = ContentRepository()
+                check(episode in repo.detail(series).episodes) { "Episode differs from official detail" }
+                val selection = DiscoverySelection()
+                val first = repo.filteredDiscovery(selection)
+                check(first.items.isNotEmpty() && first.groups.any { it.type == "genre" }) { "Discovery page is empty" }
+                first.next?.let { repo.filteredDiscovery(selection, it) }
+                sendStatus(0, Bundle().apply { putString("stream", "PASS: live filtered discovery through APK JNI\n") })
+                val timed = TimedComments()
+                val page = timed.read(series, episode, 0, duration)
+                val next = page.getLong("nextMS")
+                TimedComments.continuation(page, series, episode, next, duration)?.let { cursor ->
+                    timed.read(series, episode, next, duration, cursor)
+                }
+                result.putString("stream", "PASS: live filtered discovery and timed comments through APK JNI\n")
+                finish(Activity.RESULT_OK, result)
+                return
+            }
             val current = startActivitySync(Intent(targetContext, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
             activity = current
             val handset = (field("handset\$delegate").get(current) as Lazy<*>).value as Boolean
             val tv = !handset
             val platform = if (tv) "TV" else "phone"
-            val rustEvidence = "PASS: Rust JNI, resume, rendition and ranges on Android $platform API ${Build.VERSION.SDK_INT} (${Build.SUPPORTED_ABIS.first()})"
+            val rustEvidence = "PASS: Rust JNI, resume, rendition, ranges, discovery and timed comments on Android $platform API ${Build.VERSION.SDK_INT} (${Build.SUPPORTED_ABIS.first()})"
             sendStatus(0, Bundle().apply { putString("stream", rustEvidence + "\n") })
             runOnMainSync { check(!(field("cloudAccount").get(current) as AccountController).signedIn) }
             if (suite == "rust") {

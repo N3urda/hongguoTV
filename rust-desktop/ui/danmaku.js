@@ -16,6 +16,8 @@ export function attachDanmaku(stage, video, read, preferences, report) {
   let segment;
   let frame;
   let next;
+  let cursor = null;
+  let finished = false;
   let retryAt = 0;
   let pending = [];
   let visible = [];
@@ -30,6 +32,8 @@ export function attachDanmaku(stage, video, read, preferences, report) {
     frame = null;
     overlay.replaceChildren();
     next = undefined;
+    cursor = null;
+    finished = false;
     pending = [];
     visible = [];
     retryAt = 0;
@@ -40,38 +44,25 @@ export function attachDanmaku(stage, video, read, preferences, report) {
   async function collect(start, duration) {
     const controller = new AbortController();
     segment = controller;
-    const items = new Map();
-    const cursors = new Set();
-    let cursor = "";
-    let end;
     try {
-      for (let page = 0; page < 4; page++) {
-        let result;
-        try {
-          result = await read(start, duration, cursor, controller.signal);
-        } catch (error) {
-          if (end !== undefined) break;
-          throw error;
-        }
-        if (controller.signal.aborted) return;
-        if (end === undefined) {
-          if (!Number.isSafeInteger(result.next_ms) || result.next_ms <= start || result.next_ms > duration) {
-            throw new Error("弹幕时间段无效");
-          }
-          end = result.next_ms;
-        }
-        for (const item of result.items) {
-          if (item.time_ms >= start && item.time_ms < end) items.set(item.id, item);
-        }
-        // A continuation may advance to the next time window. It is fetched later by its start time.
-        cursor = result.next_cursor;
-        if (result.next_ms !== end || !cursor || cursors.has(cursor)) break;
-        cursors.add(cursor);
+      let result;
+      try {
+        result = await read(start, duration, cursor, controller.signal);
+      } catch (error) {
+        if (controller.signal.aborted || !cursor || error.status !== 400) throw error;
+        cursor = null;
+        result = await read(start, duration, null, controller.signal);
       }
       if (controller.signal.aborted) return;
+      const end = result.next_ms;
+      if (!Number.isSafeInteger(end) || end <= start || end > duration) {
+        throw new Error("弹幕时间段无效");
+      }
       next = end;
+      cursor = result.next_cursor;
+      finished = !cursor;
       const now = video.currentTime * 1000;
-      pending = pending.concat([...items.values()].filter(item => item.time_ms >= now - 1300))
+      pending = pending.concat(result.items.filter(item => item.time_ms >= now - 1300))
         .sort((a, b) => a.time_ms - b.time_ms);
       if (hasError) report(false);
       hasError = false;
@@ -123,8 +114,11 @@ export function attachDanmaku(stage, video, read, preferences, report) {
     if (!settings.danmaku || video.seeking || video.ended || !Number.isFinite(video.duration) || !video.duration) return;
     const now = Math.floor(video.currentTime * 1000);
     const duration = Math.min(86_400_000, Math.ceil(video.duration * 1000));
-    if (next === undefined || next < now - 1000) next = Math.floor(now / 1000) * 1000;
-    if (!segment && next < duration && next - now <= 5000 && performance.now() >= retryAt) {
+    if (!segment && (next === undefined || next < now - 1000)) {
+      next = Math.floor(now / 1000) * 1000;
+      cursor = null;
+    }
+    if (!finished && !segment && next < duration && next - now <= 5000 && performance.now() >= retryAt) {
       collect(next, duration);
     }
     if (width > 0 && height > 0) draw(now, settings);
@@ -150,9 +144,13 @@ export function attachDanmaku(stage, video, read, preferences, report) {
   });
   observer.observe(overlay);
   const options = { signal: lifecycle.signal };
-  for (const event of ["loadedmetadata", "durationchange", "play", "pause", "seeked", "timeupdate"]) {
+  for (const event of ["loadedmetadata", "play", "pause", "seeked", "timeupdate"]) {
     video.addEventListener(event, wake, options);
   }
+  video.addEventListener("durationchange", () => {
+    reset();
+    wake();
+  }, options);
   video.addEventListener("seeking", reset, options);
   video.addEventListener("ended", reset, options);
   update();

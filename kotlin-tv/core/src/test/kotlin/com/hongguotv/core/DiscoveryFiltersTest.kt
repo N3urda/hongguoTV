@@ -131,6 +131,22 @@ class DiscoveryFiltersTest {
     }
 
     @Test
+    fun repositoryRejectsContinuationsFromDifferentFiltersBeforeHttp() {
+        val first = DiscoverySelection(mapOf("gender" to "0"))
+        val cursor = FilteredDiscoveryParser.parse(response().toString(), null, first).next!!
+        assertEquals("test-cursor", first.request(cursor).getString("session_id"))
+        var requests = 0
+        val http = OkHttpClient.Builder().addInterceptor {
+            requests++
+            error("Unexpected HTTP request")
+        }.build()
+        assertThrows(IllegalArgumentException::class.java) {
+            ContentRepository(http).filteredDiscovery(first.choose("genre", "comic_series"), cursor)
+        }
+        assertEquals(0, requests)
+    }
+
+    @Test
     fun repositoryPostsSignedReadOnlyFilterBodyWithoutChangingWebsiteDiscovery() {
         val http =
             OkHttpClient.Builder()
