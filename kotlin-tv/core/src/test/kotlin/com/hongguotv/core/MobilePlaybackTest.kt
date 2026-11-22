@@ -16,8 +16,14 @@ import org.junit.Test
 
 class MobilePlaybackTest {
     private val device = mapOf("device_id" to "123456", "iid" to "654321", "cdid" to "test-device")
-    private fun model(id: String = "123", typed: Boolean = false, stringModel: Boolean = false): String {
+    private fun model(
+        id: String = "123",
+        typed: Boolean = false,
+        stringModel: Boolean = false,
+        onlyBytevc2: Boolean = false,
+    ): String {
         val model = JSONObject("""{"video_list":[{"video_meta":{"codec_type":"bytevc2","vwidth":720,"vheight":1280},"main_url":"https://example.org/unsupported"},{"video_meta":{"codec_type":"h264","vwidth":720,"vheight":1280},"main_url":"https://example.org/video"}]}""")
+        if (onlyBytevc2) model.getJSONArray("video_list").remove(1)
         val entries = JSONObject().put(id, JSONObject().put("video_model", if (stringModel) model.toString() else model))
         return JSONObject().put("code", 0).put("data", if (typed) JSONObject().put("1004", entries) else entries).toString()
     }
@@ -215,6 +221,51 @@ class MobilePlaybackTest {
         assertEquals(listOf("POST", "GET"), requests.map { it.method })
     }
 
+    @Test fun bytevc2OnlyTabModelUsesAlternateMobileHostWithTheSameIdentity() {
+        val requests = mutableListOf<Request>()
+        val repository = repositoryWithModels(
+            mobile = "",
+            tab = model(stringModel = true, onlyBytevc2 = true),
+            requests = requests,
+            alternateMobile = model(typed = true),
+        )
+
+        val rendition = repository.streamLadderWithCompatibility("123").renditions.single()
+        assertEquals("https://example.org/video", rendition.url)
+        assertEquals(
+            listOf(
+                "POST" to "api5-normal-sinfonlinea.fqnovel.com",
+                "GET" to "api5-normal-sinfonlineb.fqnovel.com",
+                "POST" to "api5-normal-sinfonlineb.fqnovel.com",
+            ),
+            requests.map { it.method to it.url.host },
+        )
+        assertEquals(requests[0].url.encodedPath, requests[2].url.encodedPath)
+        for (parameter in listOf("iid", "device_id", "cdid")) {
+            assertEquals(listOf(requests[0].url.queryParameter(parameter)), requests.map { it.url.queryParameter(parameter) }.distinct())
+        }
+    }
+
+    @Test fun emptyAlternateModelRetainsTheUnsupportedTabAndPrimaryDiagnostics() {
+        val requests = mutableListOf<Request>()
+        val repository = repositoryWithModels(
+            mobile = "",
+            tab = model(onlyBytevc2 = true),
+            requests = requests,
+            alternateMobile = "",
+        )
+
+        val error = assertThrows(EmptyPlaybackResponseException::class.java) {
+            repository.streamLadderWithCompatibility("123")
+        }
+        assertFalse(error.allPlaybackModelsEmpty)
+        assertEquals("stage=mobile-model", error.suppressed.filterIsInstance<EmptyPlaybackResponseException>().single().detail)
+        assertTrue(error.suppressed.filterIsInstance<PlaybackDiagnosticException>().any {
+            it.detail.startsWith("video-tab-no-compatible-source ") && it.detail.endsWith("alternate-model=b")
+        })
+        assertEquals(listOf("POST", "GET", "POST"), requests.map { it.method })
+    }
+
     @Test fun healthyModelAndUpstreamBackoffDoNotUseTab() {
         val requests = mutableListOf<Request>()
         val healthy = repositoryWithModels(model(), requests = requests)
@@ -234,12 +285,18 @@ class MobilePlaybackTest {
         session: PlaybackDeviceSession = PlaybackDeviceSession { DeviceRegister.Registered("123456", "654321") },
         clock: () -> Long = System::currentTimeMillis,
         tabFailure: IOException? = null,
+        alternateMobile: String? = null,
     ): ContentRepository {
         val client = OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
             requests += request
             if (request.method == "GET" && tabFailure != null) throw tabFailure
-            val body = if (request.method == "POST") mobile else tab
+            val body = when {
+                request.method == "GET" -> tab
+                request.url.host == "api5-normal-sinfonlineb.fqnovel.com" ->
+                    checkNotNull(alternateMobile) { "Unexpected alternate mobile model request" }
+                else -> mobile
+            }
             Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
                 .code(200).message("OK").body(body.toResponseBody()).apply {
                     retryAfter?.let { header("Retry-After", it) }
