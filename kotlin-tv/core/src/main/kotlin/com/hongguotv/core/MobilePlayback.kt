@@ -21,6 +21,7 @@ internal fun interface MobilePlaybackSigner {
 }
 
 internal object MobilePlayback {
+    private const val PRIMARY_MODEL_HOST = "api5-normal-sinfonlinea.fqnovel.com"
     private val v5Signer = Signer(mobileV5 = true)
     val signer = MobilePlaybackSigner { url, body, _ ->
         val parsed = url.toHttpUrl()
@@ -67,12 +68,18 @@ internal object MobilePlayback {
             }
     }
 
-    fun ladder(id: String, device: Map<String, String>, http: OkHttpClient,
-               signer: MobilePlaybackSigner, now: Long): StreamLadder {
+    fun ladder(
+        id: String,
+        device: Map<String, String>,
+        http: OkHttpClient,
+        signer: MobilePlaybackSigner,
+        now: Long,
+        host: String = PRIMARY_MODEL_HOST,
+    ): StreamLadder {
         require(id.matches(Regex("[0-9]{1,30}")))
         RequestScope.ensureActive()
         val query = query(device) + ("_rticket" to now.toString())
-        val url = "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1"
+        val url = "https://$host/novel/player/multi_video_model/player/v1"
             .toHttpUrl().newBuilder().apply { query.forEach { (k,v) -> addQueryParameter(k,v) } }.build()
         // TV uses platform decoders, not the official app's bytevc2 decoder.
         // Level 3 can return only bytevc2; level 1 negotiates compatible renditions.

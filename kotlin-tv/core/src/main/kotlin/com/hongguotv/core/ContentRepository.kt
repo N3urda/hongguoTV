@@ -1008,12 +1008,30 @@ constructor(
                     }
                 }
                 RequestScope.ensureActive()
-                val rows = entry?.optJSONObject("video_model")?.let(PlaybackModels::renditions).orEmpty()
-                if (rows.isEmpty()) {
+                val model = entry?.optJSONObject("video_model")
+                if (model == null) {
                     empty.addSuppressed(PlaybackDiagnosticException("video-tab-no-model ${trace.summary()}"))
                     throw empty
                 }
-                StreamLadder(rows)
+                val rows = PlaybackModels.renditions(model)
+                if (rows.isNotEmpty()) return@withDeadline StreamLadder(rows)
+
+                // The tab model can contain only bytevc2. The mobile model on the same host can supply HEVC.
+                val alternateHost = PlayRetryPlan.host(0)
+                try {
+                    MobilePlayback.ladder(
+                        id, profile.values, http, MobilePlayback.signer, clock(), host = alternateHost,
+                    )
+                } catch (alternate: IOException) {
+                    RequestScope.ensureActive()
+                    alternate.addSuppressed(empty)
+                    alternate.addSuppressed(
+                        PlaybackDiagnosticException(
+                            "video-tab-no-compatible-source ${trace.summary()} alternate-model=${PlayRetryPlan.tag(alternateHost)}"
+                        )
+                    )
+                    throw alternate
+                }
             }
         }
 
