@@ -79,7 +79,7 @@ android {
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".debug"
-            versionNameSuffix = "-rust-debug"
+            versionNameSuffix = if (debugDevice == "phone") "-rust-debug" else "-debug.20261114"
             buildConfigField("boolean", "FORCE_TV_CONTROLS", (debugDevice == "tv").toString())
             buildConfigField("boolean", "FORCE_PHONE_UI", (debugDevice == "phone").toString())
         }

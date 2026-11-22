@@ -2,16 +2,20 @@ package com.hongguotv.nativeapp
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.app.Activity
 import android.os.Build
 import android.widget.FrameLayout
 import org.junit.Assert.*
+import org.junit.Assume.assumeFalse
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.LooperMode
@@ -146,6 +150,31 @@ class AndroidCompatibilityTest {
             assertTrue(content.childCount > 0)
         } finally {
             controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    @Config(sdk = [21, 26], qualifiers = "normal-land")
+    @Suppress("DEPRECATION")
+    fun universalBuildKeepsTouchTelevisionsOnTheTvFrontend() {
+        assumeFalse(BuildConfig.FORCE_TV_CONTROLS || BuildConfig.FORCE_PHONE_UI)
+        val features = shadowOf(RuntimeEnvironment.getApplication().packageManager)
+        val indicators = listOf(
+            PackageManager.FEATURE_LEANBACK,
+            PackageManager.FEATURE_LEANBACK_ONLY,
+            PackageManager.FEATURE_TELEVISION,
+        )
+        features.setSystemFeature(PackageManager.FEATURE_TOUCHSCREEN, true)
+        val handset = MainActivity::class.java.getDeclaredField("handset\$delegate").apply { isAccessible = true }
+        for (indicator in listOf(null) + indicators) {
+            indicators.forEach { features.setSystemFeature(it, it == indicator) }
+            val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+            try {
+                assertEquals(indicator ?: "touchscreen only", indicator == null,
+                    (handset.get(controller.get()) as Lazy<*>).value)
+            } finally {
+                controller.destroy()
+            }
         }
     }
 

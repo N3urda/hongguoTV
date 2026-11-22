@@ -16,7 +16,7 @@ import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.LooperMode
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26], qualifiers = "w960dp-h540dp-land-mdpi")
+@Config(sdk = [26], qualifiers = "w960dp-h540dp-land-television-mdpi")
 @LooperMode(LooperMode.Mode.PAUSED)
 @GraphicsMode(GraphicsMode.Mode.LEGACY)
 class RankingScreenTest {
@@ -418,7 +418,7 @@ class RankingScreenTest {
     }
 
     @Test
-    @Config(sdk = [26], qualifiers = "w960dp-h540dp-land-xhdpi")
+    @Config(sdk = [26], qualifiers = "w960dp-h540dp-land-television-xhdpi")
     fun fullHd320DpiSelectedFirstRowCardKeepsPosterAspectAndShowsFullTwoLineTitleAndHeat() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create().visible()
         val activity = controller.get()
@@ -545,7 +545,7 @@ class RankingScreenTest {
     }
 
     @Test
-    @Config(sdk = [26], qualifiers = "w960dp-h540dp-land-xhdpi", fontScale = 1.3f)
+    @Config(sdk = [26], qualifiers = "w960dp-h540dp-land-television-xhdpi", fontScale = 1.3f)
     fun largeFontAndWrappedFullTitleStillKeepSelectedCardTitleAndHeatFullyVisible() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()

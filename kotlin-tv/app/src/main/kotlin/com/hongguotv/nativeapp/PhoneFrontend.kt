@@ -2,6 +2,7 @@
 package com.hongguotv.nativeapp
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.graphics.drawable.Drawable
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -9,26 +10,34 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.text.InputFilter
+import android.text.InputType
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.widget.ArrayAdapter
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
+import android.widget.AdapterView
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.hongguotv.core.CatalogPage
 import com.hongguotv.core.CloudReservation
+import com.hongguotv.core.CloudProgress
 import com.hongguotv.core.ContentType
 import com.hongguotv.core.Detail
-import com.hongguotv.core.DramaCategory
+import com.hongguotv.core.DiscoveryCursor
+import com.hongguotv.core.DiscoverySelection
+import com.hongguotv.core.FilteredDiscoveryPage
 import com.hongguotv.core.RankBoard
 import com.hongguotv.core.RelatedWork
 import com.hongguotv.core.ResumeTarget
@@ -40,26 +49,28 @@ internal class PhoneFrontend(
     private val library: Library,
     private val artwork: (ImageView, String) -> Unit,
     private val load: (CatalogRequest, (CatalogPage) -> Unit, (Throwable) -> Unit) -> Unit,
+    private val loadDiscovery: (DiscoverySelection, DiscoveryCursor?, (FilteredDiscoveryPage?, Throwable?) -> Unit) -> Unit,
     private val open: (Series, Boolean) -> Unit,
+    private val openCloud: (CloudProgress) -> Unit,
+    private val openFeed: () -> Unit,
     private val settings: () -> Unit,
     private val cloud: AccountController,
     private val loadRelated: (Series, (List<RelatedWork>) -> Unit, (Throwable) -> Unit) -> Unit,
     private val describeReservation: (CloudReservation) -> String,
 ) {
-    enum class Tab(val label: String) { HOME("首页"), DISCOVER("找剧"), SEARCH("搜索"), LIBRARY("我的") }
+    enum class Tab(val label: String, val glyph: Int) {
+        HOME("首页", 0), DISCOVER("找剧", 1), SEARCH("搜索", 7), LIBRARY("我的", 3),
+    }
 
     data class CatalogRequest(
         val tab: Tab,
-        val category: DramaCategory,
-        val topic: String,
         val query: String,
         val page: Int,
         val board: RankBoard?,
     )
 
     private var tab = Tab.HOME
-    private var category = DramaCategory.REAL
-    private var topic = ""
+    private val discovery = PhoneDiscovery.State()
     private var rank = false
     private var board = RankBoard.ALL
     private var query = ""
@@ -67,6 +78,12 @@ internal class PhoneFrontend(
     private var libraryTab = 0
     private var reservationOnline = false
     private var reservationResults: LinearLayout? = null
+    private var savedResults: LinearLayout? = null
+    private var savedSnapshot: Any? = null
+    private var savedScope: Int? = null
+    private var homeResume: LinearLayout? = null
+    private var homeResumeEntry: HistoryEntry? = null
+    private var accountFavorite: Pair<String, TextView>? = null
     private var relatedActions: List<Pair<RelatedWork, TextView>> = emptyList()
     private val pages = LinkedHashMap<CatalogRequest, CatalogPage>()
     private val positions = mutableMapOf<Tab, Int>()
@@ -123,10 +140,19 @@ internal class PhoneFrontend(
             setImageResource(R.drawable.brand_mark)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }, LinearLayout.LayoutParams(dp(30), dp(33)).apply { rightMargin = dp(7) })
-        heading.addView(label(if (tab == Tab.HOME) "红果短剧" else tab.label, 26f, bold = true),
-            LinearLayout.LayoutParams(0, -2, 1f))
+        val title = when {
+            tab == Tab.HOME -> "红果短剧"
+            tab == Tab.DISCOVER && rank -> "排行榜"
+            else -> tab.label
+        }
+        heading.addView(label(title, 26f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
         when (tab) {
-            Tab.HOME -> heading.addView(action("搜索") { select(Tab.SEARCH, focus = true) })
+            Tab.HOME -> heading.addView(action("随心看", primary = true, run = openFeed))
+            Tab.DISCOVER -> heading.addView(action(if (rank) "返回找剧" else "排行榜") {
+                rank = !rank
+                positions.remove(tab)
+                showCatalog(root)
+            })
             Tab.LIBRARY -> heading.addView(action("设置", run = settings))
             else -> Unit
         }
@@ -136,36 +162,30 @@ internal class PhoneFrontend(
         val outlet = column()
         when (tab) {
             Tab.HOME -> {
-                library.history().firstOrNull()?.let { history ->
-                    body.addView(label("接着看", 18f, bold = true))
-                    body.addView(seriesRow(history.series, "第 ${history.episodeIndex + 1} 集", "继续播放", resume = true))
-                    space(body, 22)
-                }
+                homeResume = column().also(body::addView)
+                renderHomeResume()
                 body.addView(label("热门短剧", 19f, bold = true))
                 space(body, 10)
                 body.addView(outlet)
                 fill(outlet, scroller)
             }
             Tab.DISCOVER -> {
-                body.addView(chips(listOf("题材", "排行榜"), if (rank) 1 else 0) {
-                    rank = it == 1
-                    positions.remove(tab)
-                    showCatalog(root)
-                })
-                space(body, 8)
-                if (rank) body.addView(chips(RankBoard.entries.map { it.label }, board.ordinal) { index ->
-                    board = RankBoard.entries[index]
-                    positions.remove(tab)
-                    showCatalog(root)
-                }) else body.addView(chips(DramaCategory.entries.map { it.label }, category.ordinal) { index ->
-                    category = DramaCategory.entries[index]
-                    topic = ""
-                    positions.remove(tab)
-                    showCatalog(root)
-                })
-                space(body, 12)
-                body.addView(outlet)
-                fill(outlet, scroller)
+                if (rank) {
+                    body.addView(chips(RankBoard.entries.map { it.label }, board.ordinal) { index ->
+                        board = RankBoard.entries[index]
+                        positions.remove(tab)
+                        showCatalog(root)
+                    })
+                    space(body, 12)
+                    body.addView(outlet)
+                    fill(outlet, scroller)
+                } else {
+                    val screen = PhoneDiscovery(
+                        activity, discovery, scroller, positions[tab] ?: 0, loadDiscovery, ::action, ::posterGrid,
+                    )
+                    body.addView(screen, LinearLayout.LayoutParams(-1, -2))
+                    screen.start()
+                }
             }
             Tab.SEARCH -> {
                 frame.addView(searchBar(), 1)
@@ -251,8 +271,7 @@ internal class PhoneFrontend(
     }
 
     private fun request(page: Int = 1) = CatalogRequest(
-        tab, if (tab == Tab.DISCOVER) category else DramaCategory.REAL,
-        if (tab == Tab.DISCOVER && !rank) topic else "", if (tab == Tab.SEARCH) query else "", page,
+        tab, if (tab == Tab.SEARCH) query else "", page,
         board.takeIf { tab == Tab.DISCOVER && rank },
     )
 
@@ -281,16 +300,6 @@ internal class PhoneFrontend(
 
     private fun renderResults(outlet: LinearLayout, scroller: ScrollView, key: CatalogRequest, results: List<CatalogPage>) {
         outlet.removeAllViews()
-        val topics = results.firstOrNull()?.discovery?.topics.orEmpty()
-        if (key.tab == Tab.DISCOVER && topics.isNotEmpty()) {
-            val topicIds = listOf("") + topics.map { it.id }
-            outlet.addView(chips(listOf("全部题材") + topics.map { it.label }, topicIds.indexOf(topic)) {
-                topic = topicIds[it]
-                positions.remove(tab)
-                container?.let(::showCatalog)
-            })
-            space(outlet, 12)
-        }
         val items = results.flatMap { it.items }.distinctBy { it.id }
         if (items.isEmpty()) outlet.addView(message("没有找到匹配的剧集"))
         else {
@@ -338,11 +347,11 @@ internal class PhoneFrontend(
         })
         space(body, 12)
         when (libraryTab) {
-            0 -> library.history().let { list ->
-                if (list.isEmpty()) body.addView(message("观看记录会出现在这里"))
-                list.forEach { body.addView(seriesRow(it.series, "第 ${it.episodeIndex + 1} 集 · ${if (it.completed) "已看完" else time(it.position)}")) }
+            0, 1 -> {
+                savedResults = column().also(body::addView)
+                renderSaved()
+                refreshSavedIfNeeded()
             }
-            1 -> library.favorites().let { if (it.isEmpty()) body.addView(message("还没有收藏")) else posterGrid(body, it) }
             2 -> library.later().let { if (it.isEmpty()) body.addView(message("还没有稍后看的剧集")) else posterGrid(body, it) }
             3 -> {
                 val filters = FrameLayout(activity)
@@ -362,7 +371,105 @@ internal class PhoneFrontend(
         }
     }
 
+    private data class HistoryEntry(
+        val series: Series,
+        val index: Int,
+        val position: Long,
+        val updatedAt: Long,
+        val completed: Boolean,
+        val remote: CloudProgress? = null,
+    )
+
+    private fun latestHistory(): List<HistoryEntry> {
+        val local = library.history().map {
+            HistoryEntry(it.series, it.episodeIndex, it.position, it.updatedAt, it.completed)
+        }
+        val remote = cloud.historyRows().filter { it.updatedAt > 0 }.map {
+            HistoryEntry(it.series, it.episodeIndex, it.position, it.updatedAt,
+                it.duration > 0 && it.position > 0 && it.duration - it.position <= 2_000, it)
+        }
+        // Stable sort prefers the local record when both devices have the same timestamp.
+        return (local + remote).sortedByDescending { it.updatedAt }.distinctBy { it.series.id }
+    }
+
+    private fun renderHomeResume() {
+        val outlet = homeResume ?: return
+        val entry = latestHistory().firstOrNull()
+        if (entry == homeResumeEntry) return
+        homeResumeEntry = entry
+        outlet.removeAllViews()
+        if (entry != null) {
+            outlet.addView(label("接着看", 18f, bold = true))
+            outlet.addView(historyRow(entry, "继续播放"))
+            space(outlet, 22)
+        }
+    }
+
+    private fun historyRow(item: HistoryEntry, cta: String? = null): View {
+        val suffix = if (item.remote != null) " · 账户" else ""
+        val progress = if (item.completed) "已看完" else time(item.position)
+        val scope = cloud.historyScope
+        return seriesRow(item.series, "第 ${item.index + 1} 集 · $progress$suffix", cta, resume = true,
+            onOpen = {
+                if (item.remote == null) open(item.series, true)
+                else if (cloud.signedIn && scope == cloud.historyScope) openCloud(item.remote)
+            })
+    }
+
+    private fun refreshSavedIfNeeded() {
+        if (!cloud.signedIn || savedScope == cloud.historyScope) return
+        savedScope = cloud.historyScope
+        if (libraryTab == 0 && !cloud.historyReady && !cloud.historyLoading) cloud.refreshHistory()
+        if (libraryTab == 1 && !cloud.favoriteState().loaded && !cloud.favoriteState().loading) cloud.refreshFavorites()
+    }
+
+    private fun renderSaved() {
+        val outlet = savedResults ?: return
+        val history = libraryTab == 0
+        val histories = if (history) latestHistory() else emptyList()
+        val localFavorites = if (history) emptyList() else library.favorites()
+        val accountFavorites = if (history) emptyList() else cloud.favoriteState().rows.map { it.series }
+        val signedIn = cloud.signedIn
+        val loading = if (history) cloud.historyLoading else cloud.favoriteState().loading
+        val status = if (history) cloud.historyStatus else cloud.favoriteState().message
+        val snapshot = listOf(libraryTab, histories, localFavorites, accountFavorites, signedIn, loading, status, cloud.historyScope)
+        if (snapshot == savedSnapshot) return
+        savedSnapshot = snapshot
+        outlet.removeAllViews()
+        if (signedIn) {
+            if (status.isNotBlank()) outlet.addView(message(status))
+            outlet.addView(action("刷新账户记录") {
+                if (history) cloud.refreshHistory() else cloud.refreshFavorites()
+            }.apply { isEnabled = !loading })
+        }
+        if (history) {
+            if (histories.isEmpty()) outlet.addView(message("观看记录会出现在这里"))
+            histories.forEach { outlet.addView(historyRow(it)) }
+        } else {
+            val cards = (localFavorites + accountFavorites).distinctBy { it.id }
+            val accountIds = accountFavorites.mapTo(mutableSetOf()) { it.id }
+            val localIds = localFavorites.mapTo(mutableSetOf()) { it.id }
+            if (cards.isEmpty()) outlet.addView(message("还没有收藏"))
+            cards.forEach { series ->
+                val source = when {
+                    series.id in accountIds && series.id in localIds -> "本机和账户"
+                    series.id in accountIds -> "账户"
+                    else -> "本机"
+                }
+                outlet.addView(seriesRow(series, listOf(series.badge, source).filter(String::isNotBlank).joinToString(" · ")))
+            }
+        }
+    }
+
     fun refreshAccount() {
+        if (homeResume?.isAttachedToWindow == true) renderHomeResume()
+        accountFavorite?.let { (id, button) ->
+            if (button.isAttachedToWindow) button.text = cloud.favoriteActionLabel(id)
+        }
+        if (savedResults?.isAttachedToWindow == true) {
+            renderSaved()
+            refreshSavedIfNeeded()
+        }
         val results = reservationResults?.takeIf { it.isAttachedToWindow }
         val buttons = relatedActions.filter { (_, button) -> button.isAttachedToWindow }
         buttons.forEach { (work, button) ->
@@ -486,27 +593,19 @@ internal class PhoneFrontend(
         toggle({ library.favorite(series.id) }, "收藏" to "已收藏") { library.toggle(series) }
         toggle({ library.queued(series.id) }, "稍后看" to "已加入稍后看") { library.toggleLater(series) }
         lateinit var accountButton: TextView
-        accountButton = action("账户收藏") { cloudFavorite(series, accountButton) }
+        accountButton = action(cloud.favoriteActionLabel(series.id)) { cloudFavorite(series, accountButton) }
+        accountFavorite = series.id to accountButton
+        if (cloud.signedIn && !cloud.favoriteState().loaded && !cloud.favoriteState().loading) cloud.refreshFavorites()
         actions.addView(accountButton, LinearLayout.LayoutParams(0, dp(48), 1f))
         body.addView(actions)
         space(body, 22)
         body.addView(label("选集", 20f, bold = true))
         val selected = current?.takeIf { it in detail.episodes.indices } ?: resume.index
         val episodes = column()
-        val groups = (detail.episodes.indices step 24).map { start -> "${start + 1}–${minOf(start + 24, detail.episodes.size)}" }
+        val groups = episodeGroups(detail.episodes.size)
         fun render(group: Int) {
-            episodes.removeAllViews()
-            val start = group * 24
-            (start until minOf(start + 24, detail.episodes.size)).chunked(5).forEach { indices ->
-                val row = row()
-                indices.forEach { index ->
-                    row.addView(action("${index + 1}", primary = index == selected) {
-                        play(index, if (index == resume.index) resume.position else 0)
-                    }.apply { contentDescription = "第 ${index + 1} 集"; isSelected = index == selected },
-                        LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
-                }
-                repeat(5 - indices.size) { row.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f)) }
-                episodes.addView(row)
+            renderEpisodeGroup(episodes, detail.episodes.size, group, selected) { index ->
+                play(index, if (index == resume.index) resume.position else 0)
             }
         }
         if (groups.size > 1) {
@@ -516,7 +615,7 @@ internal class PhoneFrontend(
                 groupBar.addView(chips(groups, selectedGroup) { groupTabs(it) })
                 render(selectedGroup)
             }
-            groupTabs(selected / 24)
+            groupTabs(selected / episodesPerGroup)
             body.addView(groupBar)
         } else render(0)
         body.addView(episodes)
@@ -528,8 +627,103 @@ internal class PhoneFrontend(
         }
     }
 
+    private val episodesPerGroup = 20
+
+    private fun episodeGroups(total: Int): List<String> = (0 until total step episodesPerGroup).map { start ->
+        "${start + 1}–${minOf(start + episodesPerGroup, total)}"
+    }
+
+    private fun renderEpisodeGroup(parent: LinearLayout, total: Int, group: Int, current: Int, select: (Int) -> Unit) {
+        val columns = if (activity.resources.configuration.screenWidthDp < 360) 4 else 5
+        parent.removeAllViews()
+        val start = group * episodesPerGroup
+        (start until minOf(start + episodesPerGroup, total)).chunked(columns).forEach { indices ->
+            parent.addView(row().apply {
+                indices.forEach { index ->
+                    val episode = action("${index + 1}", primary = index == current) { select(index) }.apply {
+                        contentDescription = "第 ${index + 1} 集"
+                        isSelected = index == current
+                        setPadding(0, 0, 0, 0)
+                        setSingleLine()
+                    }
+                    addView(episode, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                        setMargins(dp(3), dp(3), dp(3), dp(3))
+                    })
+                }
+                repeat(columns - indices.size) { addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f)) }
+            })
+        }
+    }
+
+    fun showEpisodePicker(total: Int, current: Int, select: (Int) -> Unit) {
+        if (total <= 0) return
+        val groups = episodeGroups(total)
+        val content = column().apply { setPadding(dp(16), 0, dp(16), dp(8)) }
+        val grid = column()
+        val scroller = ScrollView(activity).apply { addView(content) }
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle("选集 · 共 $total 集")
+            .setView(scroller)
+            .setNegativeButton("关闭", null)
+            .create()
+        fun choose(index: Int) {
+            dialog.dismiss()
+            select(index)
+        }
+        if (groups.size > 1) {
+            val jump = EditText(activity).apply {
+                hint = "输入集数"
+                inputType = InputType.TYPE_CLASS_NUMBER
+                imeOptions = EditorInfo.IME_ACTION_GO
+                setSingleLine()
+                filters = arrayOf(InputFilter.LengthFilter(total.toString().length))
+            }
+            fun jumpToEpisode() {
+                val number = jump.text.toString().toIntOrNull()
+                if (number != null && number in 1..total) choose(number - 1)
+                else jump.error = "请输入 1–$total"
+            }
+            jump.setOnEditorActionListener { _, action, _ ->
+                if (action != EditorInfo.IME_ACTION_GO) return@setOnEditorActionListener false
+                jumpToEpisode()
+                true
+            }
+            content.addView(row().apply {
+                addView(jump, LinearLayout.LayoutParams(0, dp(48), 1f).apply { rightMargin = dp(8) })
+                addView(action("跳转播放", run = ::jumpToEpisode))
+            })
+            val spinner = Spinner(activity).apply {
+                contentDescription = "选集分组"
+                adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_item, groups.map { "$it 集" })
+                    .apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+                setSelection(current / episodesPerGroup)
+                onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                        renderEpisodeGroup(grid, total, position, current, ::choose)
+                    }
+                    override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                }
+            }
+            content.addView(spinner, LinearLayout.LayoutParams(-1, dp(48)))
+        }
+        renderEpisodeGroup(grid, total, current / episodesPerGroup, current, ::choose)
+        content.addView(grid)
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+        dialog.show()
+        dialog.window?.apply {
+            setGravity(Gravity.BOTTOM)
+            setLayout(-1, -2)
+        }
+    }
+
     fun frame(root: FrameLayout): LinearLayout {
         reservationResults = null
+        savedResults = null
+        savedSnapshot = null
+        savedScope = null
+        homeResume = null
+        homeResumeEntry = null
+        accountFavorite = null
         relatedActions = emptyList()
         root.removeAllViews()
         root.setBackgroundColor(TvStyle.background)
@@ -558,9 +752,17 @@ internal class PhoneFrontend(
     private fun bottomNavigation() = row().apply {
         setPadding(0, dp(6), 0, 0)
         Tab.entries.forEach { item ->
-            val control = action(item.label, primary = item == tab) { select(item, focus = item == Tab.SEARCH) }
-            control.isSelected = item == tab
-            addView(control, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(2); rightMargin = dp(2) })
+            val selected = item == tab
+            val control = action(item.label) { select(item, focus = item == Tab.SEARCH) }.apply {
+                isSelected = selected
+                textSize = 12f
+                includeFontPadding = false
+                background = ripple(if (selected) TvStyle.raised else Color.TRANSPARENT, 12)
+                setPadding(0, dp(8), 0, dp(5))
+                compoundDrawablePadding = dp(3)
+                setCompoundDrawablesWithIntrinsicBounds(null, TvGlyph(item.glyph, dp(20), if (selected) accent else ink), null, null)
+            }
+            addView(control, LinearLayout.LayoutParams(0, dp(56), 1f).apply { leftMargin = dp(2); rightMargin = dp(2) })
         }
     }
 
@@ -605,12 +807,12 @@ internal class PhoneFrontend(
         }
     }
 
-    private fun seriesRow(series: Series, subtitle: String, cta: String? = null, resume: Boolean = false, openable: Boolean = true) = row().apply {
+    private fun seriesRow(series: Series, subtitle: String, cta: String? = null, resume: Boolean = false, openable: Boolean = true, onOpen: (() -> Unit)? = null) = row().apply {
         setPadding(dp(8), dp(8), dp(8), dp(8))
         background = if (openable) ripple(surface, 12) else shape(surface, 12)
         if (openable) {
             isFocusable = true
-            setOnClickListener { open(series, resume) }
+            setOnClickListener { if (onOpen == null) open(series, resume) else onOpen() }
         }
         addView(poster(series), LinearLayout.LayoutParams(dp(52), dp(73)).apply { rightMargin = dp(12) })
         val copy = column()
@@ -638,6 +840,14 @@ internal class PhoneFrontend(
     }
 
     fun message(title: String) = label(title, 15f, muted).apply { setPadding(dp(4), dp(18), dp(4), dp(16)) }
+
+    fun playbackAction(title: String, key: String, run: () -> Unit) =
+        PlaybackIconButton(activity, key, touch = true).apply {
+            text = title
+            tag = key
+            background = ripple(surface, 12)
+            setOnClickListener { run() }
+        }
 
     fun action(title: String, primary: Boolean = false, run: () -> Unit) =
         android.widget.Button(activity).apply {

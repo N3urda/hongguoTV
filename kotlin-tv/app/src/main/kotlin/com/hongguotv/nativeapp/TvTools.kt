@@ -23,7 +23,7 @@ import java.net.Inet4Address
 import java.util.concurrent.Executors
 
 /** Native modal controls kept separate from catalog/player navigation. */
-class TvTools(private val activity: Activity) {
+class TvTools(private val activity: Activity, private val touch: Boolean = false) {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private var dialog: AlertDialog? = null
@@ -160,7 +160,7 @@ class TvTools(private val activity: Activity) {
                 tag = "choice-${choices.size}"
                 gravity = Gravity.CENTER_VERTICAL
                 isFocusable = true
-                isFocusableInTouchMode = true
+                isFocusableInTouchMode = !touch
                 isClickable = true
                 minimumHeight = dp(48)
                 setPadding(dp(14), dp(10), dp(14), dp(10))
@@ -201,10 +201,20 @@ class TvTools(private val activity: Activity) {
             view.nextFocusLeftId = view.id
             view.nextFocusRightId = view.id
         }
-        content.addView(label("确定选择 · 返回取消", 12f).apply {
-            setTextColor(TvStyle.muted)
-            setPadding(dp(8), dp(8), dp(8), 0)
-        })
+        if (touch) {
+            content.addView(Button(activity).apply {
+                text = "关闭"
+                minHeight = dp(48)
+                setTextColor(TvStyle.text)
+                background = TvVisual.row(activity, false)
+                setOnClickListener { next.dismiss() }
+            })
+        } else {
+            content.addView(label("确定选择 · 返回取消", 12f).apply {
+                setTextColor(TvStyle.muted)
+                setPadding(dp(8), dp(8), dp(8), 0)
+            })
+        }
         next = AlertDialog.Builder(activity).create()
         next.setView(content, 0, 0, 0, 0)
         open(next, anchor)
@@ -223,8 +233,11 @@ class TvTools(private val activity: Activity) {
         scroll.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
         next.window?.setLayout(width, height)
         val target = choices[selected.takeIf { it in labels.indices } ?: 0]
-        target.requestFocus()
-        target.post { if (next.isShowing) scroll.requestChildFocus(list, target) }
+        if (touch) target.post { if (next.isShowing) scroll.scrollTo(0, target.top) }
+        else {
+            target.requestFocus()
+            target.post { if (next.isShowing) scroll.requestChildFocus(list, target) }
+        }
     }
 
     fun chooseGrid(

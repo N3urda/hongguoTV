@@ -28,7 +28,7 @@ import org.robolectric.annotation.LooperMode
 import org.robolectric.shadows.ShadowLooper
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26], qualifiers = "w960dp-h540dp-land-mdpi")
+@Config(sdk = [26], qualifiers = "w960dp-h540dp-land-television-mdpi")
 @LooperMode(LooperMode.Mode.PAUSED)
 @GraphicsMode(GraphicsMode.Mode.LEGACY)
 class PosterCoverFillTest {
@@ -217,7 +217,7 @@ class PosterCoverFillTest {
     }
 
     @Test
-    @Config(sdk = [26], qualifiers = "w960dp-h540dp-land-xhdpi")
+    @Config(sdk = [26], qualifiers = "w960dp-h540dp-land-television-xhdpi")
     fun favoritesHistoryAndReservationsDoNotShrinkPostersAndKeepTitleAndBadgeVisible() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create().visible()
         val activity = controller.get()

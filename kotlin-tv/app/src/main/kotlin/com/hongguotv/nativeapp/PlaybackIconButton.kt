@@ -7,14 +7,20 @@ import android.graphics.Color
 import android.widget.TextView
 
 /** Icon-only transport control; text remains the accessible action name. */
-internal class PlaybackIconButton(context: Context, private val action: String) : TextView(context) {
+internal class PlaybackIconButton(
+    context: Context,
+    private val action: String,
+    private val touch: Boolean = false,
+) : TextView(context) {
     init {
         id = generateViewId()
         isFocusable = true
-        isFocusableInTouchMode = true
+        isFocusableInTouchMode = !touch
         isClickable = true
-        setOnFocusChangeListener { _, _ -> paintFocus() }
-        paintFocus()
+        if (!touch) {
+            setOnFocusChangeListener { _, _ -> paintFocus() }
+            paintFocus()
+        }
     }
     private fun paintFocus() {
         background = TvStyle.shape(context, Color.TRANSPARENT,
@@ -26,12 +32,15 @@ internal class PlaybackIconButton(context: Context, private val action: String) 
         contentDescription = text
         invalidate()
     }
+    override fun getAccessibilityClassName(): CharSequence =
+        if (touch) android.widget.Button::class.java.name else super.getAccessibilityClassName()
+
     override fun onDraw(canvas: Canvas) {
         if (action == "speed") {
             val label = text.toString().substringAfterLast(' ')
             val pen = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 color = TvStyle.text
-                textSize = 24 * resources.displayMetrics.scaledDensity
+                textSize = (if (touch) 16 else 24) * resources.displayMetrics.scaledDensity
                 typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
                 textAlign = android.graphics.Paint.Align.CENTER
             }
@@ -45,7 +54,7 @@ internal class PlaybackIconButton(context: Context, private val action: String) 
             "comments" -> 14
             else -> 4
         }
-        val size = (28 * resources.displayMetrics.density).toInt()
+        val size = ((if (touch) 22 else 28) * resources.displayMetrics.density).toInt()
         TvGlyph(kind, size, TvStyle.text).apply {
             setBounds((width - size) / 2, (height - size) / 2, (width + size) / 2, (height + size) / 2)
             draw(canvas)

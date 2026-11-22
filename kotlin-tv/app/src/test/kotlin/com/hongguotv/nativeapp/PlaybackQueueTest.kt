@@ -122,9 +122,11 @@ class PlaybackQueueTest {
             } as ExoPlayer
     }
 
-    private fun fixture(test: (MainActivity, QueuePlayer, Library, OpenedStream) -> Unit) {
-        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+    private fun fixture(handset: Boolean = false, test: (MainActivity, QueuePlayer, Library, OpenedStream) -> Unit) {
+        val controller = Robolectric.buildActivity(MainActivity::class.java)
         val activity = controller.get()
+        set(activity, "handset\$delegate", lazyOf(handset))
+        controller.create()
         try {
             val library = get(activity, "library") as Library
             (get(library, "loader") as ExecutorService).submit {}.get(5, TimeUnit.SECONDS)
@@ -438,21 +440,52 @@ class PlaybackQueueTest {
     }
 
     @Test
-    fun migratedMenuPreservesRotationAndPersistentProgressSettings() = fixture { activity, _, _, _ ->
-        press(activity, KeyEvent.KEYCODE_MENU)
-        val anchor = (get(activity, "controls") as LinearLayout).findViewWithTag<TextView>("playback-settings")
-        invoke(activity, "showPlaybackSettings", anchor)
-        val dialog = org.robolectric.shadows.ShadowDialog.getLatestDialog()
-        fun labels(view: View): List<String> = when (view) {
-            is TextView -> listOf(view.text.toString())
-            is android.view.ViewGroup -> (0 until view.childCount).flatMap { labels(view.getChildAt(it)) }
-            else -> emptyList()
+    fun onlyTvOffersVideoRotationInPlaybackSettings() = assertPlaybackSettings(handset = false)
+
+    @Test
+    fun savedRotationIsHiddenFromPhonePlaybackSettings() = assertPlaybackSettings(handset = true)
+
+    @Test
+    fun phonePlaybackToolbarKeepsEpisodePickerWithoutPreviousOrNextButtons() =
+        fixture(handset = true) { activity, _, _, _ ->
+            invoke(activity, "showPanel")
+            val controls = get(activity, "controls") as LinearLayout
+            val actions = (0 until controls.childCount).flatMap { index ->
+                val row = controls.getChildAt(index) as LinearLayout
+                (0 until row.childCount).map { row.getChildAt(it).tag }
+            }
+            assertEquals(listOf("transport-play", "episodes", "speed", "danmaku", "comments", "playback-settings"), actions)
         }
-        val titles = labels(dialog.window!!.decorView)
-        assertTrue(titles.any { it.startsWith("画面旋转") })
-        assertTrue(titles.any { it.startsWith("常驻播放进度") })
-        dialog.dismiss()
-    }
+
+    @Test
+    fun phoneFeedOnlyUsesItsPersistentDetailAction() =
+        fixture(handset = true) { activity, _, _, _ ->
+            set(activity, "phoneFeed", PhoneFeed())
+            invoke(activity, "showPanel")
+            assertEquals(false, get(activity, "panel"))
+            assertEquals(0, (get(activity, "controls") as LinearLayout).childCount)
+            val footer = invoke(activity, "phoneFeedFooter", View(activity)) as LinearLayout
+            val actions = footer.getChildAt(1) as LinearLayout
+            assertEquals("查看短剧", (actions.getChildAt(1) as TextView).text.toString())
+        }
+
+    private fun assertPlaybackSettings(handset: Boolean) =
+        fixture(handset) { activity, _, library, _ ->
+            library.videoRotation = 90
+            invoke(activity, "showPanel")
+            val anchor = (get(activity, "controls") as LinearLayout).findViewWithTag<TextView>("playback-settings")
+            invoke(activity, "showPlaybackSettings", anchor)
+            val dialog = org.robolectric.shadows.ShadowDialog.getLatestDialog()
+            fun labels(view: View): List<String> = when (view) {
+                is TextView -> listOf(view.text.toString())
+                is android.view.ViewGroup -> (0 until view.childCount).flatMap { labels(view.getChildAt(it)) }
+                else -> emptyList()
+            }
+            val titles = labels(dialog.window!!.decorView)
+            assertEquals(!handset, titles.any { it.startsWith("画面旋转") })
+            assertTrue(titles.any { it.startsWith("常驻播放进度") })
+            dialog.dismiss()
+        }
 
     @Test
     fun phoneDirectionUsesNewShortcutAndBackClosesMenuBeforeLeavingHomePlayback() = fixture { activity, _, _, _ ->

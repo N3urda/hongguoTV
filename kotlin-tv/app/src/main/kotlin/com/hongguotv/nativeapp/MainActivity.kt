@@ -6,7 +6,9 @@ package com.hongguotv.nativeapp
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -19,6 +21,7 @@ import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
 import android.view.*
+import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import androidx.media3.common.*
@@ -41,15 +44,22 @@ class MainActivity : Activity() {
     private val muted get() = TvStyle.muted
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newFixedThreadPool(3)
+    @Suppress("DEPRECATION") // Some older televisions report only FEATURE_TELEVISION.
     private val handset by lazy {
-        !BuildConfig.FORCE_TV_CONTROLS && (BuildConfig.FORCE_PHONE_UI ||
-            (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) !=
-                android.content.res.Configuration.UI_MODE_TYPE_TELEVISION &&
-            packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN) &&
-            !packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK))
+        if (BuildConfig.FORCE_TV_CONTROLS) return@lazy false
+        if (BuildConfig.FORCE_PHONE_UI) return@lazy true
+        val mode = resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK
+        val features = packageManager
+        mode != Configuration.UI_MODE_TYPE_TELEVISION &&
+            !features.hasSystemFeature(PackageManager.FEATURE_LEANBACK) &&
+            !features.hasSystemFeature(PackageManager.FEATURE_LEANBACK_ONLY) &&
+            !features.hasSystemFeature(PackageManager.FEATURE_TELEVISION) &&
+            features.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)
     }
     private val repository = ContentRepository(playbackSession = PlaybackDeviceSession.shared)
     private var phoneSettingsOpen = false
+    private var phoneFeed: PhoneFeed? = null
+    private var phoneFeedRequest: Any? = null
     private val phoneUi by lazy {
         PhoneFrontend(
             this, library, ::loadCover,
@@ -57,14 +67,19 @@ class MainActivity : Activity() {
                 work({
                     when (request.tab) {
                         PhoneFrontend.Tab.HOME -> repository.home(type = ContentType.SHORT)
-                        PhoneFrontend.Tab.DISCOVER -> request.board?.let { repository.rankPage(it, request.page) }
-                            ?: repository.discover(request.category, request.topic, request.page)
+                        PhoneFrontend.Tab.DISCOVER -> repository.rankPage(requireNotNull(request.board), request.page)
                         PhoneFrontend.Tab.SEARCH -> repository.searchAll(request.query, request.page)
                         PhoneFrontend.Tab.LIBRARY -> error("本机片库无需联网")
                     }
                 }, done, failed)
             },
+            loadDiscovery = { selection, cursor, done ->
+                work({ repository.filteredDiscovery(selection, cursor) },
+                    { done(it, null) }, { done(null, it) })
+            },
             open = { series, resume -> openDetail(series, resume) },
+            openCloud = { progress -> openDetail(progress.series, resume = true, cloudProgress = progress) },
+            openFeed = { startPhoneFeed(DramaCategory.REAL) },
             settings = { phoneSettingsOpen = true; showPhoneCatalog() },
             cloud = cloudAccount,
             loadRelated = { series, done, failed ->
@@ -659,7 +674,7 @@ class MainActivity : Activity() {
         setViewingSystemBars(immersive = !handset)
         library = Library(this)
         artwork = ArtworkLoader(this)
-        tvTools = TvTools(this)
+        tvTools = TvTools(this, touch = handset)
         root = FrameLayout(this).apply { background = TvVisual.backdrop(this@MainActivity) }
         setContentView(root)
         CodecCapabilities.init(this)
@@ -826,6 +841,7 @@ class MainActivity : Activity() {
     }
 
     private fun cancelWork() {
+        phoneFeedRequest = null
         deferredWork?.discard?.invoke()
         deferredWork = null
         workScope?.cancel()
@@ -1106,7 +1122,115 @@ class MainActivity : Activity() {
         else 0
     }
 
+    private fun startPhoneFeed(category: DramaCategory) {
+        if (phoneFeedRequest != null) return
+        if (screen == "phone") phoneUi.rememberPosition()
+        val requested = PhoneFeed(category)
+        if (screen != "player") phoneFeed = requested
+        movePhoneFeed(0, requested)
+    }
+
+    private fun movePhoneFeed(direction: Int, requested: PhoneFeed? = null) {
+        val active = phoneFeed ?: return
+        val feed = requested ?: active
+        if (phoneFeedRequest != null || direction < 0 && !feed.hasPrevious ||
+            direction > 0 && !feed.hasNext) return
+        if (screen == "player" && !playbackReady && !playError) return
+        val ticket = Any()
+        var initialBody: LinearLayout? = null
+        if (screen != "player") {
+            invalidatePage()
+            releaseCatalogViews()
+            screen = "phone-feed"
+            val frame = phoneUi.frame(root)
+            frame.addView(phoneUi.lineAction("‹ 返回首页") { showPhoneCatalog() })
+            frame.addView(phoneUi.message("正在准备随心看…"))
+            initialBody = frame
+        } else {
+            Toast.makeText(this, "正在切换作品…", Toast.LENGTH_SHORT).show()
+        }
+        fun unavailable(message: String) {
+            phoneFeedRequest = null
+            if (initialBody != null) {
+                initialBody.removeAllViews()
+                initialBody.addView(phoneUi.lineAction("‹ 返回首页") { showPhoneCatalog() })
+                initialBody.addView(phoneUi.message(message))
+                initialBody.addView(phoneUi.action("重试") { startPhoneFeed(feed.category) })
+            } else Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        }
+        val prepare = screen == "player"
+        val quality = library.maxQuality
+        val localHistory = library.history().associateBy { it.series.id }
+        val accountScope = cloudAccount.historyScope
+        val remoteHistory = cloudAccount.historyRows().associateBy { it.series.id }
+        work(
+            {
+                val selection = feed.select(direction, { page -> repository.discover(feed.category, page = page) }, repository::detail)
+                val item = selection.detail
+                if (item == null) PhoneFeed.Prepared(selection, null, null)
+                else {
+                    val resume = ResumePlayback.progress(item, localHistory[item.series.id], remoteHistory[item.series.id])
+                    val target = ResumePlayback.target(item.episodes, resume?.episodeId, resume?.position ?: 0, resume?.completed == true)
+                    val stream = if (prepare) {
+                        RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10)) {
+                            openStream(repository.http, repository, item.episodes[target.index], quality,
+                                CodecCapabilities::supports, recentPlaybackSources) { it == null || CodecCapabilities.supports(it) }
+                                ?: throw java.io.IOException("下一部暂无可播放的清晰度")
+                        }
+                    } else null
+                    PhoneFeed.Prepared(selection, target, stream)
+                }
+            },
+            loaded@ { prepared ->
+                if (phoneFeedRequest !== ticket || phoneFeed !== active) {
+                    prepared.close()
+                    return@loaded
+                }
+                if (accountScope != cloudAccount.historyScope || quality != library.maxQuality) {
+                    prepared.close()
+                    unavailable("播放设置或账户已变化，请重新切换")
+                    return@loaded
+                }
+                phoneFeedRequest = null
+                val selection = prepared.selection
+                val result = selection.detail
+                val target = prepared.target
+                if (result == null || target == null) {
+                    if (feed === active) phoneFeed = selection.feed
+                    unavailable(if (selection.feed.hasMore) "暂未找到可播放的作品" else "已经看到最后一部")
+                    return@loaded
+                }
+                if (screen == "player") {
+                    saveProgress()
+                    library.flush()
+                    releasePlayer()
+                }
+                phoneFeed = selection.feed
+                homePlayback = false
+                phonePlayback = false
+                directPlayback = true
+                detailTrail.clear()
+                detail = result
+                detailCloudProgress = remoteHistory[result.series.id]
+                detailCloudScope = accountScope
+                episodeIndex = target.index
+                group = episodeIndex / 20
+                prepared.stream?.let { stream ->
+                    val key = "${result.episodes[target.index]}:$quality"
+                    preparedNext.complete(preparedNext.begin(key), key, stream)
+                }
+                playEpisode(target.index, target.position, autoplay = library.homeAutoplay)
+            },
+            {
+                if (phoneFeedRequest === ticket && phoneFeed === active)
+                    unavailable("这部作品暂时无法播放，可以重试")
+            },
+        )
+        phoneFeedRequest = ticket
+    }
+
     private fun showPhoneCatalog() {
+        phoneFeed = null
         invalidatePage()
         releaseCatalogViews()
         setViewingSystemBars(immersive = false)
@@ -2465,8 +2589,10 @@ class MainActivity : Activity() {
                     danmaku = setting("弹幕设置") { social.settings(danmaku, touch = handset) }
                     lateinit var frame: TextView
                     frame = setting("画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame, false) }
-                    lateinit var rotationButton: TextView
-                    rotationButton = setting("画面旋转  ·  ${library.videoRotation}°") { showRotationPicker(rotationButton) }
+                    if (!handset) {
+                        lateinit var rotationButton: TextView
+                        rotationButton = setting("画面旋转  ·  ${library.videoRotation}°") { showRotationPicker(rotationButton) }
+                    }
                     toggle("常驻播放进度", library.alwaysShowProgress) { library.alwaysShowProgress = it }
                     toggle("自动连播", library.autoNext) { library.autoNext = it }
                     toggle("跨季自动连播（需开启自动连播）", library.seasonAutoplay) { library.seasonAutoplay = it }
@@ -3019,11 +3145,13 @@ class MainActivity : Activity() {
         updater.interrupt()
         social.reset()
         val data = detail ?: return
+        val feedPlayer = handset && phoneFeed != null
         var playbackStarted = android.os.SystemClock.elapsedRealtime()
         val keepRecoveryStatus = recovering || (screen == "player" && playError && index == episodeIndex)
+        val useRotatedSurface = !handset && VideoRotation.usesTexture(library.videoRotation)
         val reuse =
             screen == "player" && player != null && playerView != null && (!playError || recovering) && !recreateView
-                && ((playerView?.videoSurfaceView is TextureView) == VideoRotation.usesTexture(library.videoRotation))
+                && ((playerView?.videoSurfaceView is TextureView) == useRotatedSurface)
         library.setWatched(data.series.id, false)
         val selectedIndex = index.coerceIn(0, data.episodes.lastIndex)
         if (
@@ -3125,7 +3253,7 @@ class MainActivity : Activity() {
             root.removeAllViews()
             root.setBackgroundColor(Color.BLACK)
             val view =
-                (if (VideoRotation.usesTexture(library.videoRotation))
+                (if (useRotatedSurface)
                     layoutInflater.inflate(R.layout.video_player, root, false) as PlayerView else PlayerView(this)).apply {
                     useController = false
                     resizeMode = frameResizeMode()
@@ -3137,14 +3265,12 @@ class MainActivity : Activity() {
             playerView = view
             root.addView(view, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
             if (handset) {
-                root.addView(View(this).apply {
-                    contentDescription = "显示或收起播放控件"
-                    setOnClickListener { if (panel) hidePanel() else showPanel() }
-                    isFocusable = false
-                }, FrameLayout.LayoutParams(-1, -1))
+                root.addView(phoneVideoSurface(feedPlayer), FrameLayout.LayoutParams(-1, -1))
             }
-            view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyVideoRotation() }
-            view.post { if (playerView === view) applyVideoRotation() }
+            if (!handset) {
+                view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyVideoRotation() }
+                view.post { if (playerView === view) applyVideoRotation() }
+            }
             persistentBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
                 max = 1000
                 progressTintList = android.content.res.ColorStateList.valueOf(accent)
@@ -3169,9 +3295,10 @@ class MainActivity : Activity() {
                 background = rounded(Color.argb(150, 11, 15, 21))
                 isFocusable = false
             }.also { clock ->
-                root.addView(clock, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+                val side = if (feedPlayer) Gravity.START else Gravity.END
+                root.addView(clock, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or side).apply {
                     topMargin = (resources.displayMetrics.heightPixels * .05f).toInt()
-                    rightMargin = dp(widthDp() * .05f)
+                    if (feedPlayer) marginStart = dp(16) else rightMargin = dp(widthDp() * .05f)
                 })
             }
             hud =
@@ -3180,7 +3307,7 @@ class MainActivity : Activity() {
                         dp(widthDp() * .05f),
                         dp(20),
                         dp(widthDp() * .05f),
-                        (resources.displayMetrics.heightPixels * .05f).toInt(),
+                        if (feedPlayer) dp(2) else (resources.displayMetrics.heightPixels * .05f).toInt(),
                     )
                     background =
                         GradientDrawable(
@@ -3193,9 +3320,13 @@ class MainActivity : Activity() {
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END
                     setTypeface(null, Typeface.BOLD)
+                    if (handset) setShadowLayer(dp(3).toFloat(), 0f, dp(1).toFloat(), Color.BLACK)
                 }
-            hud.addView(playbackTitle)
-            playbackText = text("", 15f, Color.LTGRAY).apply { setPadding(0, dp(10), 0, dp(9)) }
+            if (!feedPlayer) hud.addView(playbackTitle)
+            playbackText = text("", 15f, Color.LTGRAY).apply {
+                setPadding(0, dp(10), 0, dp(9))
+                if (handset) setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), Color.BLACK)
+            }
             hud.addView(playbackText)
             progressBar = if (handset) {
                 SeekBar(this).apply {
@@ -3238,13 +3369,20 @@ class MainActivity : Activity() {
                     visibility = View.GONE
                 }
             hud.addView(controls)
-            root.addView(
-                ScrollView(this).apply {
-                    isVerticalScrollBarEnabled = false
-                    addView(hud)
-                },
-                FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM),
-            )
+            val overlay = ScrollView(this).apply {
+                isVerticalScrollBarEnabled = false
+                addView(hud)
+            }
+            val bottom = if (feedPlayer) phoneFeedFooter(overlay) else overlay
+            root.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+            if (feedPlayer) {
+                lateinit var settings: TextView
+                settings = phoneUi.playbackAction("播放设置", "playback-settings") { showPlaybackSettings(settings) }
+                root.addView(settings, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.END).apply {
+                    topMargin = dp(28)
+                    marginEnd = dp(16)
+                })
+            }
         }
         playbackTitle.text = "${data.series.title}  ·  第 ${episodeIndex+1} 集"
         playbackText.text = preparingPlaybackText(recoveryDisplayActive, lastPlaybackFailure, false)
@@ -4406,7 +4544,7 @@ class MainActivity : Activity() {
             autoRecoveredPlay = false
             Toast.makeText(this, "已恢复播放", Toast.LENGTH_SHORT).show()
         }
-        if (hideAutoplayOverlay && !panel && !playerModalOpen()) {
+        if ((hideAutoplayOverlay || handset && phoneFeed != null) && !panel && !playerModalOpen()) {
             hideAutoplayOverlay = false
             hidePlaybackOverlay()
         } else showHud()
@@ -4446,23 +4584,28 @@ class MainActivity : Activity() {
 
     private fun updatePlaybackText() {
         updatePersistentProgress()
-        transportPlay?.text = if (player?.playWhenReady == true) "暂停" else "播放"
+        transportPlay?.let { control ->
+            val title = if (player?.playWhenReady == true) "暂停" else "播放"
+            if (control.text != title) control.text = title
+        }
         sleepButton?.text = "定时 ${sleepTimer.label()}"
         if (screen != "player" || playError) return
+        fun status(message: String) {
+            if (playbackText.text != message) playbackText.text = message
+        }
         if (waitingForFirstFrame && !sleepStopped) {
-            playbackText.text = if (!requestedAutoplay && playbackReady)
+            status(if (!requestedAutoplay && playbackReady)
                 (if (recoveryDisplayActive) "$lastPlaybackFailure\n" else "") + "已准备好 · 保持暂停，按播放开始"
-                else preparingPlaybackText(recoveryDisplayActive, lastPlaybackFailure, video != null)
+                else preparingPlaybackText(recoveryDisplayActive, lastPlaybackFailure, video != null))
             return
         }
         if (sleepStopped) {
-            playbackText.text = "定时停止已生效 · 观看位置已保存 · 按播放可继续"
+            status("定时停止已生效 · 观看位置已保存 · 按播放可继续")
             return
         }
         if (!playbackReady) {
-            playbackText.text =
-                (if (!requestedAutoplay) "准备后保持暂停 · " else "") +
-                    if (video == null) "正在获取播放地址…" else "正在缓冲…"
+            status((if (!requestedAutoplay) "准备后保持暂停 · " else "") +
+                (if (video == null) "正在获取播放地址…" else "正在缓冲…"))
             return
         }
         val p = player ?: return
@@ -4475,10 +4618,9 @@ class MainActivity : Activity() {
                 !p.playWhenReady -> "已暂停"
                 else -> "正在播放"
             }
-        playbackText.text =
-            "$state  ·  ${formatTime(position)} / ${formatTime(duration)}  ·  $quality  ·  ${PlaybackSpeed.label(p.playbackParameters.speed)}" +
-                (if (sleepTimer.active) "  ·  定时 ${sleepTimer.label()}" else "")
-        if (!progressBar.isPressed) {
+        status("$state  ·  ${formatTime(position)} / ${formatTime(duration)}  ·  $quality  ·  ${PlaybackSpeed.label(p.playbackParameters.speed)}" +
+            (if (sleepTimer.active) "  ·  定时 ${sleepTimer.label()}" else ""))
+        if (!handset || !progressBar.isPressed) {
             progressBar.progress =
                 if (duration > 0) (position * 1000 / duration).toInt().coerceIn(0, 1000) else 0
         }
@@ -4727,6 +4869,7 @@ class MainActivity : Activity() {
     private fun showPanel() {
         seasonBanner?.visibility = View.GONE
         if (playError || recoveryDisplayActive) return
+        if (handset && phoneFeed != null) { showHud(); return }
         if (episodePanel != null) { showHud(); return }
         cancelEpisodeSwitch()
         val focusedTag = controls.findFocus()?.tag
@@ -4786,68 +4929,150 @@ class MainActivity : Activity() {
         showHud()
     }
 
+    private fun phoneVideoSurface(feedPlayer: Boolean): View = View(this).apply {
+        if (!feedPlayer) {
+            contentDescription = "显示或收起播放控件"
+            setOnClickListener { if (panel) hidePanel() else showPanel() }
+            isFocusable = false
+            return@apply
+        }
+
+        contentDescription = "播放画面，轻点暂停或继续"
+        setOnClickListener { if (!playError && !recoveryDisplayActive) togglePlayback() }
+        accessibilityDelegate = object : View.AccessibilityDelegate() {
+            override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
+                super.onInitializeAccessibilityNodeInfo(host, info)
+                val feed = phoneFeed ?: return
+                info.isScrollable = feed.hasPrevious || feed.hasNext
+                if (feed.hasPrevious) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)
+                if (feed.hasNext) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)
+            }
+
+            override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
+                when (action) {
+                    AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD.id ->
+                        if (phoneFeed?.hasNext == true) { movePhoneFeed(1); return true }
+                    AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD.id ->
+                        if (phoneFeed?.hasPrevious == true) { movePhoneFeed(-1); return true }
+                }
+                return super.performAccessibilityAction(host, action, args)
+            }
+        }
+        var tracking = false
+        var startX = 0f
+        var startY = 0f
+        val tapSlop = ViewConfiguration.get(context).scaledTouchSlop
+        setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = event.x
+                    startY = event.y
+                    tracking = true
+                }
+                MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN -> tracking = false
+                MotionEvent.ACTION_UP -> if (tracking) {
+                    tracking = false
+                    val dy = event.y - startY
+                    val dx = kotlin.math.abs(event.x - startX)
+                    val distance = kotlin.math.abs(dy)
+                    if (distance >= dp(48) && distance > dx * 1.25f) {
+                        movePhoneFeed(if (dy < 0) 1 else -1)
+                    } else if (dx < tapSlop && distance < tapSlop &&
+                        event.eventTime - event.downTime < ViewConfiguration.getLongPressTimeout()) {
+                        view.performClick()
+                    }
+                }
+            }
+            true
+        }
+    }
+
+    private fun phoneFeedFooter(overlay: View) = column().apply {
+        addView(overlay, lp(-1, -2))
+        addView(column().apply {
+            setPadding(dp(16), dp(8), dp(16), dp(16))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.argb(122, 11, 15, 21), Color.argb(240, 11, 15, 21)),
+            )
+            playbackTitle.textSize = 18f
+            addView(playbackTitle)
+            addView(phoneUi.action("查看短剧", primary = true) { returnToDetail(true) },
+                lp(-1, dp(48)).apply { topMargin = dp(8) },
+            )
+        })
+    }
+
     private fun showPhonePlaybackControls() {
         val data = detail ?: return
         val playback = row()
-        val actions = row()
-        val extras = row()
+        val actions = if (resources.configuration.screenWidthDp >= 360) playback else row()
         controls.addView(playback)
-        controls.addView(actions)
-        controls.addView(extras)
-        fun phoneButton(line: LinearLayout, title: String, primary: Boolean = false, run: () -> Unit): TextView =
-            phoneUi.action(title, primary, run).also { button ->
-                line.addView(button, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
-                    leftMargin = dp(3)
-                    rightMargin = dp(3)
-                    bottomMargin = dp(5)
-                })
-            }
-        phoneButton(playback, "上一集") { skipEpisode(-1) }.isEnabled = episodeIndex > 0
-        transportPlay = phoneButton(playback, if (requestedAutoplay) "暂停" else "播放", true) { togglePlayback() }
-        phoneButton(playback, "下一集") { skipEpisode(1) }.isEnabled = episodeIndex + 1 < data.episodes.size
-        phoneButton(actions, "返回详情") { returnToDetail(true) }
-        phoneButton(actions, "选集") {
-            val labels = data.episodes.indices.map { "第 ${it + 1} 集" }.toTypedArray()
-            if (labels.isNotEmpty()) AlertDialog.Builder(this)
-                .setTitle("选集")
-                .setSingleChoiceItems(labels, episodeIndex) { dialog, index ->
-                    dialog.dismiss()
+        if (actions !== playback) controls.addView(actions)
+        fun control(line: LinearLayout, title: String, key: String, run: () -> Unit): TextView {
+            val button = phoneUi.playbackAction(title, key, run)
+            line.addView(button, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                setMargins(dp(3), 0, dp(3), dp(6))
+            })
+            return button
+        }
+        transportPlay = control(playback, if (requestedAutoplay) "暂停" else "播放", "transport-play") { togglePlayback() }
+        control(playback, "选集", "episodes") {
+            phoneUi.showEpisodePicker(data.episodes.size, episodeIndex) { index ->
+                if (screen == "player" && detail === data) {
                     if (index == episodeIndex) hidePanel() else playEpisode(index, autoplay = requestedAutoplay)
                 }
-                .setNegativeButton("取消", null)
-                .show()
+            }
         }
-        lateinit var more: TextView
-        more = phoneButton(actions, "播放设置") { showPlaybackSettings(more) }.apply { tag = "playback-settings" }
-        lateinit var comments: TextView
-        comments = phoneButton(extras, "本集评论") { social.showComments(comments) }
+        lateinit var speed: TextView
+        speed = control(playback, "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}", "speed") { showSpeedPicker(speed) }
         lateinit var danmaku: TextView
-        danmaku = phoneButton(extras, "弹幕设置") { social.settings(danmaku, touch = true) }
-        phoneButton(extras, if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE) "竖屏" else "横屏") {
-            requestedOrientation = if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE)
-                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        }
+        danmaku = control(actions, "弹幕设置", "danmaku") { social.settings(danmaku, touch = true) }
+        lateinit var comments: TextView
+        comments = control(actions, "本集评论", "comments") { social.showComments(comments) }
+        lateinit var more: TextView
+        more = control(actions, "播放设置", "playback-settings") { showPlaybackSettings(more) }
         showHud()
     }
 
     private fun showPlaybackSettings(anchor: TextView) {
-        tvTools.choose("更多设置", listOf(
-            "清晰度 ${library.maxQuality}P", "画面 ${library.frameMode.label}",
-            "定时 ${sleepTimer.label()}", "从头播放", "高级设置",
-            "画面旋转 ${library.videoRotation}°",
-            "常驻播放进度 ${if (library.alwaysShowProgress) "开启" else "关闭"}",
-        ), anchor, { choice ->
+        val choices = buildList<Pair<String, () -> Unit>> {
+            if (handset) phoneFeed?.let { feed ->
+                add("随心看分类 · ${feed.category.label}" to {
+                    val categories = DramaCategory.entries
+                    AlertDialog.Builder(this@MainActivity).setTitle("随心看分类")
+                        .setSingleChoiceItems(categories.map { it.label }.toTypedArray(), feed.category.ordinal) { dialog, index ->
+                            dialog.dismiss()
+                            if (categories[index] != feed.category) startPhoneFeed(categories[index])
+                        }.setNegativeButton("取消", null).show()
+                })
+                add("倍速 ${PlaybackSpeed.label(library.playbackSpeed)}" to { showSpeedPicker(anchor) })
+                add("弹幕设置" to { social.settings(anchor, touch = true) })
+                add("本集评论" to { social.showComments(anchor) })
+            }
+            add("清晰度 ${library.maxQuality}P" to { showQualityPicker(anchor, true) })
+            add("画面 ${library.frameMode.label}" to { showFramePicker(anchor, true) })
+            add("定时 ${sleepTimer.label()}" to { showSleepPicker(anchor) })
+            add("从头播放" to { seekTo(0); hidePanel() })
+            add("高级设置" to { showAdvancedPlaybackSettings(anchor) })
+            if (!handset) add("画面旋转 ${library.videoRotation}°" to { showRotationPicker(anchor) })
+            add("常驻播放进度 ${if (library.alwaysShowProgress) "开启" else "关闭"}" to {
+                library.alwaysShowProgress = !library.alwaysShowProgress
+                updatePersistentProgress()
+                showPlaybackSettings(anchor)
+            })
+            if (handset) {
+                val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+                add((if (landscape) "切换竖屏" else "切换横屏") to {
+                    requestedOrientation = if (landscape) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                        else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                })
+                if (phoneFeed == null) add("返回剧集详情" to { returnToDetail(true) })
+            }
+        }
+        tvTools.choose("更多设置", choices.map { it.first }, anchor, { choice ->
             main.post {
-                if (screen == "player" && anchor.isAttachedToWindow) when (choice) {
-                    0 -> showQualityPicker(anchor, true)
-                    1 -> showFramePicker(anchor, true)
-                    2 -> showSleepPicker(anchor)
-                    3 -> { seekTo(0); hidePanel() }
-                    4 -> showAdvancedPlaybackSettings(anchor)
-                    5 -> showRotationPicker(anchor)
-                    6 -> { library.alwaysShowProgress = !library.alwaysShowProgress; updatePersistentProgress(); showPlaybackSettings(anchor) }
-                }
+                if (screen == "player" && anchor.isAttachedToWindow) choices[choice].second()
             }
         })
     }
@@ -5011,6 +5236,7 @@ class MainActivity : Activity() {
     }
 
     private fun offerNextSeason(current: Detail) {
+        if (handset && phoneFeed != null) return
         if (!library.seasonAutoplay || !library.autoNext || seasonSuppressed || seasonPending || !foreground) return
         seasonPending = true
         val token = ++seasonGeneration
@@ -5095,6 +5321,7 @@ class MainActivity : Activity() {
 
     private fun returnToDetail(forceDetail: Boolean = false) {
         homePlayback = false
+        if (handset && forceDetail) phoneFeed = null
         sleepTimer.cancel()
         sleepStopped = false
         saveProgress()
@@ -5112,6 +5339,10 @@ class MainActivity : Activity() {
     private fun goBack() {
         if (!library.isLoaded) {
             finish()
+            return
+        }
+        if (handset && screen == "phone-feed") {
+            showPhoneCatalog()
             return
         }
         if (handset && screen == "phone") {
@@ -5158,6 +5389,7 @@ class MainActivity : Activity() {
             "player" ->
                 if (episodePanel != null) episodePanel?.dismiss()
                 else if (panel && !playError) hidePanel()
+                else if (handset && phoneFeed != null) returnToDetail()
                 else if (handset || homePlayback || phonePlayback) returnToDetail(forceDetail = true)
                 else if (waitingForFirstFrame) returnToDetail()
                 else if (hud.visibility == View.VISIBLE && !playError) hidePlaybackOverlay()
@@ -5280,7 +5512,6 @@ class MainActivity : Activity() {
         if (handset) {
             if (screen == "player") {
                 if (panel) showPanel()
-                root.post { if (screen == "player") applyVideoRotation() }
                 return
             }
             if (screen == "phone") phoneUi.rememberPosition()
