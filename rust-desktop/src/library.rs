@@ -70,6 +70,11 @@ pub(crate) struct Preferences {
     pub(crate) frame: FrameMode,
     pub(crate) rotation: u16,
     pub(crate) auto_next: bool,
+    pub(crate) danmaku: bool,
+    pub(crate) danmaku_area: u16,
+    pub(crate) danmaku_font: u16,
+    pub(crate) danmaku_opacity: u16,
+    pub(crate) danmaku_travel: u16,
     pub(crate) show_progress: bool,
     pub(crate) startup: StartPage,
     pub(crate) feed_autoplay: bool,
@@ -85,6 +90,11 @@ impl Default for Preferences {
             frame: FrameMode::Fit,
             rotation: 0,
             auto_next: true,
+            danmaku: true,
+            danmaku_area: 50,
+            danmaku_font: 24,
+            danmaku_opacity: 80,
+            danmaku_travel: 9,
             show_progress: false,
             startup: StartPage::Home,
             feed_autoplay: true,
@@ -103,6 +113,13 @@ impl Preferences {
         ensure!(
             [0, 90, 180, 270].contains(&self.rotation),
             "画面旋转角度无效"
+        );
+        ensure!(
+            [25, 50, 100].contains(&self.danmaku_area)
+                && [16, 20, 24, 28, 32, 36, 40].contains(&self.danmaku_font)
+                && [20, 40, 60, 80, 100].contains(&self.danmaku_opacity)
+                && [5, 7, 9, 12, 15].contains(&self.danmaku_travel),
+            "弹幕设置无效"
         );
         Ok(())
     }

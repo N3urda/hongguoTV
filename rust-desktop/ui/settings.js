@@ -1,3 +1,5 @@
+import { danmakuOptions } from "./danmaku.js";
+
 // SPDX-License-Identifier: GPL-3.0-only
 export const speedSteps = [75, 100, 125, 150, 175, 200, 300];
 export const frameOptions = [["fit", "完整画面"], ["crop", "等比铺满"], ["stretch", "拉伸铺满"]];
@@ -251,6 +253,8 @@ function preferencePanel(panel, signal, ui, section) {
     row("rotation", "画面旋转", rotationOptions);
     row("show_progress", "常驻播放进度");
     row("auto_next", "自动连播");
+    row("danmaku", "时间轴弹幕");
+    for (const [key, label, options] of danmakuOptions) row(key, label, options);
   }
 }
 

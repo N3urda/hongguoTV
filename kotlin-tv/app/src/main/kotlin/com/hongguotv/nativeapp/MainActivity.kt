@@ -41,12 +41,38 @@ class MainActivity : Activity() {
     private val muted get() = TvStyle.muted
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newFixedThreadPool(3)
-    private val touchPlayback by lazy {
-        !BuildConfig.FORCE_TV_CONTROLS &&
+    private val handset by lazy {
+        !BuildConfig.FORCE_TV_CONTROLS && (BuildConfig.FORCE_PHONE_UI ||
+            (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) !=
+                android.content.res.Configuration.UI_MODE_TYPE_TELEVISION &&
             packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN) &&
-            !packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+            !packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK))
     }
     private val repository = ContentRepository(playbackSession = PlaybackDeviceSession.shared)
+    private var phoneSettingsOpen = false
+    private val phoneUi by lazy {
+        PhoneFrontend(
+            this, library, ::loadCover,
+            load = { request, done, failed ->
+                work({
+                    when (request.tab) {
+                        PhoneFrontend.Tab.HOME -> repository.home(type = ContentType.SHORT)
+                        PhoneFrontend.Tab.DISCOVER -> request.board?.let { repository.rankPage(it, request.page) }
+                            ?: repository.discover(request.category, request.topic, request.page)
+                        PhoneFrontend.Tab.SEARCH -> repository.searchAll(request.query, request.page)
+                        PhoneFrontend.Tab.LIBRARY -> error("本机片库无需联网")
+                    }
+                }, done, failed)
+            },
+            open = { series, resume -> openDetail(series, resume) },
+            settings = { phoneSettingsOpen = true; showPhoneCatalog() },
+            cloud = cloudAccount,
+            loadRelated = { series, done, failed ->
+                work({ RelatedWorks.ordered(series, repository.related(series.id)) }, done, failed)
+            },
+            describeReservation = ::reservationDescription,
+        )
+    }
     private val phoneCatalog by lazy {
         PhoneControlCatalog(library, cloudAccount) { series, progress ->
             // Save while the old detail still identifies the playing episode.
@@ -629,10 +655,8 @@ class MainActivity : Activity() {
         ContentRepository.deviceStore = PreferencesPlayerDeviceStore(
             getSharedPreferences("native-player-device", MODE_PRIVATE)
         )
-        window.decorView.systemUiVisibility =
-            View.SYSTEM_UI_FLAG_FULLSCREEN or
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        if (handset) requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        setViewingSystemBars(immersive = !handset)
         library = Library(this)
         artwork = ArtworkLoader(this)
         tvTools = TvTools(this)
@@ -645,6 +669,7 @@ class MainActivity : Activity() {
                 openDetail(remote.series, true, cloudProgress = remote)
             }
         cloudAccount.onHistoryChanged = {
+            if (handset) phoneUi.refreshAccount()
             settingsAccountStatus?.text = accountSettingsLabel()
             if (homeFeedIdentity != cloudAccount.recommendationIdentity) {
                 homeFeedState.refresh(resetRecommendations = true)
@@ -747,6 +772,10 @@ class MainActivity : Activity() {
         ) {
             if (!isDestroyed && !startupApplied) {
                 tab = library.initialTab()
+                if (handset) {
+                    phoneUi.start(tab)
+                    phoneSettingsOpen = tab == 6
+                }
                 startupApplied = true
             }
             if (!isDestroyed && foreground) {
@@ -1071,11 +1100,34 @@ class MainActivity : Activity() {
         }
 
     // 内容页总入口：复用顶部导航，只替换当前栏目的内容。
+    private fun setViewingSystemBars(immersive: Boolean) {
+        window.decorView.systemUiVisibility = if (immersive)
+            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        else 0
+    }
+
+    private fun showPhoneCatalog() {
+        invalidatePage()
+        releaseCatalogViews()
+        setViewingSystemBars(immersive = false)
+        screen = "phone"
+        pendingDetail = null
+        if (phoneSettingsOpen) {
+            val frame = phoneUi.frame(root)
+            frame.addView(phoneUi.lineAction("‹ 返回我的") { phoneSettingsOpen = false; showPhoneCatalog() })
+            settings(frame)
+        } else phoneUi.showCatalog(root)
+    }
+
     private fun showCatalog(
         load: Boolean = false,
         focusNav: Boolean = false,
         focusType: Boolean = false,
     ) {
+        if (handset) {
+            showPhoneCatalog()
+            return
+        }
         val loadRemote = load && !localCatalog()
         relatedSection = null
         detailTrail.clear()
@@ -2302,17 +2354,21 @@ class MainActivity : Activity() {
     // 分类与内容并列显示；焦点位置仅在当前应用会话内记忆。
     private fun settings(parent: LinearLayout) {
         parent.addView(Space(this), lp(1, dp(20)))
-        val layout = row().apply { gravity = Gravity.TOP }
+        val layout = (if (handset) column() else row()).apply { gravity = Gravity.TOP }
         parent.addView(layout, lp(-1, 0).apply { weight = 1f })
-        val sidebar = column()
-        layout.addView(sidebar, lp(dp(170), -1).apply { rightMargin = dp(22) })
+        val sidebar = if (handset) row() else column()
+        if (handset) layout.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(sidebar)
+        }, lp(-1, dp(60)))
+        else layout.addView(sidebar, lp(dp(170), -1).apply { rightMargin = dp(22) })
         val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false; isFillViewport = false }
         val content = column().apply {
             setPadding(dp(20), dp(14), dp(20), dp(14))
             background = TvVisual.panel(this@MainActivity)
         }
         scroll.addView(content, android.widget.FrameLayout.LayoutParams(-1, -2))
-        layout.addView(scroll, lp(0, -1).apply { weight = 1f })
+        layout.addView(scroll, (if (handset) lp(-1, 0) else lp(0, -1)).apply { weight = 1f })
         val categories = listOf("检查更新", "播放", "外观与操作", "账户", "关于应用")
         val entries = mutableListOf<View>()
         fun setting(label: String, action: () -> Unit): TextView {
@@ -2372,7 +2428,7 @@ class MainActivity : Activity() {
                 minHeight = dp(52)
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(22), dp(10), dp(12), dp(10))
-                sidebar.addView(this, lp(-1, -2).apply { bottomMargin = dp(8) })
+                sidebar.addView(this, lp(if (handset) -2 else -1, -2).apply { bottomMargin = dp(8) })
                 setOnFocusChangeListener { _, focused ->
                     if (focused) render(index)
                     background = TvVisual.row(this@MainActivity, focused, settingsGroup == index, category = true)
@@ -2406,7 +2462,7 @@ class MainActivity : Activity() {
                     lateinit var speed: TextView
                     speed = setting("默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(speed, false) }
                     lateinit var danmaku: TextView
-                    danmaku = setting("弹幕设置") { social.settings(danmaku) }
+                    danmaku = setting("弹幕设置") { social.settings(danmaku, touch = handset) }
                     lateinit var frame: TextView
                     frame = setting("画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame, false) }
                     lateinit var rotationButton: TextView
@@ -2465,7 +2521,7 @@ class MainActivity : Activity() {
             settingsRows.forEachIndexed { position, view ->
                 view.nextFocusLeftId = buttons[index].id
                 view.nextFocusRightId = view.id
-                view.nextFocusUpId = settingsRows.getOrNull(position - 1)?.id ?: nav[tab].id
+                view.nextFocusUpId = settingsRows.getOrNull(position - 1)?.id ?: if (handset) View.NO_ID else nav[tab].id
                 view.nextFocusDownId = settingsRows.getOrNull(position + 1)?.id ?: view.id
                 val paint = view.onFocusChangeListener
                 view.setOnFocusChangeListener { target, focused ->
@@ -2475,7 +2531,7 @@ class MainActivity : Activity() {
             }
             buttons.forEachIndexed { category, view ->
                 view.nextFocusRightId = settingsRows[settingsPositions[index].coerceAtMost(settingsRows.lastIndex)].id
-                view.nextFocusUpId = buttons.getOrNull(category - 1)?.id ?: nav[tab].id
+                view.nextFocusUpId = buttons.getOrNull(category - 1)?.id ?: if (handset) View.NO_ID else nav[tab].id
                 view.nextFocusDownId = buttons.getOrNull(category + 1)?.id ?: view.id
                 view.background = TvVisual.row(this@MainActivity, view.hasFocus(), category == index, category = true)
                 view.setTextColor(if (view.hasFocus() || category == index) TvVisual.focusedValue else muted)
@@ -2483,8 +2539,8 @@ class MainActivity : Activity() {
             nav.forEach { it.nextFocusDownId = buttons[index].id }
         }
         render(settingsGroup)
-        parent.addView(text("↑↓ 选择  ·  → 进入选项  ·  ← 返回分类  ·  返回：分类 / 顶部导航", 12f, Color.rgb(112, 122, 140)).apply { setPadding(0, dp(12), 0, 0) })
-        settingsRows.getOrNull(settingsPositions[settingsGroup].coerceAtMost(settingsRows.lastIndex))?.requestFocus()
+        if (!handset) parent.addView(text("↑↓ 选择  ·  → 进入选项  ·  ← 返回分类  ·  返回：分类 / 顶部导航", 12f, Color.rgb(112, 122, 140)).apply { setPadding(0, dp(12), 0, 0) })
+        if (!handset) settingsRows.getOrNull(settingsPositions[settingsGroup].coerceAtMost(settingsRows.lastIndex))?.requestFocus()
     }
 
     private fun saveSearchDraft() {
@@ -2575,6 +2631,7 @@ class MainActivity : Activity() {
         fromHome: Boolean = false,
         fromPhone: Boolean = false,
     ) {
+        if (handset && screen == "phone") phoneUi.rememberPosition()
         val trial = if (fromHome && resume) homeFeed?.currentPlayback(series.id) else null
         val trialEpisodeId = trial?.episodeId
         val trialSource = trial?.video?.preparedSource()
@@ -2596,7 +2653,13 @@ class MainActivity : Activity() {
         directPlayback = resume && !fromHome
         detail = null
         synopsisExpanded = false
-        val body = base(series.title)
+        val body = if (handset) {
+            setViewingSystemBars(immersive = false)
+            phoneUi.frame(root).apply {
+                addView(phoneUi.lineAction("‹ 返回") { goBack() })
+                addView(phoneUi.message(series.title))
+            }
+        } else base(series.title)
         message(body, "正在加载剧集…")
         work(
             { repository.detail(series.id) },
@@ -2666,6 +2729,19 @@ class MainActivity : Activity() {
         releaseCatalogViews()
         screen = "detail"
         val data = detail ?: return showCatalog()
+        if (handset) {
+            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            setViewingSystemBars(immersive = false)
+            val progress = detailProgress(data)
+            val target = ResumePlayback.target(data.episodes, progress?.episodeId, progress?.position ?: 0, progress?.completed == true)
+            phoneUi.showDetail(
+                root, data, target, episodeIndex,
+                play = { index, position -> playEpisode(index, position) },
+                back = ::goBack,
+                cloudFavorite = ::accountFavoriteAction,
+            )
+            return
+        }
         val body = base("剧集详情")
         val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
         val content = column()
@@ -3021,6 +3097,7 @@ class MainActivity : Activity() {
         requestedAutoplay = autoplay
         if (autoplay) sleepStopped = false
         screen = "player"
+        if (handset) setViewingSystemBars(immersive = true)
         episodeIndex = selectedIndex
         group = episodeIndex / 20
         panel = false
@@ -3059,9 +3136,9 @@ class MainActivity : Activity() {
                 }
             playerView = view
             root.addView(view, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
-            if (touchPlayback) {
+            if (handset) {
                 root.addView(View(this).apply {
-                    contentDescription = "显示或收起播放菜单"
+                    contentDescription = "显示或收起播放控件"
                     setOnClickListener { if (panel) hidePanel() else showPanel() }
                     isFocusable = false
                 }, FrameLayout.LayoutParams(-1, -1))
@@ -3120,7 +3197,7 @@ class MainActivity : Activity() {
             hud.addView(playbackTitle)
             playbackText = text("", 15f, Color.LTGRAY).apply { setPadding(0, dp(10), 0, dp(9)) }
             hud.addView(playbackText)
-            progressBar = if (touchPlayback) {
+            progressBar = if (handset) {
                 SeekBar(this).apply {
                     contentDescription = "播放进度"
                     setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -3149,13 +3226,9 @@ class MainActivity : Activity() {
                 progressTintList = android.content.res.ColorStateList.valueOf(accent)
                 progressBackgroundTintList = android.content.res.ColorStateList.valueOf(surface)
             }
-            hud.addView(progressBar, lp(-1, dp(if (touchPlayback) 36 else 4)))
-            hud.addView(
-                text(
-                    if (touchPlayback) "轻点画面显示播放菜单"
-                    else "观看时 ↑ 上一集  ↓ 下一集  ← → 快退/快进\n确认 暂停/继续并打开菜单 · 菜单键 打开菜单",
-                    13f, Color.LTGRAY,
-                ).apply {
+            hud.addView(progressBar, lp(-1, dp(if (handset) 36 else 4)))
+            if (!handset) hud.addView(
+                text("观看时 ↑ 上一集  ↓ 下一集  ← → 快退/快进\n确认 暂停/继续并打开菜单 · 菜单键 打开菜单", 13f, Color.LTGRAY).apply {
                     setPadding(0, dp(12), 0, 0)
                 }
             )
@@ -4661,6 +4734,10 @@ class MainActivity : Activity() {
         showHud()
         controls.visibility = View.VISIBLE
         controls.removeAllViews()
+        if (handset) {
+            showPhonePlaybackControls()
+            return
+        }
         val primary = row()
         controls.addView(primary)
         fun item(row: LinearLayout, title: String, key: String, action: () -> Unit): TextView =
@@ -4704,6 +4781,51 @@ class MainActivity : Activity() {
             view.nextFocusDownId = buttons[minOf(buttons.lastIndex, r + 1)].let { it[minOf(c, it.lastIndex)].id }
         } }
         (buttons.flatten().firstOrNull { it.tag == focusedTag } ?: play).requestFocus()
+        showHud()
+    }
+
+    private fun showPhonePlaybackControls() {
+        val data = detail ?: return
+        val playback = row()
+        val actions = row()
+        val extras = row()
+        controls.addView(playback)
+        controls.addView(actions)
+        controls.addView(extras)
+        fun phoneButton(line: LinearLayout, title: String, primary: Boolean = false, run: () -> Unit): TextView =
+            phoneUi.action(title, primary, run).also { button ->
+                line.addView(button, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                    leftMargin = dp(3)
+                    rightMargin = dp(3)
+                    bottomMargin = dp(5)
+                })
+            }
+        phoneButton(playback, "上一集") { skipEpisode(-1) }.isEnabled = episodeIndex > 0
+        transportPlay = phoneButton(playback, if (requestedAutoplay) "暂停" else "播放", true) { togglePlayback() }
+        phoneButton(playback, "下一集") { skipEpisode(1) }.isEnabled = episodeIndex + 1 < data.episodes.size
+        phoneButton(actions, "返回详情") { returnToDetail(true) }
+        phoneButton(actions, "选集") {
+            val labels = data.episodes.indices.map { "第 ${it + 1} 集" }.toTypedArray()
+            if (labels.isNotEmpty()) AlertDialog.Builder(this)
+                .setTitle("选集")
+                .setSingleChoiceItems(labels, episodeIndex) { dialog, index ->
+                    dialog.dismiss()
+                    if (index == episodeIndex) hidePanel() else playEpisode(index, autoplay = requestedAutoplay)
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+        lateinit var more: TextView
+        more = phoneButton(actions, "播放设置") { showPlaybackSettings(more) }.apply { tag = "playback-settings" }
+        lateinit var comments: TextView
+        comments = phoneButton(extras, "本集评论") { social.showComments(comments) }
+        lateinit var danmaku: TextView
+        danmaku = phoneButton(extras, "弹幕设置") { social.settings(danmaku, touch = true) }
+        phoneButton(extras, if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE) "竖屏" else "横屏") {
+            requestedOrientation = if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE)
+                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
         showHud()
     }
 
@@ -4990,6 +5112,13 @@ class MainActivity : Activity() {
             finish()
             return
         }
+        if (handset && screen == "phone") {
+            if (phoneSettingsOpen) {
+                phoneSettingsOpen = false
+                showPhoneCatalog()
+            } else if (!phoneUi.back()) finish()
+            return
+        }
         if (screen == "catalog" && collection != null) {
             leaveCollection()
             showCatalog()
@@ -5027,7 +5156,7 @@ class MainActivity : Activity() {
             "player" ->
                 if (episodePanel != null) episodePanel?.dismiss()
                 else if (panel && !playError) hidePanel()
-                else if (homePlayback || phonePlayback) returnToDetail(forceDetail = true)
+                else if (handset || homePlayback || phonePlayback) returnToDetail(forceDetail = true)
                 else if (waitingForFirstFrame) returnToDetail()
                 else if (hud.visibility == View.VISIBLE && !playError) hidePlaybackOverlay()
                 else returnToDetail()
@@ -5146,6 +5275,14 @@ class MainActivity : Activity() {
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
         if (!library.isLoaded) return
+        if (handset) {
+            if (screen == "player") {
+                if (panel) showPanel()
+                root.post { if (screen == "player") applyVideoRotation() }
+                return
+            }
+            if (screen == "phone") phoneUi.rememberPosition()
+        }
         when (screen) {
             "player" -> {
                 val position = currentPosition()

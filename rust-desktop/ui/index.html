@@ -11,18 +11,24 @@
 </head>
 <body>
   <div id="shell" class="shell">
-    <aside class="rail">
-      <div class="mark"><img src="brand.png" alt="hongguoTV" width="64" height="59"></div>
-      <nav aria-label="主导航">
-        <button type="button" data-section="home" aria-current="page"><span class="icon icon-home" aria-hidden="true"></span><span>首页</span></button>
-        <button type="button" data-section="feed"><span class="icon icon-play" aria-hidden="true"></span><span>随心看</span></button>
-        <button type="button" data-section="browse"><span class="icon icon-grid" aria-hidden="true"></span><span>找剧</span></button>
-        <button type="button" data-section="search"><span class="icon icon-search" aria-hidden="true"></span><span>搜索</span></button>
-        <button type="button" data-section="rank"><span class="icon icon-rank" aria-hidden="true"></span><span>排行榜</span></button>
-        <button type="button" data-section="library"><span class="icon icon-person" aria-hidden="true"></span><span>我的</span></button>
-        <button type="button" data-section="settings"><span class="icon icon-settings" aria-hidden="true"></span><span>设置</span></button>
+    <header class="app-bar">
+      <button type="button" class="brand" data-section="home" aria-label="红果短剧首页">
+        <img src="brand.png" alt="" width="32" height="30"><span>红果短剧</span>
+      </button>
+      <nav class="app-nav" aria-label="主导航">
+        <button type="button" data-section="home" aria-current="page">首页</button>
+        <button type="button" data-section="browse">找剧</button>
+        <button type="button" data-section="rank">排行榜</button>
+        <button type="button" data-section="feed">随心看</button>
       </nav>
-    </aside>
+      <div class="app-actions">
+        <button class="global-search" type="button" data-section="search" aria-label="搜索剧集">
+          <span class="icon icon-search" aria-hidden="true"></span><span>搜索剧集</span><kbd>Ctrl K</kbd>
+        </button>
+        <button class="icon-button" type="button" data-section="library" title="我的" aria-label="我的"><span class="icon icon-person" aria-hidden="true"></span></button>
+        <button class="icon-button" type="button" data-section="settings" title="设置" aria-label="设置"><span class="icon icon-settings" aria-hidden="true"></span></button>
+      </div>
+    </header>
     <main id="main" class="workspace" tabindex="-1"></main>
   </div>
   <section id="watch" class="watch" aria-label="播放器" hidden></section>

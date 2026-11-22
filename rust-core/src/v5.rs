@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Port of main's Signer(mobileV5=true), AesV3 and V5Constants.
+// Port of main's mobile and legacy Signer, AesV3 and V5Constants.
 use crate::crypto::{Proto, hex, hex_string, ladon_for, md5, sm3};
 use anyhow::{Result, bail};
 use base64::{
@@ -10,7 +10,9 @@ use rand::RngCore;
 use std::collections::BTreeMap;
 #[path = "v5_table.rs"]
 mod constants;
-use constants::{HASH_TABLE, SBOX};
+use constants::{HASH_TABLE, LEGACY_SBOX, SBOX};
+#[path = "legacy_signer.rs"]
+mod legacy;
 const MAGIC: &str = "2d4b4fca49750d433fb5ae2c226dcc56";
 const KEY: &str = "b23c2a470a20d105dc3f8c4438f8272ed46d6c89ffdcdedd5108698d26e9489d";
 fn get_iv(mut v: u32, data: &[u8]) -> u32 {
@@ -26,8 +28,27 @@ fn get_iv(mut v: u32, data: &[u8]) -> u32 {
 fn iv(query: &[u8], body: &[u8], ts: u32) -> u32 {
     get_iv(get_iv(get_iv(0x20230928, query), body), &ts.to_le_bytes())
 }
-fn f13(query: &[u8], body: &[u8], ts: u32) -> Vec<u8> {
-    let initial_iv = 0x9d4a97c2u32;
+fn f13(query: &[u8], body: &[u8], ts: u32, mobile: bool) -> Vec<u8> {
+    let branch = ((iv(query, body, ts) & 15) / 3) as usize;
+    let initial_iv = if mobile {
+        0x9d4a97c2u32
+    } else {
+        [
+            0xc4a78580, 0xb3c0fd39, 0xc58c5686, 0xc9aa3ba7, 0xf5a7adf2, 0x963c2ed1,
+        ][branch]
+    };
+    let [rounds, a, b, c, e, f, g, h, add, keep, store] = if mobile {
+        [96, 1, 3, 4, 0, 6, 5, 2, 0, 7, 7]
+    } else {
+        [
+            [101, 5, 7, 6, 3, 2, 1, 0, 5, 4, 3],
+            [96, 0, 6, 7, 5, 3, 2, 1, 5, 4, 4],
+            [96, 7, 6, 2, 1, 4, 0, 5, 4, 3, 5],
+            [99, 3, 6, 2, 4, 5, 1, 0, 0, 7, 6],
+            [96, 0, 5, 6, 7, 3, 1, 2, 5, 4, 4],
+            [100, 2, 0, 3, 5, 4, 6, 7, 2, 1, 5],
+        ][branch]
+    };
     let count = initial_iv.wrapping_add(ts);
     let table = HASH_TABLE.map(|n| n.rotate_right(count.wrapping_add(1) & 255));
     let shift = count.wrapping_add(2) & 7;
@@ -66,21 +87,21 @@ fn f13(query: &[u8], body: &[u8], ts: u32) -> Vec<u8> {
     ]
     .map(|n| n.rotate_right(count));
     let mut d = initial;
-    for i in 0..96 {
-        let base = initial_iv.wrapping_add(i);
-        let n1 = ((d[4] ^ d[0]) & d[1]) ^ d[4];
-        let n2 = d[1].rotate_left(26) ^ d[1].rotate_left(21) ^ d[1].rotate_left(7);
+    for i in 0..rounds {
+        let base = initial_iv.wrapping_add(i as u32);
+        let n1 = ((d[c] ^ d[e]) & d[a]) ^ d[c];
+        let n2 = d[a].rotate_left(26) ^ d[a].rotate_left(21) ^ d[a].rotate_left(7);
         let n4 = di[(base & 127) as usize]
             .wrapping_add(n1)
             .wrapping_add(n2)
             .wrapping_add(table[(base & 63) as usize])
-            .wrapping_add(d[6]);
-        let n5 = d[3].rotate_left(30) ^ d[3].rotate_left(19) ^ d[3].rotate_left(10);
-        let n6 = (d[3] & d[5]) | ((d[3] | d[5]) & d[2]);
-        let old = d[7];
+            .wrapping_add(d[f]);
+        let n5 = d[b].rotate_left(30) ^ d[b].rotate_left(19) ^ d[b].rotate_left(10);
+        let n6 = (d[b] & d[g]) | ((d[b] | d[g]) & d[h]);
+        let old = d[keep];
         d.rotate_right(1);
-        d[7] = n5.wrapping_add(n6).wrapping_add(n4);
-        d[0] = old.wrapping_add(n4);
+        d[store] = n5.wrapping_add(n6).wrapping_add(n4);
+        d[add] = old.wrapping_add(n4);
     }
     let bytes: Vec<u8> = d
         .iter()
@@ -102,7 +123,7 @@ fn f13(query: &[u8], body: &[u8], ts: u32) -> Vec<u8> {
         };
         check ^= temp;
     }
-    folded.extend((((check | 4) ^ 0x1000000) | 0x20).to_le_bytes());
+    folded.extend((((check | 4) ^ 0x1000000) | if mobile { 0x20 } else { 0 }).to_le_bytes());
     folded
 }
 fn xmxor(data: &[u8], key: &[u8]) -> Vec<u8> {
@@ -130,17 +151,34 @@ fn xmxor(data: &[u8], key: &[u8]) -> Vec<u8> {
     out[0] = (out[0] ^ out[1]).wrapping_add(out[1..].iter().fold(0u8, |a, b| a.wrapping_add(*b)));
     out
 }
-fn carrier(source: &[u8], key: &[u8], iv: &[u8], ts: u32) -> Vec<u8> {
+fn carrier(source: &[u8], key: &[u8], iv: &[u8], ts: u32, mobile: bool) -> Vec<u8> {
     let word = (ts & 3) as usize;
-    let sbox = &SBOX[word * 256..(word + 1) * 256];
-    let con = [[2, 0, 3, 1], [1, 3, 2, 0], [3, 2, 1, 0], [2, 3, 1, 0]][word];
-    let order = [
-        [0, 9, 14, 15, 4, 13, 2, 7, 8, 1, 6, 3, 12, 5, 10, 11],
-        [0, 9, 14, 11, 4, 13, 2, 3, 8, 1, 6, 15, 12, 5, 10, 7],
-        [0, 9, 14, 3, 4, 13, 2, 15, 8, 1, 6, 11, 12, 5, 10, 7],
-        [0, 9, 14, 15, 4, 13, 2, 3, 8, 1, 6, 11, 12, 5, 10, 7],
-    ][word];
-    let initial = [0xbbb5de72u32, 0xd4638d5b, 0x92a5f73b, 0x89f8a1c9][word];
+    let sbox = &(if mobile { &SBOX } else { &LEGACY_SBOX })[word * 256..(word + 1) * 256];
+    let con = if mobile {
+        [[2, 0, 3, 1], [1, 3, 2, 0], [3, 2, 1, 0], [2, 3, 1, 0]][word]
+    } else {
+        [[1, 0, 2, 3], [2, 0, 3, 1], [0, 1, 3, 2], [1, 0, 2, 3]][word]
+    };
+    let order = if mobile {
+        [
+            [0, 9, 14, 15, 4, 13, 2, 7, 8, 1, 6, 3, 12, 5, 10, 11],
+            [0, 9, 14, 11, 4, 13, 2, 3, 8, 1, 6, 15, 12, 5, 10, 7],
+            [0, 9, 14, 3, 4, 13, 2, 15, 8, 1, 6, 11, 12, 5, 10, 7],
+            [0, 9, 14, 15, 4, 13, 2, 3, 8, 1, 6, 11, 12, 5, 10, 7],
+        ][word]
+    } else {
+        [
+            [0, 9, 14, 11, 4, 13, 2, 7, 8, 1, 6, 15, 12, 5, 10, 3],
+            [0, 9, 14, 15, 4, 13, 2, 7, 8, 1, 6, 3, 12, 5, 10, 11],
+            [0, 9, 14, 7, 4, 13, 2, 11, 8, 1, 6, 3, 12, 5, 10, 15],
+            [0, 9, 14, 11, 4, 13, 2, 7, 8, 1, 6, 15, 12, 5, 10, 3],
+        ][word]
+    };
+    let initial = if mobile {
+        [0xbbb5de72u32, 0xd4638d5b, 0x92a5f73b, 0x89f8a1c9][word]
+    } else {
+        [0xca025ddc, 0x823dc546, 0xc9420583, 0xc298225f][word]
+    };
     let mut expanded = [0u8; 48];
     for i in 0..16 {
         expanded[i] = initial.to_le_bytes()[i % 4] ^ key[i];
@@ -219,8 +257,11 @@ fn carrier(source: &[u8], key: &[u8], iv: &[u8], ts: u32) -> Vec<u8> {
         }
         rows.into_iter().flatten().collect()
     };
-    let wire = [6, 5, 3, 4, 2, 7, 1, 0];
-    let compact = [1, 7, 3, 6, 2, 0, 4, 5];
+    let (wire, compact) = if mobile {
+        ([6, 5, 3, 4, 2, 7, 1, 0], [1, 7, 3, 6, 2, 0, 4, 5])
+    } else {
+        ([5, 6, 2, 4, 3, 1, 0, 7], [1, 6, 0, 7, 2, 4, 5, 3])
+    };
     let mut plaintext = [0u8; 32];
     for i in 0..31 {
         for j in 0..8 {
@@ -301,7 +342,7 @@ impl Signer {
     }
     fn medusa(&self, query: &str, body: &[u8], ts: u32, who: &BTreeMap<String, String>) -> String {
         let query = sm3(query.as_bytes());
-        let digest = f13(&query, &md5(body), ts);
+        let digest = f13(&query, &md5(body), ts, true);
         let flags = [0u8; 8];
         let mut device = Proto::default();
         device.n(1, 2);
@@ -367,7 +408,7 @@ impl Signer {
             vec![(nonce >> 16) as u8, (nonce >> 24) as u8],
         ]
         .concat();
-        let encrypted = carrier(&packed, &md5(&key[..16]), &md5(&key[16..]), ts);
+        let encrypted = carrier(&packed, &md5(&key[..16]), &md5(&key[16..]), ts, true);
         let mut prefix = [5u32.to_le_bytes().to_vec(), hex(MAGIC)].concat();
         for (i, b) in prefix.iter_mut().enumerate() {
             *b ^= ts.to_le_bytes()[i & 3];
@@ -394,6 +435,7 @@ mod tests {
                 &hex(row["query"].as_str().unwrap()),
                 &hex(row["body"].as_str().unwrap()),
                 row["ts"].as_u64().unwrap() as u32,
+                true,
             );
             assert_eq!(hex_string(&result[..16]), row["digest"].as_str().unwrap());
         }
@@ -406,6 +448,7 @@ mod tests {
                 &hex(row["key"].as_str().unwrap()),
                 &hex(row["iv"].as_str().unwrap()),
                 row["ts"].as_u64().unwrap() as u32,
+                true,
             );
             assert_eq!(hex_string(&result), row["encrypted"].as_str().unwrap());
         }

@@ -2,7 +2,7 @@
 
 # 红果 TV 原生版
 
-Android 原生 View 和 Media3 负责界面与解码，Rust 内核负责续播目标、清晰度选择和视频分段响应校验。手机和电视共用 APK。默认要求 Android 6.0 / API 23，Android 5 使用兼容包。包名为 `com.hongguotv.nativeapp`。界面功能见 [项目说明](../README.md)。
+Android 原生 View 和 Media3 负责界面与解码，Rust 内核负责续播目标、清晰度选择和视频分段响应校验。通用 APK 会根据设备选择界面。电视使用遥控器导航，手机使用底部导航、系统输入法、竖屏选集和触控播放器。默认要求 Android 6.0 / API 23，Android 5 使用兼容包。包名为 `com.hongguotv.nativeapp`。界面功能见 [项目说明](../README.md)。
 
 ## 使用
 
@@ -14,7 +14,7 @@ Android 原生 View 和 Media3 负责界面与解码，Rust 内核负责续播�
 
 播放器全屏观看时向上切上一集、向下切下一集，长按只切一次，左右快退快进。确定键暂停／继续并打开菜单，再次确定继续并收起；菜单键打开菜单且不改变播放状态。菜单为单行透明图标按钮（倍速直接显示当前倍率）：播放／暂停、选集、倍速、弹幕设置、更多设置；不再保留上下集按钮，菜单和弹窗内方向键仅导航，返回逐层关闭。播放内选集在菜单按钮下方内嵌展开（无独立弹窗），与详情页共用集数分组和网格（每组 20 集、每行 10 集），播放内分组和集数均为透明底，支持直接选择分组，不显示跳转集数入口；详情页保留跳转集数。设置中可选择画面旋转、常驻进度、倍速、清晰度和跨季连播。自动更新来自 `N3urda/hongguoTV`，由系统确认安装。
 
-在触屏手机上轻点视频可打开或收起播放菜单，拖动进度条可定位播放位置。
+在触屏手机上轻点视频可打开或收起播放菜单，拖动进度条可定位播放位置。播放菜单提供时间轴弹幕设置。「我的 → 预约」显示待上线与已上线的记录，详情页「相关作品」可预约待上线作品。
 
 进入设置默认显示独立的“检查更新”分类，焦点落在检查更新按钮，可查看当前版本、检查、下载并安装新版；关闭更新面板后焦点回到该按钮。
 
@@ -26,10 +26,10 @@ Android 原生 View 和 Media3 负责界面与解码，Rust 内核负责续播�
 
 ```sh
 rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
-./kotlin-tv/gradlew -p kotlin-tv :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+./kotlin-tv/gradlew -p kotlin-tv -PdebugDevice=tv :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-手机和电视的本地试用包使用 `-PdebugDevice=phone` 或 `-PdebugDevice=tv` 构建，安装后均显示为 `hongguoTV`。电视包保留 Android TV 及普通启动器入口，并使用遥控播放菜单。配合 `-PlegacyAudio=true` 时，产物分别位于 `app/build/phone/outputs/apk/debug/` 和 `app/build/tv/outputs/apk/debug/`。两个试用包使用同一个测试包名，可分别覆盖同签名的旧试用版并保留记录。
+手机和电视的本地试用包使用 `-PdebugDevice=phone` 或 `-PdebugDevice=tv` 构建，安装后均显示为 `hongguoTV`。手机包强制使用触控界面，电视包保留 Android TV 及普通启动器入口，并强制使用遥控器界面。配合 `-PlegacyAudio=true` 时，产物分别位于 `app/build/phone/outputs/apk/debug/` 和 `app/build/tv/outputs/apk/debug/`。两个试用包使用同一个测试包名，可分别覆盖同签名的旧试用版并保留记录。
 
 设备验收可通过 `:app:assembleDebug :app:assembleDebugAndroidTest -PlegacyAudio=true` 构建兼容版及其测试包。通过 ADB 安装两包后运行共享内核验收。
 

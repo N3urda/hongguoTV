@@ -1,22 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-only
+import { attachDanmaku, danmakuOptions } from "./danmaku.js";
 import { frameOptions, rotationOptions, settingsPage, speedSteps } from "./settings.js";
 
 const shell = document.querySelector("#shell");
 const main = document.querySelector("#main");
 const watch = document.querySelector("#watch");
-const nav = [...document.querySelectorAll("nav [data-section]")];
+const nav = [...document.querySelectorAll(".app-bar [data-section]")];
 const categories = [["real", "真人剧"], ["comic", "漫剧"], ["ai", "AI 剧"]];
 const sectionNames = { home: "首页", feed: "随心看", browse: "找剧", search: "搜索", rank: "排行榜", library: "我的", settings: "设置" };
 const boards = [["all", "热播榜"], ["real", "真人剧"], ["comic", "漫剧"], ["ai", "AI 剧"], ["new", "新剧榜"], ["searched", "热搜榜"], ["favorites", "收藏榜"]];
 const groupSize = 20;
 const state = {
-  section: "home", category: "real", topic: "", page: 1, query: "", libraryTab: "history",
+  section: "home", category: "real", topic: "", page: 1, query: "", libraryTab: "history", reservationTab: "pending",
   library: { favorites: [], history: [], later: [] }, detail: null, returnPoint: null,
   navigation: null, player: null, playing: null, prepare: null,
   stopping: Promise.resolve(), savingPreferences: Promise.resolve(), savingSearch: Promise.resolve(),
-  board: "all", suggestion: null,
+  board: "all", feedCategory: "real", feed: null,
   preferences: { theme: "dark", quality: 1080, speed: 100, frame: "fit", rotation: 0,
-    show_progress: false, auto_next: true, startup: "home", feed_autoplay: true, clock: "controls" },
+    show_progress: false, auto_next: true, danmaku: true,
+    danmaku_area: 50, danmaku_font: 24, danmaku_opacity: 80, danmaku_travel: 9, startup: "home", feed_autoplay: true, clock: "controls" },
 };
 
 function node(tag, className, text) {
@@ -157,13 +159,16 @@ function spotlight(series, history) {
   if (meta) copy.append(node("p", "meta", meta));
   if (!history && series.description) copy.append(node("p", "summary clamp", series.description));
   const actions = node("div", "actions");
-  const play = button(history ? "继续观看" : "打开剧集", () => openDetail(series.id, true), "primary", "play");
+  const play = button(history ? "继续观看" : "开始观看", () => openDetail(series.id, true), "primary", "play");
   const details = button("查看详情", () => openDetail(series.id), "quiet");
   play.dataset.key = "spotlight-play";
   details.dataset.key = "spotlight-detail";
   actions.append(play, details);
   copy.append(actions);
-  panel.append(copy, poster(series, true));
+  const art = poster(series, true);
+  const backdrop = node("div", "spotlight-art");
+  backdrop.append(art);
+  panel.append(copy, backdrop);
   return panel;
 }
 
@@ -308,8 +313,8 @@ async function renderHome(outlet, signal) {
   const feature = recent[0]?.series || items[0];
   if (feature) outlet.replaceChildren(spotlight(feature, recent[0]));
   else outlet.replaceChildren();
-  if (recent.length) {
-    const cards = recent.slice(0, 10).map((entry) => card(entry.series, "recent", entry));
+  if (recent.length > 1) {
+    const cards = recent.slice(1, 11).map((entry) => card(entry.series, "recent", entry));
     outlet.append(shelf("接着看", "recent", cards, () => openLibrary("history"), signal));
   }
   if (items.length) {
@@ -367,24 +372,97 @@ async function renderRanks(outlet, signal, page, focus) {
   if (page > 1 || results.has_more) outlet.append(pagination("rank", page, results.has_more, focus));
 }
 
-async function renderFeed(outlet, signal, restore) {
-  if (!restore || !state.suggestion) {
-    const results = await request(`api/catalog?category=${state.category}&page=1`, { signal });
+function newFeed(category) {
+  return { category, items: [], index: 0, page: 0, hasMore: true, loading: false };
+}
+
+async function extendFeed(feed, signal) {
+  const page = feed.page + 1;
+  const results = await request(`api/catalog?category=${feed.category}&page=${page}`, { signal });
+  if (signal.aborted) return;
+  const seen = new Set(feed.items.map(series => series.id));
+  const items = results.items.filter(series => {
+    if (seen.has(series.id)) return false;
+    seen.add(series.id);
+    return true;
+  });
+  // Shuffle each page once so going back returns to the same works.
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [items[i], items[j]] = [items[j], items[i]];
+  }
+  feed.items.push(...items);
+  feed.page = page;
+  feed.hasMore = results.has_more && page < 100;
+}
+
+function syncFeedButtons(view) {
+  if (!view?.feed) return;
+  const { index, items, hasMore, loading } = view.feed;
+  view.previous.disabled = loading || index === 0;
+  view.next.disabled = loading || (index + 1 >= items.length && !hasMore);
+}
+
+async function playFeedItem(feed, index, signal) {
+  const series = feed.items[index];
+  const detail = await request(`api/detail/${series.id}`, { signal });
+  if (signal.aborted) return;
+  const saved = detail.episodes.find(episode => episode.id === detail.resume?.episode && episode.available);
+  const episode = saved || detail.episodes.find(episode => episode.available);
+  feed.index = index;
+  state.detail = detail;
+  openPlayer(episode, saved ? detail.resume.position : 0, undefined, feed);
+}
+
+async function renderFeed(outlet, signal) {
+  const feed = state.feed?.category === state.feedCategory ? state.feed : newFeed(state.feedCategory);
+  state.feed = feed;
+  for (let i = 0; i < 3 && !feed.items.length && feed.hasMore; i++) {
+    await extendFeed(feed, signal);
     if (signal.aborted) return;
-    const candidates = results.items.filter((row) => row.id !== state.suggestion?.id);
-    const items = candidates.length ? candidates : results.items;
-    state.suggestion = items[Math.floor(Math.random() * items.length)];
   }
-  if (!state.suggestion) {
-    outlet.replaceChildren(status("暂无可推荐的作品", () => openSection("feed")));
-    return;
+  if (signal.aborted) return;
+  if (feed.items.length) await playFeedItem(feed, feed.index, signal);
+  else outlet.replaceChildren(status("暂无可推荐的作品", () => {
+    state.feed = null;
+    openSection("feed");
+  }));
+}
+
+async function shiftFeed(view, direction) {
+  const feed = view.feed;
+  const index = feed.index + direction;
+  if (feed.loading || index < 0 || (index >= feed.items.length && !feed.hasMore)) return;
+  const { signal } = state.navigation;
+  feed.loading = true;
+  const previousLabel = view.episodeLabel.textContent;
+  view.episodeLabel.textContent = "正在切换剧集…";
+  syncFeedButtons(view);
+  try {
+    // Try a few more pages when the catalogue repeats previous entries.
+    for (let i = 0; i < 3 && index >= feed.items.length && feed.hasMore; i++) {
+      await extendFeed(feed, signal);
+      if (signal.aborted) return;
+    }
+    if (feed.items[index]) await playFeedItem(feed, index, signal);
+    else view.episodeLabel.textContent = feed.hasMore ? "暂未找到新剧，可继续换剧" : "已看完本次推荐";
+  } catch (error) {
+    if (!signal.aborted) view.episodeLabel.textContent = error.message || previousLabel;
+  } finally {
+    feed.loading = false;
+    if (state.player === view) {
+      const control = direction < 0 ? view.previous : view.next;
+      syncFeedButtons(view);
+      if (!control.disabled && document.activeElement === document.body) control.focus({ preventScroll: true });
+      showControls();
+    }
   }
-  const panel = spotlight(state.suggestion);
-  const next = button("换一部", () => openSection("feed", { focus: "feed-next" }));
-  next.dataset.key = "feed-next";
-  panel.querySelector(".actions").append(next);
-  outlet.replaceChildren(panel);
-  if (!restore && state.preferences.feed_autoplay) await openDetail(state.suggestion.id, true);
+}
+
+function selectFeedCategory(category) {
+  if (category === state.feedCategory && state.player?.feed) return;
+  state.feedCategory = category;
+  openSection("feed", { focus: `tab:${category}` });
 }
 
 function restorePoint(point) {
@@ -407,7 +485,7 @@ async function openSection(section, { page = 1, restore = false, focus, settings
   state.page = page;
   shell.dataset.view = "catalog";
   for (const item of nav) {
-    if (item.dataset.section === section) item.setAttribute("aria-current", "page");
+    if (item.dataset.section === section && !item.classList.contains("brand")) item.setAttribute("aria-current", "page");
     else item.removeAttribute("aria-current");
   }
   const frame = node("div", "page catalog-page");
@@ -419,7 +497,8 @@ async function openSection(section, { page = 1, restore = false, focus, settings
     }
     frame.append(heading);
   }
-  if (section === "browse" || section === "feed") frame.append(tabs(categories, state.category, (category) => {
+  if (section === "feed") frame.append(tabs(categories, state.feedCategory, selectFeedCategory));
+  if (section === "browse") frame.append(tabs(categories, state.category, (category) => {
     if (state.category !== category) state.topic = "";
     state.category = category;
     openSection(section, { focus: `tab:${category}` });
@@ -429,7 +508,7 @@ async function openSection(section, { page = 1, restore = false, focus, settings
     openSection("rank", { focus: `tab:${board}` });
   }));
   if (section === "search") frame.append(searchForm(signal));
-  if (section === "library") frame.append(tabs([["history", "观看历史"], ["favorites", "收藏"], ["later", "稍后看"]], state.libraryTab, openLibrary));
+  if (section === "library") frame.append(tabs([["history", "观看历史"], ["favorites", "收藏"], ["later", "稍后看"], ["reservations", "预约"]], state.libraryTab, openLibrary));
   const outlet = node("div");
   frame.append(outlet);
   main.replaceChildren(frame);
@@ -455,8 +534,9 @@ async function openSection(section, { page = 1, restore = false, focus, settings
     } else if (section === "rank") {
       await renderRanks(outlet, signal, page, focus);
     } else if (section === "feed") {
-      await renderFeed(outlet, signal, restore);
-      if (focus === "feed-next") focusKey(focus);
+      await renderFeed(outlet, signal);
+    } else if (section === "library" && state.libraryTab === "reservations") {
+      await renderReservations(outlet, signal);
     } else if (section === "library") {
       const library = await request("api/library", { signal });
       if (signal.aborted) return;
@@ -512,6 +592,136 @@ async function openSection(section, { page = 1, restore = false, focus, settings
   }
 }
 
+function accountSignIn() {
+  openSection("settings", { settingsTab: "account" });
+}
+
+function reservationDate(row) {
+  if (row.expected) return row.expected;
+  if (row.scheduled_at > 0 && row.scheduled_at <= 8_640_000_000_000_000) {
+    return `${new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(row.scheduled_at)} 预计上线`;
+  }
+  return "待上线";
+}
+
+function reservationCard(series, meta, action) {
+  const item = node("article", "card reservation-card");
+  const copy = node("div", "card-copy");
+  copy.append(node("h3", "card-title", series.title), node("p", "card-meta", meta));
+  if (action) copy.append(action);
+  item.append(poster(series), copy);
+  return item;
+}
+
+async function renderReservations(outlet, signal) {
+  const filters = tabs([["pending", "待上线"], ["online", "已上线"]], state.reservationTab, tab => {
+    state.reservationTab = tab;
+    openSection("library", { focus: `tab:reservation-${tab}` });
+  });
+  for (const item of filters.querySelectorAll("[data-key]")) {
+    item.dataset.key = item.dataset.key.replace("tab:", "tab:reservation-");
+  }
+  const results = node("div", "reservation-results");
+  outlet.replaceChildren(filters, results);
+  const online = state.reservationTab === "online";
+  focusKey(`tab:reservation-${state.reservationTab}`);
+  async function load() {
+    results.replaceChildren(status("正在加载预约…"));
+    try {
+      const rows = await request(`api/reservations?online=${online}`, { signal });
+      if (signal.aborted) return;
+      const cards = rows.map(row => online
+        ? card(row.series, "reservation")
+        : reservationCard(row.series, reservationDate(row)));
+      const message = online ? "暂无已上线的预约" : "暂无待上线的预约";
+      results.replaceChildren(button("刷新预约", load, "quiet reservation-refresh"),
+        cards.length ? grid(cards) : status(message));
+    } catch (error) {
+      if (signal.aborted) return;
+      if (error.status === 401) {
+        const signIn = status("登录红果账户后查看预约");
+        signIn.firstChild.append(button("登录红果账户", accountSignIn, "primary"));
+        results.replaceChildren(signIn);
+      } else {
+        results.replaceChildren(status(error.message, load));
+      }
+    }
+  }
+  await load();
+}
+
+async function renderRelated(section, detail, signal) {
+  const seriesId = detail.series.id;
+  const fallback = () => {
+    section.replaceChildren();
+    if (detail.related.length) {
+      section.append(shelf("相关推荐", "related", detail.related.map(entry => card(entry, "related")), null, signal));
+    }
+  };
+  fallback();
+  let works;
+  try {
+    works = await request(`api/detail/${seriesId}/related`, { signal });
+  } catch {
+    if (!signal.aborted) section.append(button("重新加载相关作品", () => renderRelated(section, detail, signal), "quiet"));
+    return;
+  }
+  if (signal.aborted || !works.length) return;
+  const upcoming = works.some(work => work.upcoming);
+  let rows = [];
+  let signedIn = true;
+  if (upcoming) {
+    // Only the upcoming entries need the account's private reservation labels.
+    try {
+      rows = await request("api/reservations?online=false", { signal });
+    } catch (error) {
+      if (error.status === 401) signedIn = false;
+    }
+  }
+  if (signal.aborted) return;
+  const cards = works.map(work => {
+    const { series } = work;
+    if (!work.upcoming) return card(series, "related-works");
+    const row = rows.find(item => item.series.id === series.id || item.series.id === `reservation:${series.id}`);
+    let result = row ? "confirmed" : "";
+    const note = node("p", "card-meta reservation-note");
+    note.setAttribute("role", "status");
+    const action = button(row ? "已预约" : signedIn ? "预约" : "登录后预约", async () => {
+      if (!signedIn) return accountSignIn();
+      const previous = action.textContent;
+      action.disabled = true;
+      action.textContent = result ? "查询中…" : "预约中…";
+      note.textContent = "";
+      try {
+        result = await post("api/reservations", { from: seriesId, id: series.id });
+        if (signal.aborted) return;
+        action.textContent = result === "confirmed" ? "已预约" : "查询预约状态";
+        if (result === "submitted") note.textContent = "已提交，等待红果更新预约列表";
+        if (result === "unknown") note.textContent = "提交结果待确认";
+      } catch (error) {
+        if (signal.aborted) return;
+        if (error.status === 401) signedIn = false;
+        action.textContent = signedIn ? previous : "登录后预约";
+        note.textContent = error.message;
+      } finally {
+        action.disabled = result === "confirmed";
+      }
+    });
+    action.disabled = result === "confirmed";
+    const meta = [work.season, row ? reservationDate(row) : "待上线"].filter(Boolean).join(" · ");
+    const item = reservationCard(series, meta, action);
+    item.lastElementChild.append(note);
+    return item;
+  });
+  const title = node("h2", "", "相关作品");
+  const heading = node("div", "section-heading");
+  heading.append(title);
+  const worksSection = node("section", "shelf related-works");
+  worksSection.append(heading, grid(cards));
+  fallback();
+  section.prepend(worksSection);
+}
+
 function grid(cards) {
   const items = node("div", "grid");
   items.append(...cards);
@@ -531,15 +741,24 @@ async function openDetail(id, play = false) {
     };
   }
   const signal = nextNavigation();
+  const cached = state.player?.detail.series.id === id ? state.player.detail : null;
   const stopped = leavePlayer();
-  state.detail = null;
+  state.detail = cached;
   shell.dataset.view = "detail";
   const frame = node("div", "page detail-page");
   const heading = node("header", "page-heading");
   const back = button("返回", backToSection, "back", "left");
-  heading.append(back, node("h1", "", "剧集详情"));
+  heading.append(back);
   const outlet = node("div");
-  outlet.append(status("正在读取剧集…"));
+  const show = (detail) => {
+    const saved = detail.episodes.find(episode => episode.id === detail.resume?.episode && episode.available);
+    const selected = saved || detail.episodes.find(episode => episode.available);
+    const position = saved ? detail.resume.position : 0;
+    outlet.replaceChildren(renderDetail(detail, selected, position));
+    if (play && selected?.available) openPlayer(selected, position);
+  };
+  if (cached) show(cached);
+  else outlet.append(status("正在读取剧集…"));
   frame.append(heading, outlet);
   main.replaceChildren(frame);
   main.scrollTop = 0;
@@ -547,17 +766,18 @@ async function openDetail(id, play = false) {
   try {
     await stopped;
     const [detail, library] = await Promise.all([
-      request(`api/detail/${id}`, { signal }), request("api/library", { signal }),
+      request(`api/detail/${id}`, { signal }),
+      request("api/library", { signal }).catch(() => state.library),
     ]);
-    if (signal.aborted) return;
-    state.detail = detail;
+    // Playback may have started from the cached detail while the refresh was pending.
+    if (signal.aborted || state.player) return;
     state.library = library;
-    const selected = detail.episodes.find((episode) => episode.id === detail.resume?.episode);
-    const position = detail.resume?.position || 0;
-    outlet.replaceChildren(renderDetail(detail, selected, position));
-    if (play && selected?.full) openPlayer(selected, position);
+    if (!cached || !outlet.contains(document.activeElement)) {
+      state.detail = detail;
+      show(detail);
+    }
   } catch (error) {
-    if (!signal.aborted) outlet.replaceChildren(status(error.message, () => openDetail(id, play)));
+    if (!signal.aborted && !cached) outlet.replaceChildren(status(error.message, () => openDetail(id, play)));
   }
 }
 
@@ -579,7 +799,7 @@ function renderDetail(detail, selected, position) {
   const layout = node("div", "detail");
   const hero = node("section", "detail-hero");
   const copy = node("div", "detail-copy");
-  copy.append(node("h2", "", series.title));
+  copy.append(node("h1", "", series.title));
   copy.append(node("p", "meta", [`全 ${episodes.length} 集`, ...series.tags].join(" · ")));
   const actions = node("div", "actions");
   let playLabel = "暂无可播分集";
@@ -613,8 +833,9 @@ function renderDetail(detail, selected, position) {
   }
   const favorite = savedAction("favorites", "api/favorite", "收藏", "已收藏");
   const later = savedAction("later", "api/later", "稍后看", "已加入稍后看");
-  const official = officialLink(series, selected || episodes[0]);
-  actions.append(play, official, favorite, later);
+  actions.append(play, favorite, later);
+  const first = selected || episodes[0];
+  if (first) actions.append(officialLink(series, first));
   if (series.description) {
     const summary = node("p", "summary clamp", series.description);
     summary.id = "synopsis";
@@ -643,10 +864,9 @@ function renderDetail(detail, selected, position) {
     }
     layout.append(reviews);
   }
-  if (detail.related.length) {
-    const cards = detail.related.map((entry) => card(entry, "related"));
-    layout.append(shelf("相关剧集", "related", cards, null, state.navigation.signal));
-  }
+  const related = node("div", "detail-related");
+  layout.append(related);
+  renderRelated(related, detail, state.navigation.signal);
   return layout;
 }
 
@@ -744,6 +964,7 @@ function stopPlayback() {
   const session = state.playing;
   state.playing = null;
   if (session) {
+    session.danmaku?.destroy();
     savePosition(session, session.video.ended);
     session.video.pause();
     session.video.removeAttribute("src");
@@ -802,6 +1023,7 @@ function toggleEpisodes(view, open, restoreFocus = false) {
   }
   view.menu.setAttribute("aria-expanded", String(open));
   view.panel.hidden = !open;
+  syncWatchDrawer(view);
   if (open) {
     const history = state.library.history.find((entry) => entry.series.id === view.detail.series.id);
     const picker = episodePicker(view.detail.episodes, view.detail.episodes[view.index], history, false);
@@ -811,13 +1033,17 @@ function toggleEpisodes(view, open, restoreFocus = false) {
   showControls();
 }
 
+function syncWatchDrawer(view) {
+  view.drawer.hidden = view.panel.hidden && view.comments.hidden;
+}
+
 function showControls() {
   const view = state.player;
   if (!view) return;
   delete watch.dataset.idle;
   clearTimeout(view.hideTimer);
   const video = state.playing?.video;
-  if (!video || video.paused || video.ended || !view.panel.hidden || !view.more.hidden || !view.comments.hidden) return;
+  if (document.fullscreenElement !== watch || !video || video.paused || video.ended || !view.drawer.hidden || !view.more.hidden) return;
   view.hideTimer = setTimeout(() => {
     if (state.player === view && !watch.querySelector(".watch-header:hover, .watch-footer:hover, .watch-header:focus-within, .watch-footer:focus-within")) {
       watch.dataset.idle = "true";
@@ -840,6 +1066,7 @@ function toggleMore(view, open, restoreFocus = false) {
 async function toggleComments(view, open, restoreFocus = false) {
   view.commentRequest?.abort();
   view.comments.hidden = !open;
+  syncWatchDrawer(view);
   view.commentsButton.setAttribute("aria-expanded", String(open));
   if (!open) {
     if (restoreFocus) view.commentsButton.focus({ preventScroll: true });
@@ -920,6 +1147,9 @@ function playerOptions(view) {
   row("画面模式", "frame", frameOptions, value => { view.stage.dataset.frame = value; });
   row("画面旋转", "rotation", rotationOptions, value => { view.stage.dataset.rotation = value; });
   row("常驻播放进度", "show_progress", null, value => { view.ambient.hidden = !value; });
+  for (const [key, label, options] of danmakuOptions) {
+    row(label, key, options, () => state.playing?.danmaku?.update());
+  }
   panel.append(button("从头播放", () => {
     seekTo(0);
     toggleMore(view, false, true);
@@ -927,17 +1157,39 @@ function playerOptions(view) {
   return panel;
 }
 
-function createPlayer(detail) {
+function preferenceControl(label, ...controls) {
+  const row = node("div", "settings-row");
+  const group = node("div", "transport-group");
+  group.append(...controls);
+  row.append(node("span", "", label), group);
+  return row;
+}
+
+function createPlayer(detail, feed) {
   const preferences = state.preferences;
-  const view = { detail, index: 0, rate: preferences.speed / 100, volume: 1, muted: false, scrubbing: false };
+  const view = { detail, feed, index: 0, rate: preferences.speed / 100, volume: 1, muted: false, scrubbing: false };
   const header = node("header", "watch-header");
-  const back = button("返回详情", () => openDetail(detail.series.id), "back", "left");
+  const back = button(feed ? "退出随心看" : "详情", () => {
+    if (feed) openSection("home");
+    else openDetail(view.detail.series.id);
+  }, "back quiet", "left");
   const heading = node("div", "watch-heading");
   view.episodeLabel = node("p", "meta");
   view.episodeLabel.setAttribute("role", "status");
-  heading.append(node("h1", "", detail.series.title), view.episodeLabel);
-  view.official = officialLink(detail.series, detail.episodes[0]);
-  header.append(back, view.official);
+  view.title = node("h1", "", detail.series.title);
+  heading.append(view.title, view.episodeLabel);
+  header.append(back, heading);
+  if (feed) {
+    const filters = namedControl(node("select", "watch-feed-category"), "随心看分类");
+    for (const [id, label] of categories) {
+      const option = node("option", "", label);
+      option.value = id;
+      filters.append(option);
+    }
+    filters.value = feed.category;
+    filters.addEventListener("change", () => selectFeedCategory(filters.value));
+    header.append(filters, button("剧集详情", () => openDetail(view.detail.series.id), "watch-feed-detail"));
+  }
   view.stage = namedControl(node("div", "watch-stage"), "视频画面");
   view.stage.setAttribute("role", "group");
   view.stage.tabIndex = 0;
@@ -966,15 +1218,16 @@ function createPlayer(detail) {
   timeline.append(view.elapsed, view.slider, view.duration);
   const transport = node("div", "transport");
   const basic = node("div", "transport-group");
-  view.previous = button("上一集", () => shiftEpisode(-1));
-  view.next = button("下一集", () => shiftEpisode(1));
+  const move = direction => feed ? shiftFeed(view, direction) : shiftEpisode(direction);
+  view.previous = button(feed ? "上一部" : "上一集", () => move(-1));
+  view.next = button(feed ? "下一部" : "下一集", () => move(1));
   view.play = button("播放", toggleVideo, "primary", "play");
   basic.append(view.previous, view.play, view.next);
   const settings = node("div", "transport-group");
   view.menu = button("选集", () => toggleEpisodes(view, view.panel.hidden, true));
   view.menu.setAttribute("aria-expanded", "false");
   view.menu.setAttribute("aria-controls", "watch-episodes");
-  view.moreButton = button("更多设置", () => toggleMore(view, view.more.hidden, true));
+  view.moreButton = button("播放设置", () => toggleMore(view, view.more.hidden, true));
   view.moreButton.setAttribute("aria-expanded", "false");
   view.moreButton.setAttribute("aria-controls", "watch-options");
   view.commentsButton = button("本集评论", () => toggleComments(view, view.comments.hidden, true));
@@ -1033,7 +1286,32 @@ function createPlayer(detail) {
     view.episodesLeft = { episode: 1, "episodes-3": 3, "episodes-5": 5 }[view.sleep.value] || 0;
     if (minutes > 0) view.sleepTimer = setTimeout(() => stopForSleep(view), minutes * 60_000);
   });
-  settings.append(view.menu, view.commentsButton, view.quality, speed, view.sleep, view.moreButton, mute, volume, autoLabel);
+  view.more = playerOptions(view);
+  view.more.prepend(
+    node("h2", "", "播放设置"),
+    preferenceControl("倍速", speed),
+    preferenceControl("定时停止", view.sleep),
+    preferenceControl("音量", volume, mute),
+    preferenceControl("连播", autoLabel),
+  );
+  const danmaku = button("弹幕", async () => {
+    danmaku.disabled = true;
+    try {
+      await savePreference("danmaku", !state.preferences.danmaku);
+      if (state.player !== view) return;
+      danmaku.setAttribute("aria-pressed", String(state.preferences.danmaku));
+      state.playing?.danmaku?.update();
+    } catch (error) {
+      if (state.player === view) view.episodeLabel.textContent = error.message;
+    } finally {
+      danmaku.disabled = false;
+    }
+  });
+  danmaku.setAttribute("aria-pressed", String(preferences.danmaku));
+  view.danmakuNote = node("span", "danmaku-note");
+  view.danmakuNote.setAttribute("role", "status");
+  view.danmakuNote.hidden = true;
+  settings.append(view.menu, danmaku, view.commentsButton, view.quality, view.moreButton);
   if (document.fullscreenEnabled && watch.requestFullscreen) {
     view.fullscreen = button("全屏", async () => {
       try {
@@ -1047,14 +1325,20 @@ function createPlayer(detail) {
   view.panel = node("div", "watch-panel");
   view.panel.id = "watch-episodes";
   view.panel.hidden = true;
-  view.more = playerOptions(view);
   view.comments = node("section", "watch-panel watch-comments");
   view.comments.id = "watch-comments";
   view.comments.hidden = true;
   view.comments.tabIndex = -1;
   view.comments.setAttribute("aria-label", "本集评论");
-  footer.append(view.panel, view.more, view.comments, heading, timeline, transport);
-  watch.replaceChildren(header, view.stage, footer);
+  footer.append(view.more, view.danmakuNote, timeline, transport);
+  view.drawer = node("aside", "watch-drawer");
+  view.drawer.hidden = true;
+  view.drawer.append(view.panel, view.comments);
+  const theater = node("div", "watch-theater");
+  theater.append(view.stage, footer);
+  const body = node("div", "watch-body");
+  body.append(theater, view.drawer);
+  watch.replaceChildren(header, body);
   view.ambient = node("progress", "watch-progress card-progress");
   view.ambient.setAttribute("aria-hidden", "true");
   view.ambient.hidden = !preferences.show_progress;
@@ -1103,7 +1387,10 @@ function syncControls(view, video) {
 function qualityOptions(view, playback) {
   view.quality.replaceChildren();
   view.quality.disabled = !playback || playback.qualities.length <= 1;
-  if (!playback) return;
+  if (!playback) {
+    view.quality.append(node("option", "", "清晰度"));
+    return;
+  }
   for (const quality of playback.qualities) {
     const option = node("option", "", quality > 0 ? quality + "P" : "自动");
     option.value = quality;
@@ -1172,31 +1459,37 @@ async function switchQuality(view) {
   }
 }
 
-async function openPlayer(episode, position = 0, prepared) {
+async function openPlayer(episode, position = 0, prepared, feed) {
   const detail = state.detail;
-  if (!detail || !episode) return;
+  if (!detail || (!episode && !feed)) return;
   const focusStage = !state.player || state.player.panel.contains(document.activeElement) || document.activeElement === state.player.play;
-  const view = state.player || createPlayer(detail);
+  const view = state.player || createPlayer(detail, feed);
   state.player = view;
   const stopped = stopPlayback();
   shell.hidden = true;
   watch.hidden = false;
+  view.detail = detail;
+  view.title.textContent = detail.series.title;
   view.index = detail.episodes.indexOf(episode);
   view.scrubbing = false;
   if (!prepared) view.sleepStopped = false;
-  const label = `第 ${episode.number} 集`;
+  const label = episode ? `第 ${episode.number} 集` : "";
   view.episodeLabel.textContent = label;
-  view.official.href = episodeUrl(detail.series, episode);
-  view.previous.disabled = view.index <= 0;
-  view.next.disabled = view.index >= detail.episodes.length - 1;
+  view.menu.disabled = detail.episodes.length === 0;
+  view.commentsButton.disabled = !episode;
+  if (view.feed) syncFeedButtons(view);
+  else {
+    view.previous.disabled = view.index <= 0;
+    view.next.disabled = view.index >= detail.episodes.length - 1;
+  }
   qualityOptions(view);
   toggleEpisodes(view, false);
   toggleMore(view, false);
   toggleComments(view, false);
   syncControls(view);
   if (focusStage || document.activeElement?.disabled) view.stage.focus({ preventScroll: true });
-  if (!episode.available) {
-    view.stage.replaceChildren(status("本集可在官网播放", null, "watch-status"));
+  if (!episode?.available) {
+    view.stage.replaceChildren(status(episode ? "本集暂无可播放的来源" : "这部剧暂无可播放的分集", null, "watch-status"));
     return;
   }
   const controller = new AbortController();
@@ -1272,6 +1565,13 @@ async function openPlayer(episode, position = 0, prepared) {
       view.stage.replaceChildren(status("视频读取失败", () => openPlayer(episode, retryPosition), "watch-status"));
     });
     view.stage.prepend(video);
+    session.danmaku = attachDanmaku(view.stage, video, (start, duration, cursor, signal) => {
+      const params = new URLSearchParams({ start, duration, cursor });
+      return request(`api/play/${session.token}/danmaku?${params}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(18_000)]) });
+    }, () => state.preferences, unavailable => {
+      view.danmakuNote.textContent = unavailable ? "弹幕暂时无法读取" : "";
+      view.danmakuNote.hidden = !unavailable;
+    });
     if (!view.sleepStopped) {
       const source = playback.qualities.length === 1 ? "仅提供 " : "";
       const mode = playback.scope === "full" ? "正片" : "公开试看";
@@ -1281,35 +1581,16 @@ async function openPlayer(episode, position = 0, prepared) {
     qualityOptions(view, playback);
     if (!prepared) video.src = `media/${playback.token}`;
     syncControls(view, video);
-    if (!view.sleepStopped && (prepared?.autoplay ?? true)) video.play().catch(() => {});
+    const autoplay = prepared?.autoplay ?? (feed ? state.preferences.feed_autoplay : true);
+    if (!view.sleepStopped && autoplay) video.play().catch(() => {});
   } catch (error) {
     if (controller.signal.aborted) return;
     view.stage.replaceChildren(status(error.message, error.status === 404 ? null : () => openPlayer(episode, position), "watch-status"));
   }
 }
 
-function moveFocus(target, key) {
-  const horizontal = key === "ArrowLeft" || key === "ArrowRight";
-  const direction = key === "ArrowRight" || key === "ArrowDown" ? 1 : -1;
-  const bounds = target.getBoundingClientRect();
-  let closest;
-  let bestScore = Infinity;
-  const scope = state.player ? watch : shell;
-  for (const control of scope.querySelectorAll("button:enabled, a[href], input:enabled, select:enabled")) {
-    if (control === target || !control.getClientRects().length) continue;
-    const candidate = control.getBoundingClientRect();
-    const dx = (candidate.left + candidate.right - bounds.left - bounds.right) / 2;
-    const dy = (candidate.top + candidate.bottom - bounds.top - bounds.bottom) / 2;
-    const along = (horizontal ? dx : dy) * direction;
-    const across = Math.abs(horizontal ? dy : dx);
-    if (along < 2 || across > along * 3) continue;
-    const score = along + across * 3;
-    if (score >= bestScore) continue;
-    closest = control;
-    bestScore = score;
-  }
-  if (closest) closest.focus();
-}
+const shortcut = document.querySelector(".global-search kbd");
+if (/Mac/.test(navigator.platform)) shortcut.textContent = "⌘ K";
 
 for (const item of nav) item.addEventListener("click", () => openSection(item.dataset.section, { focus: item.dataset.section === "search" ? "query" : null }));
 watch.addEventListener("pointermove", showControls);
@@ -1331,8 +1612,14 @@ document.addEventListener("keydown", (event) => {
       if (!state.player.more.hidden) toggleMore(state.player, false, true);
       else if (!state.player.panel.hidden) toggleEpisodes(state.player, false, true);
       else if (!state.player.comments.hidden) toggleComments(state.player, false, true);
+      else if (state.player.feed) openSection("home");
       else openDetail(state.player.detail.series.id);
     } else if (shell.dataset.view === "detail") backToSection();
+    return;
+  }
+  if (event.key === "/" && !event.target.closest?.("input, textarea, select, [contenteditable]")) {
+    event.preventDefault();
+    openSection("search", { focus: "query" });
     return;
   }
   const stage = state.player?.stage;
@@ -1340,17 +1627,22 @@ document.addEventListener("keydown", (event) => {
     const video = state.playing?.video;
     if (event.key === " ") toggleVideo();
     else if (event.key === "ArrowLeft" || event.key === "ArrowRight") seekTo((video?.currentTime || 0) + (event.key === "ArrowLeft" ? -10 : 10));
-    else if (event.key === "ArrowUp" || event.key === "ArrowDown") shiftEpisode(event.key === "ArrowUp" ? -1 : 1);
+    else if (state.player.feed && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      shiftFeed(state.player, event.key === "ArrowUp" ? -1 : 1);
+    } else if (event.key.toLowerCase() === "p" || event.key.toLowerCase() === "n") {
+      const direction = event.key.toLowerCase() === "p" ? -1 : 1;
+      if (state.player.feed) shiftFeed(state.player, direction);
+      else shiftEpisode(direction);
+    }
     else return;
     event.preventDefault();
-  } else if (event.key.startsWith("Arrow") && event.target instanceof HTMLElement && event.target.matches("button, a[href]")) {
-    event.preventDefault();
-    moveFocus(event.target, event.key);
+
   }
 });
 document.addEventListener("fullscreenchange", () => {
   const control = state.player?.fullscreen;
   if (control) control.textContent = document.fullscreenElement ? "退出全屏" : "全屏";
+  showControls();
 });
 window.addEventListener("pagehide", () => {
   if (state.playing) savePosition(state.playing, state.playing.video.ended);

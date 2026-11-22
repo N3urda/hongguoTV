@@ -179,7 +179,7 @@ class TvSocial(
             setOnClickListener { action() }
         }
 
-    fun settings(anchor: View) {
+    fun settings(anchor: View, touch: Boolean = false) {
         dialog?.dismiss()
         val d = Dialog(activity)
         dialog = d
@@ -192,12 +192,14 @@ class TvSocial(
             }
         body.addView(label("弹幕设置", 22f))
         val refreshers = mutableListOf<() -> Unit>()
+        fun settingsButton(title: String, action: () -> Unit) =
+            button(title, action).apply { isFocusableInTouchMode = !touch }
         fun refreshOptions() {
             refreshers.forEach { it() }
             overlay?.updateLayout()
         }
         fun option(title: () -> String, parent: LinearLayout = body, action: () -> Unit): TextView {
-            val row = button(title()) {
+            val row = settingsButton(title()) {
                 action()
                 refreshOptions()
             }
@@ -218,7 +220,20 @@ class TvSocial(
                     else if (direction > 0) 0 else steps.lastIndex
                 save(steps[next])
             }
-            option({ title(current()) }, parent) { step(1) }.setOnKeyListener { _, key, event ->
+            val control = option({ title(current()) }, parent) {
+                if (touch) {
+                    android.app.AlertDialog.Builder(activity)
+                        .setTitle(title(current()).substringBefore('：'))
+                        .setSingleChoiceItems(steps.map(title).toTypedArray(), steps.indexOf(current())) { picker, index ->
+                            save(steps[index])
+                            refreshOptions()
+                            picker.dismiss()
+                        }
+                        .setNegativeButton("取消", null)
+                        .show()
+                } else step(1)
+            }
+            if (!touch) control.setOnKeyListener { _, key, event ->
                 val direction = when (key) {
                     KeyEvent.KEYCODE_DPAD_LEFT -> -1
                     KeyEvent.KEYCODE_DPAD_RIGHT -> 1
@@ -249,7 +264,7 @@ class TvSocial(
                 setPadding(dp(10), 0, 0, 0)
             }
             lateinit var opener: TextView
-            opener = button("$title ▸") {
+            opener = settingsButton("$title ▸") {
                 val expanded = content.visibility != View.VISIBLE
                 content.visibility = if (expanded) View.VISIBLE else View.GONE
                 opener.text = "$title ${if (expanded) "▾" else "▸"}"
@@ -293,12 +308,12 @@ class TvSocial(
         }
         val troubleshooting = section("弹幕排查")
         troubleshooting.addView(
-            button("重新读取弹幕") {
+            settingsButton("重新读取弹幕") {
                 timed.clearCache()
                 reset(keepDialog = true)
             }
         )
-        troubleshooting.addView(button("查看读取诊断") {
+        troubleshooting.addView(settingsButton("查看读取诊断") {
             val counts = pages.values.flatMap { page ->
                 val rows = page.getJSONArray("items")
                 (0 until rows.length()).map { rows.getJSONObject(it).optString("id") }
@@ -308,16 +323,21 @@ class TvSocial(
             android.app.AlertDialog.Builder(activity).setTitle("弹幕读取诊断")
                 .setMessage(report).setPositiveButton("关闭", null).show()
         })
-        body.addView(label("方向键左右调节选项", 14f))
-        body.addView(button("关闭") { d.dismiss() })
+        if (!touch) body.addView(label("方向键左右调节选项", 14f))
+        body.addView(settingsButton("关闭") { d.dismiss() })
         d.setContentView(ScrollView(activity).apply { addView(body) })
         d.setOnDismissListener {
             if (dialog === d) dialog = null
             if (anchor.isAttachedToWindow) anchor.requestFocus()
         }
         d.show()
-        d.window?.setLayout(dp(440), -2)
-        body.getChildAt(1).requestFocus()
+        if (touch) {
+            val width = minOf(dp(440), activity.resources.displayMetrics.widthPixels - dp(28))
+            d.window?.setLayout(width, -2)
+        } else {
+            d.window?.setLayout(dp(440), -2)
+            body.getChildAt(1).requestFocus()
+        }
     }
 
     fun showComments(anchor: View, target: Pair<String, String>? = null) {

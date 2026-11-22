@@ -42,6 +42,7 @@ android {
         if (!legacyAudio) minSdk = 23
         buildConfigField("boolean", "LEGACY_AUDIO", legacyAudio.toString())
         buildConfigField("boolean", "FORCE_TV_CONTROLS", "false")
+        buildConfigField("boolean", "FORCE_PHONE_UI", "false")
         targetSdk = 36
         versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 32
         versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.11"
@@ -80,6 +81,7 @@ android {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-rust-debug"
             buildConfigField("boolean", "FORCE_TV_CONTROLS", (debugDevice == "tv").toString())
+            buildConfigField("boolean", "FORCE_PHONE_UI", (debugDevice == "phone").toString())
         }
         getByName("release") {
             signingConfig = signingConfigs.getByName("delivery")

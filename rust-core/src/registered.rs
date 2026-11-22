@@ -10,7 +10,11 @@ use crate::{
 use anyhow::{Context, Result, bail, ensure};
 use flate2::{Compression, write::GzEncoder};
 use rand::RngCore;
-use reqwest::{Client, Url, redirect};
+use reqwest::{
+    Client, Url,
+    header::{HeaderMap, HeaderValue, SET_COOKIE},
+    redirect,
+};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -27,10 +31,11 @@ const UA: &str = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47
 const LIMIT: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
-struct Device {
-    device_id: String,
-    install_id: String,
-    cdid: String,
+pub(crate) struct Device {
+    pub(crate) device_id: String,
+    pub(crate) install_id: String,
+    pub(crate) cdid: String,
+    pub(crate) cookie: Option<HeaderValue>,
 }
 #[derive(Default)]
 struct Session {
@@ -78,7 +83,7 @@ impl RegisteredSource {
             .await
             .map_err(|_| anyhow::anyhow!("注册源取流超时，请稍后重试"))?
     }
-    async fn identity(&self) -> Result<Arc<Device>> {
+    pub(crate) async fn identity(&self) -> Result<Arc<Device>> {
         let mut state = self.session.lock().await;
         let cooling = state.retry_after.is_some_and(|at| Instant::now() < at);
         if let Some(device) = &state.device {
@@ -123,12 +128,15 @@ impl RegisteredSource {
             .send()
             .await
             .map_err(|_| anyhow::anyhow!("播放设备注册连接失败"))?;
+        let cookie = registration_cookie(response.headers());
         let bytes = response_bytes(response)
             .await
             .context("播放设备注册失败，请稍后重试")?;
         let value: Value =
             serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("播放设备注册响应无效"))?;
-        parse_device(&value)
+        let mut device = parse_device(&value)?;
+        device.cookie = cookie;
+        Ok(device)
     }
     async fn resolve(&self, episode: &str) -> Result<Ladder> {
         let device = self.identity().await?;
@@ -285,7 +293,7 @@ async fn response_bytes(response: reqwest::Response) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -313,8 +321,39 @@ fn parse_device(value: &Value) -> Result<Device> {
         device_id: id("device_id")?,
         install_id: id("install_id")?,
         cdid: Uuid::new_v4().to_string(),
+        cookie: None,
     })
 }
+fn registration_cookie(headers: &HeaderMap) -> Option<HeaderValue> {
+    let mut cookies = BTreeMap::new();
+    for header in headers.get_all(SET_COOKIE) {
+        if let Ok(value) = header.to_str()
+            && let Some((name, value)) = value
+                .split(';')
+                .next()
+                .and_then(|part| part.split_once('='))
+            && matches!(
+                name,
+                "install_id" | "ttreq" | "store-region" | "store-region-src"
+            )
+        {
+            cookies.insert(name, value);
+        }
+    }
+    let value = cookies
+        .into_iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    (!value.is_empty())
+        .then(|| {
+            let mut cookie = HeaderValue::from_str(&value).ok()?;
+            cookie.set_sensitive(true);
+            Some(cookie)
+        })
+        .flatten()
+}
+
 fn playback_query(device: &Device, now: u64) -> String {
     let mut values = BTreeMap::from([
         ("ac", "wifi"),

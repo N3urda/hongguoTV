@@ -21,7 +21,7 @@ pub struct PreviewUnavailable;
 
 impl std::fmt::Display for PreviewUnavailable {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("本集暂无公开试看，可在官网播放")
+        formatter.write_str("本集暂无公开试看")
     }
 }
 

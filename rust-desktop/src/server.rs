@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-use std::{collections::VecDeque, net::Ipv4Addr, path::Path, sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, VecDeque},
+    net::Ipv4Addr,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use axum::Json;
@@ -11,6 +17,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use hongguo_playback::resume_target;
+use hongguo_playback::social::{DanmakuPage, ProviderRejection, Reservation, Social};
 use hongguo_playback::source::{
     AuthorizedSources, PlaybackScope, RemoteMp4, authorized_media_client,
 };
@@ -88,6 +95,8 @@ impl Drop for Session {
 struct App {
     registered: Arc<hongguo_playback::registered::RegisteredSource>,
     site: Site,
+    social: Arc<Social>,
+    reservation_writes: Arc<Mutex<(Uuid, HashMap<String, ReservationStatus>)>>,
     account: Arc<Account>,
     store: Arc<LibraryStore>,
     sources: Arc<AuthorizedSources>,
@@ -136,8 +145,11 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
         .map(|path| AuthorizedSources::load(Path::new(&path)))
         .transpose()?
         .unwrap_or_default();
+    let registered = Arc::new(hongguo_playback::registered::RegisteredSource::new()?);
     let app = App {
-        registered: Arc::new(hongguo_playback::registered::RegisteredSource::new()?),
+        social: Arc::new(Social::new(registered.clone())?),
+        registered,
+        reservation_writes: Arc::new(Mutex::new((Uuid::nil(), HashMap::new()))),
         site: Site::new().context("无法初始化官网连接")?,
         store: Arc::new(LibraryStore::open(data_dir)?),
         account: Arc::new(Account::new(data_dir)?),
@@ -156,6 +168,15 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
                 asset(
                     "text/html; charset=utf-8",
                     include_bytes!("../ui/index.html"),
+                )
+            }),
+        )
+        .route(
+            "/danmaku.js",
+            get(|| async {
+                asset(
+                    "text/javascript; charset=utf-8",
+                    include_bytes!("../ui/danmaku.js"),
                 )
             }),
         )
@@ -228,6 +249,8 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
         )
         .route("/api/account/qr/{id}", get(account_qr).post(account_poll))
         .route("/api/detail/{id}", get(detail))
+        .route("/api/detail/{id}/related", get(related_works))
+        .route("/api/reservations", get(reservations).post(reserve))
         .route(
             "/api/detail/{id}/episodes/{episode}/comments",
             get(episode_comments),
@@ -242,6 +265,7 @@ pub async fn start(data_dir: &Path) -> Result<RunningServer> {
         .route("/api/play", post(play))
         .route("/api/play/{token}", delete(stop))
         .route("/api/play/{token}/progress", post(progress))
+        .route("/api/play/{token}/danmaku", get(danmaku))
         .route("/media/{token}", get(video))
         .with_state(app);
     let router = Router::new()
@@ -542,6 +566,176 @@ async fn detail(
             position: target.position,
         });
     Ok(Json(DetailResponse { detail, resume }))
+}
+
+async fn related_works(
+    State(app): State<App>,
+    RoutePath(id): RoutePath<String>,
+) -> ApiResult<impl IntoResponse> {
+    if !valid_id(&id) {
+        return Err(ApiError::bad_request("剧集编号无效"));
+    }
+    app.social
+        .related(&id)
+        .await
+        .map(Json)
+        .map_err(ApiError::upstream)
+}
+
+#[derive(Deserialize)]
+struct ReservationQuery {
+    online: bool,
+}
+
+#[derive(Deserialize)]
+struct ReserveSelection {
+    from: String,
+    id: String,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReservationStatus {
+    Confirmed,
+    Submitted,
+    Unknown,
+}
+
+fn sign_in_required() -> ApiError {
+    ApiError(StatusCode::UNAUTHORIZED, "请先登录红果账户".to_owned())
+}
+
+async fn reservations(
+    State(app): State<App>,
+    Query(query): Query<ReservationQuery>,
+) -> ApiResult<Json<Vec<Reservation>>> {
+    let (revision, cookie) = app.account.authorization().await;
+    let cookie = cookie.ok_or_else(sign_in_required)?;
+    let result = app.social.reservations(&cookie, query.online).await;
+    if revision != app.account.authorization().await.0 {
+        return Err(sign_in_required());
+    }
+    result.map(Json).map_err(ApiError::upstream)
+}
+
+async fn reserve(
+    State(app): State<App>,
+    Json(selection): Json<ReserveSelection>,
+) -> ApiResult<Json<ReservationStatus>> {
+    if !valid_id(&selection.from) || !selection.id.parse::<i64>().is_ok_and(|id| id > 0) {
+        return Err(ApiError::bad_request("预约编号无效"));
+    }
+    let mut writes = app.reservation_writes.lock().await;
+    let (revision, cookie) = app.account.authorization().await;
+    let cookie = cookie.ok_or_else(sign_in_required)?;
+    if writes.0 != revision {
+        *writes = (revision, HashMap::new());
+    }
+    let states = &mut writes.1;
+    let mut state = states.get(&selection.id).copied();
+    if matches!(state, Some(ReservationStatus::Confirmed)) {
+        return Ok(Json(ReservationStatus::Confirmed));
+    }
+    if state.is_none() {
+        let related = app
+            .social
+            .related(&selection.from)
+            .await
+            .map_err(ApiError::upstream)?;
+        let work = related
+            .iter()
+            .find(|work| work.upcoming && work.series.id == selection.id)
+            .ok_or_else(|| ApiError::bad_request("这部作品当前不可预约"))?;
+        let rows = app.social.reservations(&cookie, false).await;
+        if revision != app.account.authorization().await.0 {
+            return Err(sign_in_required());
+        }
+        if rows
+            .map_err(ApiError::upstream)?
+            .iter()
+            .any(|row| row.matches(&selection.id))
+        {
+            states.insert(selection.id, ReservationStatus::Confirmed);
+            return Ok(Json(ReservationStatus::Confirmed));
+        }
+        let request = app
+            .social
+            .prepare_reservation(&cookie, work)
+            .await
+            .map_err(ApiError::upstream)?;
+        if revision != app.account.authorization().await.0 {
+            return Err(sign_in_required());
+        }
+        // Preserve the write outcome across disconnected browser requests. Only an explicit
+        // provider rejection makes another submission safe for the same account revision.
+        states.insert(selection.id.clone(), ReservationStatus::Unknown);
+        state = Some(match request.submit().await {
+            Ok(()) => {
+                states.insert(selection.id.clone(), ReservationStatus::Submitted);
+                ReservationStatus::Submitted
+            }
+            Err(error) if error.is::<ProviderRejection>() => {
+                states.remove(&selection.id);
+                return Err(ApiError::upstream(error));
+            }
+            Err(_) => ReservationStatus::Unknown,
+        });
+    }
+
+    for attempt in 0..2 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(750)).await;
+        }
+        if revision != app.account.authorization().await.0 {
+            return Err(sign_in_required());
+        }
+        let rows = app.social.reservations(&cookie, false).await;
+        if revision != app.account.authorization().await.0 {
+            return Err(sign_in_required());
+        }
+        if rows.is_ok_and(|rows| rows.iter().any(|row| row.matches(&selection.id))) {
+            states.insert(selection.id, ReservationStatus::Confirmed);
+            return Ok(Json(ReservationStatus::Confirmed));
+        }
+    }
+    Ok(Json(state.unwrap_or(ReservationStatus::Unknown)))
+}
+
+#[derive(Deserialize)]
+struct DanmakuQuery {
+    start: u64,
+    duration: u64,
+    #[serde(default)]
+    cursor: String,
+}
+
+async fn danmaku(
+    State(app): State<App>,
+    RoutePath(token): RoutePath<Uuid>,
+    Query(query): Query<DanmakuQuery>,
+) -> ApiResult<Json<DanmakuPage>> {
+    if query.start >= query.duration || query.duration > 86_400_000 || query.cursor.len() > 16_384 {
+        return Err(ApiError::bad_request("弹幕请求范围无效"));
+    }
+    let (series, episode, cancel) = {
+        let sessions = app.sessions.lock().await;
+        let session = sessions
+            .iter()
+            .find(|row| row.token == token && row.last_used.elapsed().as_secs() < 3600)
+            .ok_or_else(ApiError::gone)?;
+        (
+            session.series.id.clone(),
+            session.episode.clone(),
+            session.cancel.clone(),
+        )
+    };
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(ApiError::gone()),
+        page = app.social.danmaku(&series, &episode, query.start, query.duration, &query.cursor) => {
+            page.map(Json).map_err(ApiError::upstream)
+        }
+    }
 }
 
 async fn library(State(app): State<App>) -> ApiResult<impl IntoResponse> {

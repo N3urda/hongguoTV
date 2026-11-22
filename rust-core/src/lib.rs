@@ -150,4 +150,7 @@ mod crypto;
 pub mod registered;
 
 #[cfg(feature = "registered")]
+pub mod social;
+
+#[cfg(feature = "registered")]
 mod v5;
