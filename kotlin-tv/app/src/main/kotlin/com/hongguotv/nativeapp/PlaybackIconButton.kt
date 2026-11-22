@@ -42,6 +42,7 @@ internal class PlaybackIconButton(context: Context, private val action: String) 
             "transport-play" -> if (text.toString() == "暂停") 11 else 10
             "episodes" -> 1
             "danmaku" -> 13
+            "comments" -> 14
             else -> 4
         }
         val size = (28 * resources.displayMetrics.density).toInt()

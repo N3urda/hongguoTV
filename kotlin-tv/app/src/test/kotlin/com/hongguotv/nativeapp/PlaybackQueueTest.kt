@@ -190,7 +190,7 @@ class PlaybackQueueTest {
             assertEquals(true, get(activity, "panel"))
             assertEquals(android.view.View.VISIBLE, clock.visibility)
             assertEquals(1, controls.childCount)
-            assertEquals(5, (controls.getChildAt(0) as LinearLayout).childCount)
+            assertEquals(6, (controls.getChildAt(0) as LinearLayout).childCount)
             assertEquals(before, fake.player.playWhenReady)
             invoke(activity, "hidePlaybackOverlay")
             assertEquals(android.view.View.GONE, clock.visibility)
@@ -287,7 +287,7 @@ class PlaybackQueueTest {
         assertEquals(true, get(activity, "panel"))
         val controls = get(activity, "controls") as LinearLayout
         val primary = controls.getChildAt(0) as LinearLayout
-        assertEquals(listOf("播放", "选集", "倍速 1×", "弹幕设置", "更多设置"), (0 until primary.childCount).map { (primary.getChildAt(it) as TextView).text.toString() })
+        assertEquals(listOf("播放", "选集", "倍速 1×", "弹幕设置", "本集评论", "更多设置"), (0 until primary.childCount).map { (primary.getChildAt(it) as TextView).text.toString() })
         assertTrue(primary.getChildAt(0).hasFocus())
         primary.getChildAt(0).performClick()
         assertTrue(fake.playing)
@@ -404,6 +404,37 @@ class PlaybackQueueTest {
         assertFalse(fake.playing)
         assertFalse(fake.calls.contains("seekToNextMediaItem"))
         assertEquals(0, get(activity, "episodeIndex"))
+    }
+
+    @Test
+    fun playbackCommentsUseCurrentEpisodePreservePlaybackAndRestoreFocus() = fixture { activity, fake, _, _ ->
+        val requested = java.util.concurrent.LinkedBlockingQueue<Pair<String, String>>()
+        val social = get(activity, "social\$delegate") as Lazy<*>
+        val reader: (String, String, String) -> org.json.JSONObject = { series, episode, _ ->
+            requested.put(series to episode)
+            org.json.JSONObject().put("items", org.json.JSONArray()).put("hasMore", false)
+        }
+        set(social.value!!, "readComments", reader)
+        for ((index, playing) in listOf(0 to true, 1 to false)) {
+            set(activity, "episodeIndex", index)
+            fake.playing = playing
+            press(activity, KeyEvent.KEYCODE_MENU)
+            val anchor = (get(activity, "controls") as LinearLayout).findViewWithTag<TextView>("comments")
+            assertEquals("本集评论", anchor.contentDescription)
+            anchor.requestFocus()
+            fake.calls.clear()
+            anchor.performClick()
+            val dialog = org.robolectric.shadows.ShadowDialog.getLatestDialog()
+            assertTrue(dialog.isShowing)
+            assertEquals("1" to if (index == 0) "101" else "102", requested.poll(5, TimeUnit.SECONDS))
+            assertEquals(playing, fake.playing)
+            assertTrue(invoke(activity, "playerModalOpen") as Boolean)
+            dialog.dismiss()
+            ShadowLooper.idleMainLooper()
+            assertTrue(anchor.hasFocus())
+            assertEquals(playing, fake.playing)
+            assertFalse(fake.calls.any { it in listOf("pause", "play", "stop", "setPlayWhenReady") })
+        }
     }
 
     @Test

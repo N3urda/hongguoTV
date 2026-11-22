@@ -879,6 +879,7 @@ constructor(
         trace: PlaybackRequestTrace = PlaybackRequestTrace(),
         transport: OkHttpClient = http,
         strict: Boolean = false,
+        mobileV5: Boolean = false,
     ): JSONObject? {
         val extra = mapOf(
             "video_id" to id, "video_id_type" to "0", "device_level" to "1",
@@ -888,7 +889,8 @@ constructor(
         )
         // One preferred request; the legacy path retains the bounded cross-host retry budget.
         for (host in listOf(PlayRetryPlan.hosts.first())) {
-            val request = playbackRequest(
+            val request = if (mobileV5) MobilePlayback.videoTabRequest(id, identity.values, host, clock())
+            else playbackRequest(
                 "https://$host/reading/bookapi/video_tab/multi_video_model/v1/",
                 identity, extra,
             )
@@ -990,7 +992,7 @@ constructor(
                 val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
                 val trace = PlaybackRequestTrace()
                 val entry = try {
-                    tabVideoModel(id, profile, trace, transport, strict = true)
+                    tabVideoModel(id, profile, trace, transport, strict = true, mobileV5 = true)
                 } catch (_: EmptyPlaybackResponseException) {
                     throw EmptyPlaybackResponseException(empty.detail, allPlaybackModelsEmpty = true).apply {
                         addSuppressed(empty)

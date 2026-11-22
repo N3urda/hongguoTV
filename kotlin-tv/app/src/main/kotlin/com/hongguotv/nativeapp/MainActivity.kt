@@ -4640,6 +4640,8 @@ class MainActivity : Activity() {
         speed = item(primary, "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}", "speed") { showSpeedPicker(speed) }
         lateinit var danmaku: TextView
         danmaku = item(primary, "弹幕设置", "danmaku") { social.settings(danmaku) }
+        lateinit var comments: TextView
+        comments = item(primary, "本集评论", "comments") { social.showComments(comments) }
         lateinit var more: TextView
         more = item(primary, "更多设置", "playback-settings") { showPlaybackSettings(more) }
         val rows = mutableListOf(primary)
