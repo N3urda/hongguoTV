@@ -4,6 +4,13 @@
 
 # 原生版第三方声明
 
+2026-11-22：Issue #83 的 `video_tab` v5 恢复请求对照以下 GPL-3.0 实现的协议字段与空请求体摘要约定：
+
+- jackotom/hongguo-drama，提交 `92df757ed7be8ea658ee274a6a429b77f49e54e8`，`src/native/app-source.js`、`playback-v5.js`：https://github.com/jackotom/hongguo-drama/tree/92df757ed7be8ea658ee274a6a429b77f49e54e8/src/native
+- aston314/hongguo-tv，提交 `9e7386f1dab840e64779b475a7d2bb5e59ab776f`，`webos/service/mobile-playback-v5.js`：https://github.com/aston314/hongguo-tv/blob/9e7386f1dab840e64779b475a7d2bb5e59ab776f/webos/service/mobile-playback-v5.js
+
+两者 v5 签名均注明源自 N3urda/hongguoTV `18c37c2`（原始基础 drpys `22261ad`）。本次继续使用现有 Kotlin 签名器，补齐备用 GET 的 v5 请求形态；原作者声明与 GPL-3.0-only 许可保留。
+
 本地播放兼容修改参考 FanchangWang 的 GPL-3.0 项目贡献：
 https://github.com/N3urda/hongguoTV/pull/22 。播放请求使用独立设备标识和无签名请求，复用本项目原有的响应大小限制、请求取消及媒体解析逻辑。
 

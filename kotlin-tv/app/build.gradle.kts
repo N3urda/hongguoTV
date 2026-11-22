@@ -44,8 +44,8 @@ android {
         buildConfigField("boolean", "FORCE_TV_CONTROLS", "false")
         buildConfigField("boolean", "FORCE_PHONE_UI", "false")
         targetSdk = 36
-        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 32
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.11"
+        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 33
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.12"
     }
     // Publish explicit ARM installer choices plus a universal updater fallback.
     splits {

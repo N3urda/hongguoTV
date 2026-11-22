@@ -4,7 +4,6 @@ package com.hongguotv.nativeapp
 import android.app.Activity
 import android.app.Instrumentation
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -57,7 +56,8 @@ class LivePlaybackInstrumentation : Instrumentation() {
             val current = startActivitySync(Intent(targetContext, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
             activity = current
-            val tv = targetContext.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+            val handset = (field("handset\$delegate").get(current) as Lazy<*>).value as Boolean
+            val tv = !handset
             val platform = if (tv) "TV" else "phone"
             val rustEvidence = "PASS: Rust JNI, resume, rendition and ranges on Android $platform API ${Build.VERSION.SDK_INT} (${Build.SUPPORTED_ABIS.first()})"
             sendStatus(0, Bundle().apply { putString("stream", rustEvidence + "\n") })
@@ -118,7 +118,45 @@ class LivePlaybackInstrumentation : Instrumentation() {
                 sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_UP)
                 awaitFrame(first, 0)
                 sendStatus(0, Bundle().apply { putString("stream", "PASS: TV remote next and previous episode\n") })
-            } else if (targetContext.packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)) {
+                var comments: android.app.Dialog? = null
+                var commentsAnchor: TextView? = null
+                var beforeComments = 0L
+                runOnMainSync {
+                    current.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MENU))
+                    current.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MENU))
+                    commentsAnchor = (field("controls").get(current) as View).findViewWithTag("comments")
+                    check(commentsAnchor!!.requestFocus())
+                    beforeComments = player()!!.currentPosition
+                    commentsAnchor!!.performClick()
+                    val social = (field("social\$delegate").get(current) as Lazy<*>).value!!
+                    comments = social.javaClass.getDeclaredField("dialog").apply { isAccessible = true }
+                        .get(social) as android.app.Dialog
+                    check(comments!!.isShowing && player()!!.isPlaying)
+                }
+                fun labels(view: View): List<String> = when (view) {
+                    is TextView -> listOf(view.text.toString())
+                    is android.view.ViewGroup -> (0 until view.childCount).flatMap { labels(view.getChildAt(it)) }
+                    else -> emptyList()
+                }
+                var commentsLoaded = false
+                val commentsDeadline = SystemClock.elapsedRealtime() + 15_000
+                while (SystemClock.elapsedRealtime() < commentsDeadline && !commentsLoaded) {
+                    Thread.sleep(100)
+                    runOnMainSync {
+                        commentsLoaded = labels(comments!!.window!!.decorView).any { it.startsWith("已加载 ") }
+                    }
+                }
+                check(commentsLoaded) { "Episode comments did not load" }
+                Thread.sleep(3000)
+                runOnMainSync {
+                    check(comments!!.isShowing && player()!!.isPlaying)
+                    check(player()!!.currentPosition >= beforeComments + 2500)
+                    comments!!.dismiss()
+                }
+                waitForIdleSync()
+                runOnMainSync { check(commentsAnchor!!.hasFocus() && player()!!.isPlaying) }
+                sendStatus(0, Bundle().apply { putString("stream", "PASS: episode comments loaded during advancing playback; closing restored menu focus\n") })
+            } else {
                 fun point(view: View, at: Float, height: Float): Pair<Float, Float> {
                     val location = IntArray(2)
                     view.getLocationOnScreen(location)
