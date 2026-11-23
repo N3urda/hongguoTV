@@ -35,6 +35,46 @@ class MobilePlaybackTest {
         }.build()
     private val signer = MobilePlaybackSigner { url, _, _ -> MobileSignedRequest(url, emptyMap()) }
 
+    @Test fun currentAppSignerNegotiatesCompatibleCodecWithoutForwardingSigningHeaders() {
+        var requests = 0
+        var signedBody = byteArrayOf()
+        val native = object : MobilePlaybackSigner {
+            override val currentAppProtocol = true
+            override fun sign(url: String, body: ByteArray, device: Map<String, String>): MobileSignedRequest {
+                signedBody = body
+                return MobileSignedRequest(url, mapOf("X-Medusa" to "local-test-only"))
+            }
+        }
+        val apiModel = JSONObject(model(onlyBytevc2 = true))
+        apiModel.getJSONObject("data").getJSONObject("123").getJSONObject("video_model")
+            .put("fallback_api", JSONObject().put("fallback_api", "https://vas.example.org/video/fplay?codec_type=4"))
+        val transport = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            requests++
+            val payload = if (requests == 1) {
+                assertEquals("reading.snssdk.com", request.url.host)
+                assertEquals("74532", request.url.queryParameter("version_code"))
+                assertEquals("local-test-only", request.header("X-Medusa"))
+                assertArrayEquals(signedBody, Buffer().apply { request.body!!.writeTo(this) }.readByteArray())
+                val body = JSONObject(GZIPInputStream(signedBody.inputStream()).reader().readText())
+                assertEquals("preload", body.getString("dr_scene"))
+                assertEquals(2, body.getJSONObject("biz_param").getInt("device_level"))
+                apiModel.toString()
+            } else {
+                assertEquals("vas.example.org", request.url.host)
+                assertEquals("1", request.url.queryParameter("codec_type"))
+                assertNull(request.header("X-Medusa"))
+                assertNull(request.header("Cookie"))
+                """{"video_info":{"data":{"video_list":{"video_1":{"codec_type":"h265","vwidth":1920,"vheight":1080,"main_url":"https://example.org/cdn.mp4"}}}}}"""
+            }
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(payload.toResponseBody()).build()
+        }.build()
+        val ladder = MobilePlayback.ladder("123", device, transport, native, 1000)
+        assertEquals(2, requests)
+        assertEquals("https://example.org/cdn.mp4", ladder.renditions.single().url)
+    }
+
     @Test fun supportsBothLiveResponseShapesWithoutSelectingOtherEpisodes() {
         for (typed in listOf(false, true)) for (stringModel in listOf(false, true)) {
             val rows = MobilePlayback.ladder("123", device, http(model(typed=typed, stringModel=stringModel)), signer, 1000).renditions
@@ -234,7 +274,7 @@ class MobilePlaybackTest {
         assertEquals("https://example.org/video", rendition.url)
         assertEquals(
             listOf(
-                "POST" to "api5-normal-sinfonlinea.fqnovel.com",
+                "POST" to "reading.snssdk.com",
                 "GET" to "api5-normal-sinfonlineb.fqnovel.com",
                 "POST" to "api5-normal-sinfonlineb.fqnovel.com",
             ),
