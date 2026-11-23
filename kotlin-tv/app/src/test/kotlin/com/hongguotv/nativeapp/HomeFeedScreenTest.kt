@@ -633,7 +633,7 @@ class HomeFeedScreenTest {
         }
         val http = OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
-            val compatible = request.url.encodedPath == "/novel/player/multi_video_model/player/v1"
+            val compatible = request.url.encodedPath == "/novel/player/multi_video_model/preload/v1"
             val registering = request.url.encodedPath == "/service/2/device_register/"
             val optional = request.url.encodedPath in listOf("/service/2/app_alert_check/", "/reading/crypt/registerkey")
             val body = when {

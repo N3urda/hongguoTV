@@ -1,0 +1,30 @@
+{
+  "headers": {
+    "x-medusa": "BdJJay2ZBqFJp0QoP2fnRyK/hT0AAAABBcoACACAgcwGGO4LSKL+HBqNQKJRe9xLB2FM46ChwXLnU/amaixWTLcunxp7DqYkKa60pWZNzyJ/5L2RGSpSVUCo/Jm/JVPznXF9C9E5q7YYBu5tPVCUSJBNCGzqI5TFjUgvFlY5K/BJIQ93FX/wAvkYI2Wo7jTiQJBD25qfph7XKuMxDeK3nOiUO/uRUfIByjIqKeXRTjcZUz7Z/Uk4Fvb507YXn3C6ct90to9PuJXTZgk2mpaKu3jxOEbtD8hD7x1yLR39VTs2Ej+Fqm+Tkr2avA3Dv+6Se3QatQhRT4SQWGyfpDwty3HEf34B0vSonogL3m2mXjZJhlO/GQdE5Ba86I5flJJ6Om9F7QjQC+HcEj+RykfifnYBVO0jStL9VVn9EcFBYXv7KdLUWsDOjDWLGEb0LXKaU9tnZ0R2/0rHhyoPrbvAzQFSG2ISLV4ooYJ/xqRUmyME2PzQDB+5efabmmLUQ4OCYSAxhkA0JJDecgiDhBN3F6SyzG10uDzc9NFcExYM8/5THdYwCAk11zfUuSHjgy6kPHz///9/////fwCA",
+    "x-helios": "AAAAgOldh6XkgPCcSOD+1hk6geYVwA9oX+NbtYeS3DNddvJe",
+    "x-khronos": "1800000000",
+    "x-ss-stub": "8311EA30C1C81ED466F1C2D5BB128C5F",
+    "Content-Type": "application/json; charset=utf-8"
+  },
+  "identity": {
+    "cdid": "synthetic",
+    "version_name": "7.4.5.32",
+    "device_id": "123",
+    "iid": "456",
+    "os_version": "16",
+    "channel": "update_64",
+    "device_type": "TestTV"
+  },
+  "body": "H4sIAAECAwQ=",
+  "url": "https://example.test/model?device_id=123&iid=456&cdid=synthetic&version_name=7.4.5.32&channel=update_64&os_version=16&device_type=TestTV&_rticket=1800000000003",
+  "provenance": "Public synthetic inputs; F21=312 confirmed by native/App A/B, decoded/resealed independently by the local diagnostic inverse. No captured session values.",
+  "queryOrder": [
+    "device_id",
+    "iid",
+    "cdid",
+    "version_name",
+    "channel",
+    "os_version",
+    "device_type"
+  ]
+}

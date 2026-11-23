@@ -39,7 +39,7 @@ class PlaybackSourceRecoveryTest {
             val request = chain.request()
             val response = Response.Builder().request(request).protocol(Protocol.HTTP_1_1).message("fixture")
             when (request.url.encodedPath) {
-                "/novel/player/multi_video_model/player/v1" -> {
+                "/novel/player/multi_video_model/preload/v1" -> {
                     requests += "primary"
                     val model = if (primaryEmpty) "" else
                         """{"data":{"10101":{"video_model":{"video_list":[{"main_url":"https://cdn.example.test/episode.mp4","height":720,"codec_type":"h264"}]}}}}"""
