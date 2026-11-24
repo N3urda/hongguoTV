@@ -18,8 +18,9 @@ data class RelatedWork(val series: Series, val season: String, val upcoming: Boo
  */
 object RelatedWorks {
     private val seasonSuffix = Regex("第?([0-9零〇一二两三四五六七八九十百]+)季$")
-    // 「第X季」 may be followed by an edition, e.g. 「…第三季完结篇」 is season 3 of 「…」.
-    private val seasonWithEdition = Regex("第([0-9零〇一二两三四五六七八九十百]+)季.+$")
+    // A final season may end in 「完结篇」: 「…第三季完结篇」 is season 3 of 「…」. Only that edition:
+    // 「第X季」 elsewhere in a title can be part of the name itself (「爱在第三季的我们」).
+    private val seasonWithEdition = Regex("第([0-9零〇一二两三四五六七八九十百]+)季\\s*(?:完结篇|完結篇)$")
 
     private fun seasonNumber(value: String): Int? {
         value.toIntOrNull()?.let { return it.takeIf { n -> n > 0 } }

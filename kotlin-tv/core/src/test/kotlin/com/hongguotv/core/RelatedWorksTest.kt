@@ -99,6 +99,23 @@ class RelatedWorksTest {
     }
 
     @Test
+    fun seasonWordsInsideTheNameAreNotASeason() {
+        val first = Series("1", "爱在第三季的我们")
+        val second = RelatedWork(Series("2", "爱在第三季的我们第二季"), "第2季", false, 2)
+        assertEquals(second, RelatedWorks.nextSeason(first, listOf(second)))
+        val otherIp = RelatedWork(Series("3", "别的剧"), "同IP", false, 1)
+        assertEquals(listOf("2", "3"), RelatedWorks.ordered(first, listOf(otherIp, second)).map { it.series.id })
+    }
+
+    @Test
+    fun sameIpWorkWithSeasonWordsButNoIndexIsNotTheNextSeason() {
+        val stem = "和离后我带女儿横扫魔域"
+        val second = Series("2", stem + "第二季")
+        val sideStory = RelatedWork(Series("5", stem + "第三季外传"), "同IP", false, 0)
+        assertNull(RelatedWorks.nextSeason(second, listOf(sideStory)))
+    }
+
+    @Test
     fun parsesOfficialSeasonTypesAndExcludesCurrentNovelBlockedAndDuplicates() {
         val rows = RelatedWorks.parse(data, "111")
         assertEquals(listOf("222", "333"), rows.map { it.series.id })
