@@ -121,4 +121,41 @@ class TimedCommentsTest {
             fail("non-advancing window accepted")
         } catch (_: IllegalArgumentException) {}
     }
+
+    @Test
+    fun windowPastEpisodeEndStopsPagingAndDropsOutOfRangeComments() {
+        fun row(id: String, time: Long) =
+            JSONObject()
+                .put(
+                    "comment",
+                    JSONObject()
+                        .put("comment_id", id)
+                        .put(
+                            "common",
+                            JSONObject()
+                                .put("group_id", "234567")
+                                .put("status", 1)
+                                .put("content", JSONObject().put("text", "文本")),
+                        )
+                        .put("expand", JSONObject().put("offset_time", time)),
+                )
+        val data =
+            JSONObject()
+                .put("extra", JSONObject().put("next_query_danmaku_list_time", 60000))
+                .put("common_list_info", JSONObject().put("cursor", "past-end").put("has_more", true))
+                .put("data_list", JSONArray(listOf(row("inside", 1000), row("outside", 50000))))
+        val parsed =
+            TimedComments.parse(
+                JSONObject().put("code", 0).put("data", data),
+                "123456",
+                "234567",
+                0,
+                45000,
+            )
+        assertEquals(45000L, parsed.getLong("nextMS"))
+        assertFalse(parsed.getBoolean("hasMore"))
+        assertEquals("", parsed.getString("nextCursor"))
+        assertEquals(1, parsed.getJSONArray("items").length())
+        assertEquals("inside", parsed.getJSONArray("items").getJSONObject(0).getString("id"))
+    }
 }
