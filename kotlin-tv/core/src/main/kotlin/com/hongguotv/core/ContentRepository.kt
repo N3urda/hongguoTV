@@ -1040,7 +1040,7 @@ constructor(
                 val endpoint = MobilePlayback.endpointForHost(alternateHost)
                 try {
                     MobilePlayback.ladder(
-                        id, profile.values, http, MobilePlayback.signer, clock(), endpoint = endpoint,
+                        id, profile.values, http, MobilePlayback.signer, clock(), host = endpoint.toHttpUrl().host,
                     )
                 } catch (alternate: IOException) {
                     RequestScope.ensureActive()

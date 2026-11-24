@@ -15,10 +15,15 @@ import com.hongguotv.core.Detail
 
 /** Explicit real-network acceptance: uses the Activity's production player, never a sample URL. */
 class LivePlaybackInstrumentation : Instrumentation() {
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); start() }
+    private var issue102Samples = false
+    override fun onCreate(arguments: Bundle?) {
+        issue102Samples = arguments?.getString("issue102Samples") == "true"
+        super.onCreate(arguments); start()
+    }
     private fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
 
     override fun onStart() {
+        if (issue102Samples) { Issue102PlaybackAcceptance.run(this); return }
         val result = Bundle()
         var activity: MainActivity? = null
         try {

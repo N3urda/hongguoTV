@@ -2,14 +2,16 @@
 
 The current player endpoint rejects the former v3 Medusa request with an empty
 HTTP 200 response. Anonymous re-registration alone does not fix it. Playback now
-uses `/novel/player/multi_video_model/player/v1`, gzip JSON and an independently
+uses `/novel/player/multi_video_model/preload/v1`, gzip JSON and an independently
 implemented Android `v04.10.03` Medusa / Helios / Khronos signature.
 
 ## Implementation and provenance
 
-The existing GPL Kotlin signing code remains the implementation base. No native
-SDK, JNI wrapper, executable bytecode, VM interpreter, remote signing service or
-captured device session is included. `V5Constants` contains wire-format constants
+The production build uses the GPL Kotlin signing implementation. No native signing
+SDK binary, executable bytecode, VM interpreter, remote signing service or captured
+device session is included or needed. The earlier JNI prototype is archived in
+ignored local research outputs; production source and build wiring have been removed.
+`V5Constants` contains wire-format constants
 and the application's protocol key, not a user's account credential. Requests
 use a freshly registered anonymous identity, shared through `PlaybackDeviceSession`;
 no account cookie is sent to the model endpoint.
@@ -81,6 +83,45 @@ playback, seek, pause/resume and automatic next episode. This is emulator eviden
 not physical-TV acceptance. The fix is included in 0.16.12.
 
 ## Reproducing acceptance
+
+### Issue #102: pure Kotlin playback recovery (2026-11-23)
+
+Production playback now uses the current 74532 App request profile and the existing
+Kotlin V5 implementation with wire field 21 set to 312 (zigzag encoding 624).
+The internal SDK meaning of this field is not established. Successful official App
+and standalone SDK messages shared this value; the former Kotlin value was 377.
+
+The same URL, gzip body, identity, timestamp and transport were retained during
+live A/B checks. Replacing only field 21 in the otherwise successful native Medusa
+with 377 returned 200/0B. Replacing only this field in the otherwise failing Kotlin
+Medusa with 312 returned models for both issue samples, including repeated calls.
+The first 16 bytes of F13 matched; its final four bytes and runtime metadata still
+differ, but transplanting those fields was unnecessary in these tests. No captured
+state or SDK output is used by the Kotlin implementation.
+
+`MobilePlayback.signer` selects the verified current request profile, binds the
+exact gzip bytes and final query, and uses the existing bounded ticket selection.
+The default model host is reading.snssdk.com; an explicit alternate host is still
+honored. App-provided VOD codec negotiation handles ByteVC2-only models without
+forwarding signing or account headers. No website API or player is used.
+
+Build normally with `:app:assembleDebug :app:assembleDebugAndroidTest`; no native
+SDK option or preparation step is required. On an isolated TV emulator without the
+official App, clear only the task's debug package, then run:
+
+```sh
+adb shell pm clear com.hongguotv.nativeapp.debug
+adb shell am instrument -w -r -e issue102Samples true \
+  com.hongguotv.nativeapp.debug.test/com.hongguotv.nativeapp.LivePlaybackInstrumentation
+```
+
+Require `PASS pure Kotlin TV playback`, not just adb exit status. The test checks
+that no signing SDK asset/library is packaged and uses the production player for
+three issue samples, the next episode, decoded progress, seek and pause/resume.
+The research record retains native and field-level A/B history separately from
+pure Kotlin playback acceptance. See [the evidence and limits](../docs/research/2026-11-23-issue102-nonweb-playback.md).
+
+### Default playback acceptance
 
 Build `:app:assembleDebug :app:assembleDebugAndroidTest`, install the debug app
 and test APK on an Android TV emulator, then run:
