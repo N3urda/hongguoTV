@@ -41,6 +41,78 @@ class MainActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newFixedThreadPool(3)
     private val repository = ContentRepository(playbackSession = PlaybackDeviceSession.shared)
+    private val kidsAllowed = mutableSetOf<String>()
+    private val kidsCatalog = KidsCatalogPage(repository)
+    private var kidsGrid: ContinuousCatalogView? = null
+
+    private fun setKidsMode(enabled: Boolean) {
+        library.kidsMode = enabled
+        kidsAllowed.clear()
+        kidsCatalog.reset()
+        phoneConsole.stop()
+        favoriteMonitor.stop()
+        tvTools.close()
+        releasePlayer()
+        detail = null
+        pendingDetail = null
+        collection = null
+        tab = if (enabled) 0 else 6
+        showCatalog()
+    }
+
+    private fun showKidsCatalog(focus: Boolean = false) {
+        releaseCatalogViews()
+        screen = "kids"
+        val body = base()
+        val heading = row()
+        heading.addView(text("儿童模式 · 少儿短剧", 22f), lp(0, -2).apply { weight = 1f })
+        val exit = addButton(heading, "关闭儿童模式") {
+            tvTools.confirm("关闭儿童模式", "关闭后将恢复普通内容。", currentFocus) { setKidsMode(false) }
+        }
+        body.addView(heading)
+        val browser = ContinuousCatalogView(
+            this,
+            if (widthDp() < 800) 3 else if (widthDp() < 1200) 4 else 6,
+            exit,
+            { item, recycled ->
+                val card = recycled as? CatalogPosterCard ?: CatalogPosterCard(this)
+                card.show(item)
+                loadCover(card.image, item.cover)
+                card
+            },
+            { _ -> Unit },
+            { item -> openDetail(item, false) },
+            { item, anchor -> kidsQuickActions(item, anchor) },
+            { loadKidsPage() },
+        )
+        kidsGrid = browser
+        body.addView(browser, lp(-1, 0).apply { weight = 1f })
+        browser.show(kidsCatalog.items, kidsCatalog.canLoadMore())
+        browser.useRemoteNavigation()
+        if (kidsCatalog.items.isEmpty()) loadKidsPage()
+        if (focus) browser.enter() else exit.requestFocus()
+    }
+
+    private fun loadKidsPage() {
+        val browser = kidsGrid ?: return
+        work(
+            { kidsCatalog.loadMore() },
+            {
+                kidsAllowed.clear()
+                kidsAllowed += kidsCatalog.items.map { it.id }
+                if (screen == "kids" && kidsGrid === browser) {
+                    browser.append(kidsCatalog.items, kidsCatalog.canLoadMore())
+                }
+            },
+            { browser.fail(it) },
+        )
+    }
+
+    private fun kidsQuickActions(item: Series, anchor: View) {
+        tvTools.choose(item.title, listOf("播放", "返回"), anchor, { choice ->
+            if (choice == 0) openDetail(item, false)
+        }, compact = true)
+    }
     private val phoneCatalog by lazy {
         PhoneControlCatalog(library, cloudAccount) { series, progress ->
             // Save while the old detail still identifies the playing episode.
@@ -70,6 +142,7 @@ class MainActivity : Activity() {
     }
 
     private fun phoneControl(body: JSONObject): JSONObject {
+        if (!library.isLoaded || library.kidsMode) return JSONObject().put("active", false)
         val action = body.getString("action")
         val active = screen == "player" && detail != null
         if (action == "status") return JSONObject()
@@ -810,6 +883,8 @@ class MainActivity : Activity() {
     }
 
     private fun releaseCatalogViews() {
+        kidsGrid?.close()
+        kidsGrid = null
         producerDialog?.close()
         producerDialog = null
         settingsAccountStatus = null
@@ -1070,6 +1145,10 @@ class MainActivity : Activity() {
         focusNav: Boolean = false,
         focusType: Boolean = false,
     ) {
+        if (library.kidsMode) {
+            showKidsCatalog()
+            return
+        }
         val loadRemote = load && !localCatalog()
         relatedSection = null
         detailTrail.clear()
@@ -1139,7 +1218,7 @@ class MainActivity : Activity() {
                         startupCache = cloudAccount.recommendationStartupCache(),
                         recentSources = recentPlaybackSources,
                     ),
-                    Media3TrialPlayback(this, library.playbackSpeed, library.frameMode),
+                    Media3TrialPlayback(this, library.playbackSpeed, library.frameMode, library.videoDecodeMode),
                     autoPreview = library.homeAutoplay,
                     backgroundBusy = { gradualPreloader?.busy == true },
                     loadCover = ::loadCover,
@@ -2397,6 +2476,14 @@ class MainActivity : Activity() {
                 1 -> {
                     lateinit var qualityButton: TextView
                     qualityButton = setting("默认清晰度  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton, false) }
+                    lateinit var decoder: TextView
+                    decoder = setting("解码方式  ·  ${library.videoDecodeMode.label}") {
+                        val modes = VideoDecodeMode.entries
+                        tvTools.choose("解码方式", modes.map { it.label }, decoder, { choice ->
+                            library.videoDecodeMode = modes[choice]
+                            decoder.text = "解码方式  ·  ${library.videoDecodeMode.label}"
+                        }, selected = library.videoDecodeMode.ordinal)
+                    }
                     lateinit var speed: TextView
                     speed = setting("默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(speed, false) }
                     lateinit var danmaku: TextView
@@ -2405,6 +2492,7 @@ class MainActivity : Activity() {
                     frame = setting("画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame, false) }
                     lateinit var rotationButton: TextView
                     rotationButton = setting("画面旋转  ·  ${library.videoRotation}°") { showRotationPicker(rotationButton) }
+                    toggle("儿童模式", library.kidsMode, ::setKidsMode)
                     toggle("常驻播放进度", library.alwaysShowProgress) { library.alwaysShowProgress = it }
                     toggle("自动连播", library.autoNext) { library.autoNext = it }
                     toggle("跨季自动连播（需开启自动连播）", library.seasonAutoplay) { library.seasonAutoplay = it }
@@ -2569,6 +2657,7 @@ class MainActivity : Activity() {
         fromHome: Boolean = false,
         fromPhone: Boolean = false,
     ) {
+        if (library.kidsMode && (fromPhone || series.id !in kidsAllowed)) return
         val trial = if (fromHome && resume) homeFeed?.currentPlayback(series.id) else null
         val trialEpisodeId = trial?.episodeId
         val trialSource = trial?.video?.preparedSource()
@@ -2660,6 +2749,20 @@ class MainActivity : Activity() {
         releaseCatalogViews()
         screen = "detail"
         val data = detail ?: return showCatalog()
+        if (library.kidsMode) {
+            if (data.series.id !in kidsAllowed) return showCatalog()
+            val body = base(data.series.title)
+            group = group.coerceIn(0, data.episodes.lastIndex.coerceAtLeast(0) / 20)
+            val selector = EpisodeSelectorView(
+                this, data.episodes.size, episodeIndex, group, 0, false,
+                onGroup = { group = it; showDetail(false) },
+                onJump = { focused, anchor -> tvTools.episodePicker(data.episodes.size, focused, anchor, ::playSelectedEpisode) },
+                onSelect = ::playSelectedEpisode,
+            )
+            body.addView(selector)
+            selector.episodes.firstOrNull()?.requestFocus()
+            return
+        }
         val body = base("剧集详情")
         val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
         val content = column()
@@ -2937,6 +3040,7 @@ class MainActivity : Activity() {
         updater.interrupt()
         social.reset()
         val data = detail ?: return
+        if (library.kidsMode && data.series.id !in kidsAllowed) return
         var playbackStarted = android.os.SystemClock.elapsedRealtime()
         val keepRecoveryStatus = recovering || (screen == "player" && playError && index == episodeIndex)
         val reuse =
@@ -3069,7 +3173,7 @@ class MainActivity : Activity() {
                 visibility = View.GONE
             }
             root.addView(seekHint, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
-            social.attach(root)
+            if (!library.kidsMode) social.attach(root)
             playbackClock = TextClock(this).apply {
                 format12Hour = "HH:mm"
                 format24Hour = "HH:mm"
@@ -3775,7 +3879,7 @@ class MainActivity : Activity() {
                         .setTargetBufferBytes(12 * 1024 * 1024)
                         .build()
                 val renderers =
-                    playbackRenderers(this)
+                    playbackRenderers(this, library.videoDecodeMode)
                 ExoPlayer.Builder(this, renderers).setLoadControl(load).build().also {
                     player = it
                     it.addListener(bufferingIndicator)
@@ -4638,10 +4742,12 @@ class MainActivity : Activity() {
         episodes = item(primary, "选集", "episodes") { showEpisodePanel(episodes) }
         lateinit var speed: TextView
         speed = item(primary, "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}", "speed") { showSpeedPicker(speed) }
-        lateinit var danmaku: TextView
-        danmaku = item(primary, "弹幕设置", "danmaku") { social.settings(danmaku) }
-        lateinit var comments: TextView
-        comments = item(primary, "本集评论", "comments") { social.showComments(comments) }
+        if (!library.kidsMode) {
+            lateinit var danmaku: TextView
+            danmaku = item(primary, "弹幕设置", "danmaku") { social.settings(danmaku) }
+            lateinit var comments: TextView
+            comments = item(primary, "本集评论", "comments") { social.showComments(comments) }
+        }
         lateinit var more: TextView
         more = item(primary, "更多设置", "playback-settings") { showPlaybackSettings(more) }
         val rows = mutableListOf(primary)
@@ -4847,7 +4953,7 @@ class MainActivity : Activity() {
     }
 
     private fun offerNextSeason(current: Detail) {
-        if (!library.seasonAutoplay || !library.autoNext || seasonSuppressed || seasonPending || !foreground) return
+        if (library.kidsMode || !library.seasonAutoplay || !library.autoNext || seasonSuppressed || seasonPending || !foreground) return
         seasonPending = true
         val token = ++seasonGeneration
         work({ RelatedWorks.nextSeason(current.series, repository.related(current.series.id)) }, { next ->
@@ -4948,6 +5054,10 @@ class MainActivity : Activity() {
     private fun goBack() {
         if (!library.isLoaded) {
             finish()
+            return
+        }
+        if (screen == "kids") {
+            tvTools.confirm("退出hongguoTV", "确定退出？", currentFocus) { finish() }
             return
         }
         if (screen == "catalog" && collection != null) {
@@ -5119,7 +5229,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        phoneConsole.resume()
+        if (library.isLoaded && !library.kidsMode) phoneConsole.resume()
         foreground = true
         startGradualPreloading()
         gradualPreloader?.resume()

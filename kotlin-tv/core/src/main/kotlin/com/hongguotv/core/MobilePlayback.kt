@@ -21,7 +21,11 @@ internal fun interface MobilePlaybackSigner {
 }
 
 internal object MobilePlayback {
-    private const val PRIMARY_MODEL_HOST = "api5-normal-sinfonlinea.fqnovel.com"
+    // 2026-11-23 server migration: the retired player/v1 endpoint and 7.4.3.32 profile
+    // return HTTP 200 with an empty body. This is the endpoint/profile currently served
+    // to the official client; it also preserves this fork's injected signer and error
+    // taxonomy instead of importing the other project's StreamSource framework.
+    private const val MODEL_ENDPOINT = "https://reading.snssdk.com/novel/player/multi_video_model/preload/v1"
     private val v5Signer = Signer(mobileV5 = true)
     val signer = MobilePlaybackSigner { url, body, _ ->
         val parsed = url.toHttpUrl()
@@ -31,13 +35,23 @@ internal object MobilePlayback {
         MobileSignedRequest(request.url, request.headers)
     }
 
+    internal fun endpointForHost(host: String): String =
+        if (host == MODEL_ENDPOINT.toHttpUrl().host) MODEL_ENDPOINT
+        else "https://$host/novel/player/multi_video_model/preload/v1"
+
     private fun query(device: Map<String, String>) =
-        linkedMapOf("aid" to "8662", "app_name" to "novelread",
-            "version_code" to "74332", "version_name" to "7.4.3.32",
-            "channel" to "vivo_8662_64", "device_platform" to "android",
-            "device_type" to "PGT-AN10", "os_version" to "12", "update_version_code" to "74332",
+        linkedMapOf(
+            "aid" to "8662", "app_name" to "novelread",
+            "version_code" to "74532", "manifest_version_code" to "74532",
+            "update_version_code" to "74532", "version_name" to "7.4.5.32",
+            "channel" to "update_64", "device_platform" to "android", "os" to "android",
+            "ssmix" to "a", "device_type" to "25053RT47C", "device_brand" to "Redmi",
+            "language" to "zh", "os_api" to "36", "os_version" to "16",
+            "resolution" to "1280*2772", "dpi" to "520", "ac" to "wifi",
+            "host_abi" to "arm64-v8a",
+            "device_id" to device.getValue("device_id"),
             "iid" to device.getValue("iid"), "cdid" to device.getValue("cdid"),
-            "device_id" to device.getValue("device_id"))
+        )
 
     /** The player GET also requires v5, including MD5(empty) rather than a zero body digest.
      * Wire profile verified against hongguo-drama 92df757 and hongguo-tv 9e7386f.
@@ -53,7 +67,7 @@ internal object MobilePlayback {
         )
         val url = "https://$host/reading/bookapi/video_tab/multi_video_model/v1/"
             .toHttpUrl().newBuilder().apply { values.forEach { (k, v) -> addQueryParameter(k, v) } }.build()
-        val signed = signing.sign(url.toString(), ByteArray(0), device)
+        val signed = signing.sign(url.toString(), ByteArray(0), values)
         RequestScope.ensureActive()
         return Request.Builder().url(signed.url).get()
             .header("User-Agent", "com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)")
@@ -74,24 +88,26 @@ internal object MobilePlayback {
         http: OkHttpClient,
         signer: MobilePlaybackSigner,
         now: Long,
-        host: String = PRIMARY_MODEL_HOST,
+        host: String = MODEL_ENDPOINT.toHttpUrl().host,
+        endpoint: String = endpointForHost(host),
     ): StreamLadder {
         require(id.matches(Regex("[0-9]{1,30}")))
         RequestScope.ensureActive()
-        val query = query(device) + ("_rticket" to now.toString())
-        val url = "https://$host/novel/player/multi_video_model/player/v1"
-            .toHttpUrl().newBuilder().apply { query.forEach { (k,v) -> addQueryParameter(k,v) } }.build()
-        // TV uses platform decoders, not the official app's bytevc2 decoder.
-        // Level 3 can return only bytevc2; level 1 negotiates compatible renditions.
-        val payload = JSONObject("""{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]},"dr_scene":"player"}""")
+        val query = query(device)
+        val url = endpoint.toHttpUrl().newBuilder()
+            .apply { query.forEach { (k, v) -> addQueryParameter(k, v) } }
+            .addQueryParameter("_rticket", now.toString())
+            .build()
+        // Server now negotiates compatible renditions with device_level=2 on preload/v1.
+        val payload = JSONObject("""{"biz_param":{"detail_page_version":0,"device_level":2,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]},"dr_scene":"preload"}""")
         val output = ByteArrayOutputStream()
         GZIPOutputStream(output).use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
         val bytes = output.toByteArray()
         val request = Request.Builder().url(url)
-            .header("User-Agent", "com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)")
+            .header("User-Agent", System.getProperty("http.agent")?.takeIf { it.isNotBlank() } ?: "okhttp/4.12.0")
             .header("Accept", "application/json").header("Content-Encoding", "gzip")
             .header("x-ss-stub", MessageDigest.getInstance("MD5").digest(bytes).joinToString("") { "%02X".format(it) })
-        val signed = signer.sign(url.toString(), bytes, device)
+        val signed = signer.sign(url.toString(), bytes, query + ("_rticket" to now.toString()))
         request.url(signed.url)
         signed.headers.forEach { (k,v) -> request.header(k,v) }
         RequestScope.ensureActive()

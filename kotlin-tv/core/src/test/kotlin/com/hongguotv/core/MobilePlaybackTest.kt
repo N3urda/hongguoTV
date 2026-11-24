@@ -50,7 +50,8 @@ class MobilePlaybackTest {
         var signed: ByteArray? = null
         var url: String? = null
         val signing = MobilePlaybackSigner { target, bytes, identity ->
-            assertEquals(device, identity)
+            assertTrue(identity.getValue("device_id") == device.getValue("device_id"))
+            assertTrue(identity.getValue("_rticket").isNotBlank())
             signed = bytes.copyOf(); url = target
             MobileSignedRequest(target, mapOf("X-Argus" to "test-signature"))
         }
@@ -58,7 +59,8 @@ class MobilePlaybackTest {
             val bytes = Buffer().apply { request.body!!.writeTo(this) }.readByteArray()
             assertArrayEquals(signed, bytes)
             assertEquals(url, request.url.toString())
-            assertEquals("/novel/player/multi_video_model/player/v1", request.url.encodedPath)
+            assertEquals("/novel/player/multi_video_model/preload/v1", request.url.encodedPath)
+            assertEquals("reading.snssdk.com", request.url.host)
             assertEquals("123456", request.url.queryParameter("device_id"))
             assertEquals("654321", request.url.queryParameter("iid"))
             assertEquals("gzip", request.header("Content-Encoding"))
@@ -66,7 +68,8 @@ class MobilePlaybackTest {
             assertNull(request.header("Cookie"))
             assertEquals(MessageDigest.getInstance("MD5").digest(bytes).joinToString("") { "%02X".format(it) }, request.header("x-ss-stub"))
             val body = JSONObject(GZIPInputStream(bytes.inputStream()).reader().readText())
-            assertEquals("TV must not request the app-only bytevc2 capability tier", 1, body.getJSONObject("biz_param").getInt("device_level"))
+            assertEquals("current preload model profile", 2, body.getJSONObject("biz_param").getInt("device_level"))
+            assertEquals("preload", body.getString("dr_scene"))
             assertEquals("123", body.getJSONObject("mixed_video_id_map").getJSONArray("1004").getString(0))
         }, signing, 1000)
     }
@@ -131,7 +134,8 @@ class MobilePlaybackTest {
         val request = MobilePlayback.videoTabRequest("123", device, "example.test", 1000,
             MobilePlaybackSigner { url, bytes, identity ->
                 assertTrue(bytes.isEmpty())
-                assertEquals(device, identity)
+                assertTrue(identity.getValue("device_id") == device.getValue("device_id"))
+                assertEquals("123", identity["video_id"])
                 val parsed = url.toHttpUrl()
                 assertEquals("123", parsed.queryParameter("video_id"))
                 assertEquals("", parsed.queryParameter("from_video_id"))
@@ -234,13 +238,13 @@ class MobilePlaybackTest {
         assertEquals("https://example.org/video", rendition.url)
         assertEquals(
             listOf(
-                "POST" to "api5-normal-sinfonlinea.fqnovel.com",
+                "POST" to "reading.snssdk.com",
                 "GET" to "api5-normal-sinfonlineb.fqnovel.com",
                 "POST" to "api5-normal-sinfonlineb.fqnovel.com",
             ),
             requests.map { it.method to it.url.host },
         )
-        assertEquals(requests[0].url.encodedPath, requests[2].url.encodedPath)
+        assertEquals("/novel/player/multi_video_model/preload/v1", requests[2].url.encodedPath)
         for (parameter in listOf("iid", "device_id", "cdid")) {
             assertEquals(listOf(requests[0].url.queryParameter(parameter)), requests.map { it.url.queryParameter(parameter) }.distinct())
         }
@@ -293,7 +297,7 @@ class MobilePlaybackTest {
             if (request.method == "GET" && tabFailure != null) throw tabFailure
             val body = when {
                 request.method == "GET" -> tab
-                request.url.host == "api5-normal-sinfonlineb.fqnovel.com" ->
+                request.url.host != "reading.snssdk.com" ->
                     checkNotNull(alternateMobile) { "Unexpected alternate mobile model request" }
                 else -> mobile
             }

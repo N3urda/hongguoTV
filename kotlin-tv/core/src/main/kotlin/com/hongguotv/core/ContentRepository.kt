@@ -594,6 +594,24 @@ constructor(
     }
 
     /** The public website now loads cross-category results through its JSON endpoint. */
+    fun websiteSearch(keyword: String, page: Int = 1): CatalogPage {
+        require(keyword.isNotBlank() && keyword.length <= 80 && page in 1..100)
+        val raw = text(
+            "$site/api/search/result?query=${Signer.encode(keyword)}&page=$page",
+            retryTransient = true,
+        )
+        val data = JSONObject(raw)
+        val rows = data.optJSONArray("searchList") ?: throw IOException("搜索数据结构已变化")
+        val items = valid(rows.objects().map(::card))
+        val more = when {
+            data.has("hasMore") -> data.optBoolean("hasMore")
+            data.optInt("totalPages") > 0 -> page < data.optInt("totalPages")
+            else -> page < 100
+        }
+        // No title-based prioritization: kids mode filters on exact category tags instead.
+        return CatalogPage(items, rows.length() > 0 && page < 100 && more)
+    }
+
     fun searchAll(keyword: String, page: Int = 1, type: ContentType? = null): CatalogPage {
         require(keyword.isNotBlank() && keyword.length <= 80 && page in 1..100)
         val raw =
@@ -1016,11 +1034,13 @@ constructor(
                 val rows = PlaybackModels.renditions(model)
                 if (rows.isNotEmpty()) return@withDeadline StreamLadder(rows)
 
-                // The tab model can contain only bytevc2. The mobile model on the same host can supply HEVC.
+                // The tab model can contain only bytevc2. Retry the current preload endpoint
+                // on an alternate host; it can supply HEVC through the same working profile.
                 val alternateHost = PlayRetryPlan.host(0)
+                val endpoint = MobilePlayback.endpointForHost(alternateHost)
                 try {
                     MobilePlayback.ladder(
-                        id, profile.values, http, MobilePlayback.signer, clock(), host = alternateHost,
+                        id, profile.values, http, MobilePlayback.signer, clock(), endpoint = endpoint,
                     )
                 } catch (alternate: IOException) {
                     RequestScope.ensureActive()

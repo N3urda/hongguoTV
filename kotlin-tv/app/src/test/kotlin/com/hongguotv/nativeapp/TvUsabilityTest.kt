@@ -241,6 +241,16 @@ class TvUsabilityTest {
             listOf("检查更新", "播放", "外观与操作", "账户", "关于应用").forEach { title ->
                 assertTrue(rows.any { it.text == title })
             }
+            val decoder = rows.single { it.text.toString().startsWith("解码方式") }
+            assertTrue(decoder.text.toString().contains("硬解优先"))
+            decoder.requestFocus()
+            decoder.performClick()
+            val decoderDialog = ShadowDialog.getLatestDialog()
+            val software = texts(decoderDialog.window!!.decorView).single { it.text == "兼容（软解）" }
+            assertTrue((software.parent as View).performClick())
+            ShadowLooper.idleMainLooper()
+            assertEquals(VideoDecodeMode.SOFTWARE_ONLY, library.videoDecodeMode)
+            assertEquals("解码方式  ·  兼容（软解）", decoder.text.toString())
             val danmaku = rows.single { it.text == "弹幕设置" }
             assertTrue(danmaku.requestFocus())
             danmaku.performClick()
