@@ -3,6 +3,9 @@ package com.hongguotv.core
 
 /** v04.10.03 wire constants; see SIGNING_V5.md for derivation and verification. */
 internal object V5Constants {
+    // Server-validated v5 Medusa field 21. 377 produces HTTP 200 + 0-byte playback
+    // responses on the current endpoint; 312 restores the playback model.
+    const val field21 = 312
     val magic = hex("2d4b4fca49750d433fb5ae2c226dcc56")
     const val license = "646637794"
     val signKey = hex("b23c2a470a20d105dc3f8c4438f8272ed46d6c89ffdcdedd5108698d26e9489d")
