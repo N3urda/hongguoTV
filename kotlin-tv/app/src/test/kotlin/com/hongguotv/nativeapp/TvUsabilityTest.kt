@@ -241,6 +241,13 @@ class TvUsabilityTest {
             listOf("检查更新", "播放", "外观与操作", "账户", "关于应用").forEach { title ->
                 assertTrue(rows.any { it.text == title })
             }
+            val softwareDecoding = rows.single { it.text.startsWith("强制软件解码") }.parent as View
+            assertTrue(softwareDecoding.isFocusable)
+            assertFalse(library.forceSoftwareDecoding)
+            softwareDecoding.performClick()
+            assertTrue(library.forceSoftwareDecoding)
+            softwareDecoding.performClick()
+            assertFalse(library.forceSoftwareDecoding)
             val danmaku = rows.single { it.text == "弹幕设置" }
             assertTrue(danmaku.requestFocus())
             danmaku.performClick()

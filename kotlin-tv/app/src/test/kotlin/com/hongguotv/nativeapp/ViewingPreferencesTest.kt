@@ -5,6 +5,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ViewingPreferencesTest {
+    @Test fun softwareDecodingIsOptInAndPersistsDecodedChoice() {
+        assertFalse(ViewingPreferences.decode(emptyMap<String, Any>()).forceSoftwareDecoding)
+        assertTrue(ViewingPreferences.decode(mapOf("forceSoftwareDecoding" to true)).forceSoftwareDecoding)
+        assertFalse(ViewingPreferences.decode(mapOf("forceSoftwareDecoding" to "true")).forceSoftwareDecoding)
+    }
+
     @Test fun crossSeasonAutoplayIsOptInAndPersistsDecodedChoice() {
         assertFalse(ViewingPreferences.decode(emptyMap<String, Any>()).seasonAutoplay)
         assertTrue(ViewingPreferences.decode(mapOf("seasonAutoplay" to true)).seasonAutoplay)
