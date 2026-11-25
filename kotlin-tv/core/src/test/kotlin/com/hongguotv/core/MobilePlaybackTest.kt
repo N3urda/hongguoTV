@@ -58,7 +58,8 @@ class MobilePlaybackTest {
                 assertArrayEquals(signedBody, Buffer().apply { request.body!!.writeTo(this) }.readByteArray())
                 val body = JSONObject(GZIPInputStream(signedBody.inputStream()).reader().readText())
                 assertEquals("preload", body.getString("dr_scene"))
-                assertEquals(2, body.getJSONObject("biz_param").getInt("device_level"))
+                assertEquals(4, body.getJSONObject("biz_param").getInt("device_level"))
+                assertEquals(1024, body.getJSONObject("biz_param").getInt("video_platform"))
                 apiModel.toString()
             } else {
                 assertEquals("vas.example.org", request.url.host)
