@@ -115,6 +115,78 @@ class RelatedWorksTest {
         assertNull(RelatedWorks.nextSeason(second, listOf(sideStory)))
     }
 
+    // Live 相关作品 (2026-11-24) of 《公路求生榜一说他要走到公路尽头》: seasons 1–2 say 他, season 3 says 她.
+    // Seen from another drama of the same IP, all three are 「同IP」.
+    private val roadHe1 = Series("7691938290202577944", "公路求生榜一说他要走到公路尽头")
+    private val roadHe2 = Series("7700477891418524696", "公路求生榜一说他要走到公路尽头第二季")
+    private val roadShe3 = Series("7708355462780947518", "公路求生榜一说她要走到公路尽头第三季")
+    private val roadOtherDrama = Series("7710278988953832472", "公路求生榜一说她要走到公路尽头第一季")
+
+    private fun tagged(series: Series, tag: String, index: Int) = RelatedWork(series, tag, false, index, tag)
+
+    private val roadRelated = mapOf(
+        roadHe1.id to listOf(tagged(roadHe2, "第2季", 2), tagged(roadShe3, "第3季", 3), tagged(roadOtherDrama, "同IP", 0)),
+        roadHe2.id to listOf(tagged(roadHe1, "第1季", 1), tagged(roadShe3, "第3季", 3), tagged(roadOtherDrama, "同IP", 0)),
+        roadShe3.id to listOf(tagged(roadHe1, "第1季", 1), tagged(roadHe2, "第2季", 2)),
+        roadOtherDrama.id to listOf(tagged(roadHe1, "同IP", 1), tagged(roadHe2, "同IP", 2), tagged(roadShe3, "同IP", 3)),
+    )
+
+    private fun roadRelatedOf(id: String) = roadRelated.getValue(id)
+
+    @Test
+    fun differentlyWordedNextSeasonFollowsHongguoTagsInBothDirections() {
+        // The title rule alone stops at season 2, because 他 and 她 make the stems differ.
+        assertNull(RelatedWorks.nextSeason(roadHe2, roadRelatedOf(roadHe2.id)))
+        assertEquals(roadShe3.id, RelatedWorks.nextSeason(roadHe2, roadRelatedOf(roadHe2.id), ::roadRelatedOf)?.series?.id)
+        // The title rule still answers first where it can, and the last season has no next.
+        assertEquals(roadHe2.id, RelatedWorks.nextSeason(roadHe1, roadRelatedOf(roadHe1.id), ::roadRelatedOf)?.series?.id)
+        assertNull(RelatedWorks.nextSeason(roadShe3, roadRelatedOf(roadShe3.id), ::roadRelatedOf))
+        // Another drama of the same IP only sees 「同IP」 tags, so nothing is followed from it.
+        assertNull(RelatedWorks.nextSeason(roadOtherDrama, roadRelatedOf(roadOtherDrama.id), ::roadRelatedOf))
+    }
+
+    @Test
+    fun seasonTagRuleNeedsTheNextSeasonToNameTheCurrentOneBack() {
+        val forward = roadRelatedOf(roadHe2.id)
+        val back = roadRelatedOf(roadShe3.id)
+        fun next(reverse: (String) -> List<RelatedWork>) = RelatedWorks.nextSeason(roadHe2, forward, reverse)
+        assertEquals(roadShe3, next { back }?.series)
+        assertNull(next { back.filter { it.series.id != roadHe2.id } })
+        assertNull(next { back.map { if (it.series.id == roadHe2.id) tagged(roadHe2, "同IP", 2) else it } })
+        assertNull(next { back.map { if (it.series.id == roadHe2.id) tagged(roadHe2, "第1季", 2) else it } })
+        assertNull(next { throw IOException("offline") })
+    }
+
+    @Test
+    fun seasonTagRuleNeedsOneUnconflictedPlayableCandidate() {
+        val third = tagged(roadShe3, "第3季", 3)
+        val first = tagged(roadHe1, "第1季", 1)
+        fun next(vararg candidates: RelatedWork) =
+            RelatedWorks.nextSeason(roadHe2, listOf(first, *candidates), ::roadRelatedOf)
+        assertEquals(third, next(third))
+        // A 「第3季」 synthesised from season_index, or 「同IP」 with season_index 3, is not Hongguo naming a season.
+        assertNull(next(third.copy(rawTag = "")))
+        assertNull(next(third.copy(season = "同IP", rawTag = "同IP")))
+        assertNull(next(third.copy(upcoming = true)))
+        assertNull(next(third, tagged(Series("8", "另一部第三季"), "第3季", 3)))
+        assertNull(next(third.copy(seasonIndex = 4)))
+        assertNull(next(third.copy(series = Series(roadShe3.id, "公路求生榜一说她要走到公路尽头第四季"))))
+    }
+
+    @Test
+    fun parseKeepsHongguoTagApartFromTheSynthesisedSeason() {
+        val rows = RelatedWorks.parse(
+            """{"code":0,"data":[{"show_type":547,"video_data":[
+              {"series_id":"2","title":"甲第二季","content_type":1004,"episode_cnt":9,"season_index":2,"tag_info":{"text":"第2季"}},
+              {"series_id":"3","title":"甲第三季","content_type":1004,"episode_cnt":9,"season_index":3},
+              {"series_id":"4","title":"乙","content_type":1004,"episode_cnt":9,"season_index":1,"tag_info":{"text":"同IP"}}
+            ]}]}""",
+            "1",
+        ).associateBy { it.series.id }
+        assertEquals(listOf("第2季", "第3季", "同IP"), listOf("2", "3", "4").map { rows.getValue(it).season })
+        assertEquals(listOf("第2季", "", "同IP"), listOf("2", "3", "4").map { rows.getValue(it).rawTag })
+    }
+
     @Test
     fun parsesOfficialSeasonTypesAndExcludesCurrentNovelBlockedAndDuplicates() {
         val rows = RelatedWorks.parse(data, "111")
