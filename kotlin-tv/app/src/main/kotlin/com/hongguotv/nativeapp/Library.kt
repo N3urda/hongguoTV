@@ -76,6 +76,22 @@ class Library(context: Context) {
             viewing = viewing.copy(clockMode = value.coerceIn(0, 2))
             put("clockMode", viewing.clockMode)
         }
+    internal var videoDecodeMode: VideoDecodeMode
+        get() = viewing.videoDecodeMode
+        set(value) {
+            if (value == viewing.videoDecodeMode) return
+            viewing = viewing.copy(videoDecodeMode = value)
+            put("videoDecodeMode", value.name)
+            flush()
+        }
+    internal var kidsMode: Boolean
+        get() = viewing.kidsMode
+        set(value) {
+            if (value == viewing.kidsMode) return
+            viewing = viewing.copy(kidsMode = value)
+            put("kidsMode", value)
+            flush()
+        }
     fun initialTab() = viewing.initialTab()
 
     private val homes = mutableMapOf<ContentType, CatalogPage>()

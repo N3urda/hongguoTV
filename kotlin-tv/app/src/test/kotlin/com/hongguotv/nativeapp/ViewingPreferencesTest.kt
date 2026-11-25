@@ -5,6 +5,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ViewingPreferencesTest {
+    @Test fun kidsModeIsOptInAndRestoresOnlyAnExplicitBoolean() {
+        assertFalse(ViewingPreferences.decode(emptyMap<String, Any>()).kidsMode)
+        assertTrue(ViewingPreferences.decode(mapOf("kidsMode" to true)).kidsMode)
+        assertFalse(ViewingPreferences.decode(mapOf("kidsMode" to "true")).kidsMode)
+    }
+
+    @Test fun decodeModeDefaultsToHardwarePreferredAndRestoresSoftwareOnly() {
+        assertEquals(VideoDecodeMode.HARDWARE_PREFERRED, ViewingPreferences.decode(emptyMap<String, Any>()).videoDecodeMode)
+        assertEquals(VideoDecodeMode.SOFTWARE_ONLY, ViewingPreferences.decode(mapOf("videoDecodeMode" to "SOFTWARE_ONLY")).videoDecodeMode)
+        assertEquals(VideoDecodeMode.HARDWARE_PREFERRED, ViewingPreferences.decode(mapOf("videoDecodeMode" to "unknown")).videoDecodeMode)
+    }
+
     @Test fun crossSeasonAutoplayIsOptInAndPersistsDecodedChoice() {
         assertFalse(ViewingPreferences.decode(emptyMap<String, Any>()).seasonAutoplay)
         assertTrue(ViewingPreferences.decode(mapOf("seasonAutoplay" to true)).seasonAutoplay)
