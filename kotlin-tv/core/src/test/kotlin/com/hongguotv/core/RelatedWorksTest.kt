@@ -84,6 +84,38 @@ class RelatedWorksTest {
     }
 
     @Test
+    fun seasonTitleMayCarryAnEditionAfterItsNumber() {
+        // From the live 相关作品 of a comic drama: the last season is 「…第三季完结篇」.
+        val stem = "和离后我带女儿横扫魔域"
+        val first = RelatedWork(Series("1", stem), "第1季", false, 1)
+        val second = RelatedWork(Series("2", stem + "第二季"), "第2季", false, 2)
+        val finale = RelatedWork(Series("3", stem + "第三季完结篇"), "第3季", false, 3)
+        val otherIp = RelatedWork(Series("9", "隐居魔帝：和离后我不装了第1季"), "同IP", false, 1)
+        assertEquals(finale, RelatedWorks.nextSeason(second.series, listOf(first, finale, otherIp)))
+        assertNull(RelatedWorks.nextSeason(finale.series, listOf(first, second, otherIp)))
+        assertEquals(listOf("1", "2", "9"), RelatedWorks.ordered(finale.series, listOf(otherIp, second, first)).map { it.series.id })
+        // Still conservative: the edition never makes another title stem match.
+        assertNull(RelatedWorks.nextSeason(second.series, listOf(finale.copy(series = Series("4", "其他剧第三季完结篇")))))
+    }
+
+    @Test
+    fun seasonWordsInsideTheNameAreNotASeason() {
+        val first = Series("1", "爱在第三季的我们")
+        val second = RelatedWork(Series("2", "爱在第三季的我们第二季"), "第2季", false, 2)
+        assertEquals(second, RelatedWorks.nextSeason(first, listOf(second)))
+        val otherIp = RelatedWork(Series("3", "别的剧"), "同IP", false, 1)
+        assertEquals(listOf("2", "3"), RelatedWorks.ordered(first, listOf(otherIp, second)).map { it.series.id })
+    }
+
+    @Test
+    fun sameIpWorkWithSeasonWordsButNoIndexIsNotTheNextSeason() {
+        val stem = "和离后我带女儿横扫魔域"
+        val second = Series("2", stem + "第二季")
+        val sideStory = RelatedWork(Series("5", stem + "第三季外传"), "同IP", false, 0)
+        assertNull(RelatedWorks.nextSeason(second, listOf(sideStory)))
+    }
+
+    @Test
     fun parsesOfficialSeasonTypesAndExcludesCurrentNovelBlockedAndDuplicates() {
         val rows = RelatedWorks.parse(data, "111")
         assertEquals(listOf("222", "333"), rows.map { it.series.id })
