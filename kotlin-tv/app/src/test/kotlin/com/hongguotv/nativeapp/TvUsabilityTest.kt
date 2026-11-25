@@ -237,11 +237,18 @@ class TvUsabilityTest {
             assertTrue(updateRoute.requestFocus())
             updateRoute.performClick()
             val routePicker = ShadowDialog.getLatestDialog().window!!.decorView
-            val routeLabels = listOf("自动线路，当前已选", "GitHub 直连", "ghfast.top", "gh-proxy.org")
+            val routeLabels =
+                listOf(
+                    "自动线路，当前已选",
+                    "GitHub 直连",
+                    "gh-proxy.org",
+                    "ghfast.top",
+                    "v6.gh-proxy.org",
+                )
             routeLabels.forEachIndexed { index, label ->
                 assertEquals(label, routePicker.findViewWithTag<View>("choice-$index").contentDescription)
             }
-            routePicker.findViewWithTag<View>("choice-3").performClick()
+            routePicker.findViewWithTag<View>("choice-2").performClick()
             ShadowLooper.idleMainLooper()
             assertEquals("更新线路  ·  gh-proxy.org", updateRoute.text.toString())
             assertTrue(updateRoute.hasFocus())

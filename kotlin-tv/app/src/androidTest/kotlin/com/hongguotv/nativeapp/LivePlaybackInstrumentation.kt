@@ -12,18 +12,30 @@ import android.widget.TextView
 import androidx.media3.exoplayer.ExoPlayer
 import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.Detail
+import com.hongguotv.core.AppUpdateRoute
 
 /** Explicit real-network acceptance: uses the Activity's production player, never a sample URL. */
 class LivePlaybackInstrumentation : Instrumentation() {
     private var issue102Samples = false
+    private var updateDownload = false
+    private var updateRoute = AppUpdateRoute.AUTOMATIC
     override fun onCreate(arguments: Bundle?) {
         issue102Samples = arguments?.getString("issue102Samples") == "true"
+        updateDownload = arguments?.getString("updateDownload") == "true"
+        updateRoute =
+            arguments?.getString("updateRoute")
+                ?.let { stored -> AppUpdateRoute.entries.firstOrNull { it.name == stored } }
+                ?: AppUpdateRoute.AUTOMATIC
         super.onCreate(arguments); start()
     }
     private fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
 
     override fun onStart() {
         if (issue102Samples) { Issue102PlaybackAcceptance.run(this); return }
+        if (updateDownload) {
+            UpdateDownloadAcceptance.run(this, updateRoute) { code, result -> finish(code, result) }
+            return
+        }
         val result = Bundle()
         var activity: MainActivity? = null
         try {

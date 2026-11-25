@@ -37,7 +37,12 @@ class AppUpdatesTest {
     )
 
     private fun automaticUrls(origin: String) =
-        listOf(origin, "https://ghfast.top/$origin", "https://gh-proxy.org/$origin")
+        listOf(
+            origin,
+            "https://gh-proxy.org/$origin",
+            "https://ghfast.top/$origin",
+            "https://v6.gh-proxy.org/$origin",
+        )
 
     @Test fun audioPackageIsSelectedByAndroidVersion() {
         val metadata = json().put("minSdk", 21)
@@ -74,25 +79,27 @@ class AppUpdatesTest {
         }
         assertEquals(listOf(metadataUrl), urls)
     }
-    @Test fun automaticMetadataTriesBothMirrorsAfterNetworkAndFormatFailures() {
+
+    @Test fun automaticMetadataTriesMirrorsAfterNetworkAndFormatFailures() {
         val urls = mutableListOf<String>()
         repository { url ->
             urls += url
             when (url) {
                 metadataUrl -> throw IOException("timeout")
-                "https://ghfast.top/$metadataUrl" -> "<html>error</html>".toByteArray()
+                "https://gh-proxy.org/$metadataUrl" -> "<html>error</html>".toByteArray()
                 else -> json().toString().toByteArray()
             }
         }.use {
             assertEquals(update(), it.latest())
         }
-        assertEquals(automaticUrls(metadataUrl), urls)
+        assertEquals(automaticUrls(metadataUrl).take(3), urls)
     }
+
     @Test fun corruptApkFallsBackAndVerifiesNextRoute() = withFile { file ->
         val urls = mutableListOf<String>()
         repository { url ->
             urls += url
-            if (url.startsWith("https://gh-proxy.org/")) bytes else ByteArray(bytes.size)
+            if (url.startsWith("https://v6.gh-proxy.org/")) bytes else ByteArray(bytes.size)
         }.use {
             it.download(update(), file) {}
         }
@@ -104,8 +111,9 @@ class AppUpdatesTest {
     @Test fun manualRoutesUseOnlyTheSelectedSourceForMetadataAndApk() {
         val prefixes = mapOf(
             AppUpdateRoute.GITHUB to "",
-            AppUpdateRoute.GHFAST to "https://ghfast.top/",
             AppUpdateRoute.GH_PROXY to "https://gh-proxy.org/",
+            AppUpdateRoute.GHFAST to "https://ghfast.top/",
+            AppUpdateRoute.GH_PROXY_V6 to "https://v6.gh-proxy.org/",
         )
         for ((route, prefix) in prefixes) withFile { file ->
             val urls = mutableListOf<String>()
@@ -126,8 +134,64 @@ class AppUpdatesTest {
         repository(route = { AppUpdateRoute.GHFAST }) { url ->
             urls += url
             throw IOException("timeout")
-        }.use { assertThrows(IOException::class.java) { it.latest() } }
+        }.use {
+            val error = assertThrows(IOException::class.java) { it.latest() }
+            assertTrue(error.message.orEmpty().contains("ghfast.top 线路不可用"))
+        }
         assertEquals(listOf("https://ghfast.top/$metadataUrl"), urls)
+    }
+
+    @Test fun failedDirectRequestFallsBackToProxy() {
+        var requests = 0
+        repository { if (++requests == 1) throw IOException("timeout") else json().toString().toByteArray() }.use {
+            assertEquals(update(), it.latest())
+        }
+        assertEquals(2, requests)
+    }
+
+    @Test fun automaticDownloadReusesSuccessfulMetadataRoute() = withFile { file ->
+        val urls = mutableListOf<String>()
+        repository { url ->
+            urls += url
+            when (urls.size) {
+                1 -> throw IOException("direct timeout")
+                2 -> json().toString().toByteArray()
+                else -> bytes
+            }
+        }.use { source ->
+            val update = source.latest()
+            assertEquals(AppUpdateRoute.GH_PROXY, source.lastSuccessfulRoute)
+            source.download(update, file) {}
+            assertEquals(AppUpdateRoute.GH_PROXY, source.lastSuccessfulRoute)
+        }
+        assertEquals(3, urls.size)
+        assertTrue(urls[2].startsWith("https://gh-proxy.org/"))
+        assertTrue(UpdateFiles.verify(file, update()))
+    }
+
+    @Test fun preferredRouteStillFallsBackWhenLaterRequestFails() = withFile { file ->
+        val urls = mutableListOf<String>()
+        repository { url ->
+            urls += url
+            when (urls.size) {
+                1 -> throw IOException("direct timeout")
+                2 -> json().toString().toByteArray()
+                3 -> throw IOException("proxy became unavailable")
+                else -> bytes
+            }
+        }.use { source ->
+            val update = source.latest()
+            source.download(update, file) {}
+        }
+        assertEquals(4, urls.size)
+        assertTrue(urls[2].startsWith("https://gh-proxy.org/"))
+        assertTrue(urls[3].startsWith("https://ghfast.top/"))
+        assertTrue(UpdateFiles.verify(file, update()))
+    }
+
+    @Test fun invalidStoredRouteFallsBackToAutomatic() {
+        assertEquals(AppUpdateRoute.AUTOMATIC, AppUpdateRoute.fromPreference("removed-route"))
+        assertEquals(AppUpdateRoute.GHFAST, AppUpdateRoute.fromPreference(AppUpdateRoute.GHFAST.name))
     }
 
     @Test fun cancellationDoesNotStartFallback() {
