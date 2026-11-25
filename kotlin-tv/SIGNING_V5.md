@@ -97,7 +97,7 @@ with 377 returned 200/0B. Replacing only this field in the otherwise failing Kot
 Medusa with 312 returned models for both issue samples, including repeated calls.
 The first 16 bytes of F13 matched; its final four bytes and runtime metadata still
 differ, but transplanting those fields was unnecessary in these tests. A later
-measurement found that the embedded device envelope itself must be complete; see
+measurement recovered playback with an expanded embedded device envelope; see
 [Medusa device envelope completeness](#medusa-device-envelope-completeness-2026-11-25).
 No captured state or SDK output is used by the Kotlin implementation.
 
@@ -127,10 +127,11 @@ pure Kotlin playback acceptance. See [the evidence and limits](../docs/research/
 
 On 0.16.14 (`ef328f3a`) the primary model POST returned HTTP 200 with a zero-byte
 body again, and the field-21 A/B above did not recover it. The remaining
-difference was the `env.device` sub-message: `medusaV5` emitted 14 fields, while
-the official `v04.10.03` client emits 38.
+difference included the `env.device` sub-message: `medusaV5` emitted 14 fields.
+This change expands it to 36 populated fields through field number 38, based on
+observations of the official `v04.10.03` client.
 
-The missing fields are register defaults rather than device readings
+The added fields include register defaults rather than device readings
 (`7/8/10 = -888888`, `9 = 3`, `11 = "!notset!"`, `14 = 4`, `16..21` = six
 fixed32 zeros, `23 = 41`, `24 = 36`, `29 = -1`, `38 = 31`), plus the process
 metadata `28 = now`, the brand/type echoes `31/34/35/36`, and the `f16`/`f5`
@@ -144,8 +145,8 @@ A shape matrix held the gzip body, identity and timestamp fixed and varied only
 the query profile and endpoint. With the complete envelope, the current 74532
 profile returned 23934 and 23815 bytes from `preload/v1` and `player/v1`
 respectively, while the former 74332 profile returned zero bytes from both. The
-request shape was therefore already correct and only the envelope needed to
-change, so `MobilePlayback` is untouched by this fix.
+current request shape worked with the expanded envelope, so `MobilePlayback`
+is untouched by this fix.
 
 The repository's own `:core:run --args="--issue61"` probe then reported five
 renditions and decrypted MP4 bytes for consecutive episodes. On an Android 6
@@ -155,11 +156,18 @@ in 200-280 ms without leaving the app. `codec_type=1` on the fallback endpoint
 returns five `hvc1` renditions on this device, so the existing compatibility
 ladder already selects a hardware-decodable stream.
 
-The earlier observation that the device-envelope fields were unnecessary held
-only for the samples measured then; the complete envelope is required against
-the current backend. Missing fields are not reported as an error either way:
-the server answers HTTP 200 with an empty body, which surfaces to the user as a
-generic request failure.
+These measurements establish that the expanded envelope works for the tested
+requests, not that every added field is individually necessary. A separate
+account-playback branch also rendered real guest/account video with the smaller
+envelope plus a 25-character F16 process token. Device identity, request profile,
+timestamp and episode can affect the result; an HTTP 200 empty body alone does
+not identify the rejected field.
+
+The synthetic wire fixture `signing-v5-playback-envelope.json` is independently
+decoded and resealed from the earlier public-input fixture with the reviewed
+envelope schema. It retains the original query/body digest and entropy and
+contains no captured account or device session. The existing independent digest
+and carrier vectors remain unchanged.
 
 ### Default playback acceptance
 

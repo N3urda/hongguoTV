@@ -379,8 +379,8 @@ internal class Signer(
         val f13 = hashF13(query, body?.let { digest("MD5", it) } ?: ByteArray(16), ts)
         val flags = hex("4480000000000000")
         val version = who.getValue("version_name")
-        // 官方 7.4.3.32+ 的 medusa 明文内嵌完整 38 字段设备信封。缺字段不会报错：
-        // 服务端只回 HTTP 200 + 0 字节，客户端表现为「接口错误」。
+        // 补齐设备信封中截至字段 38 的 36 个已观测字段。
+        // 这组字段在实测中恢复了空响应；尚未逐项证明每个字段都必需。
         val brand = who["device_brand"]?.takeIf { it.isNotEmpty() } ?: "HONOR"
         val type = who.getValue("device_type")
         val envLaunch = (random() * 21).toInt() + 100
