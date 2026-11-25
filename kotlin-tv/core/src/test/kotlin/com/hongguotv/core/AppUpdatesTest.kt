@@ -15,6 +15,7 @@ import java.security.MessageDigest
 
 class AppUpdatesTest {
     private val bytes = "signed-apk-test-bytes".toByteArray()
+    private val metadataUrl = "${AppUpdate.RELEASES}/latest/download/update.json"
     private fun json() = JSONObject().put("schema", 1).put("packageName", "com.hongguotv.nativeapp")
         .put("versionCode", 10001).put("versionName", "0.9.0+1").put("minSdk", 26).put("tag", "kotlin-v0.9.0-build.1")
         .put("apk", JSONObject().put("name", "hongguotv-kotlin-0.9.0-build.1-android8.apk").put("size", bytes.size)
@@ -24,12 +25,20 @@ class AppUpdatesTest {
         val dir = Files.createTempDirectory("update-test").toFile()
         try { block(File(dir, "update.apk")) } finally { dir.deleteRecursively() }
     }
-    private fun repository(reply: (String) -> ByteArray): AppUpdateRepository = AppUpdateRepository(
+    private fun repository(
+        route: () -> AppUpdateRoute = { AppUpdateRoute.AUTOMATIC },
+        reply: (String) -> ByteArray,
+    ): AppUpdateRepository = AppUpdateRepository(
         OkHttpClient.Builder().addInterceptor { chain ->
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
                 .code(200).message("OK").body(reply(chain.request().url.toString()).toResponseBody()).build()
-        }.build()
+        }.build(),
+        route = route,
     )
+
+    private fun automaticUrls(origin: String) =
+        listOf(origin, "https://ghfast.top/$origin", "https://gh-proxy.org/$origin")
+
     @Test fun audioPackageIsSelectedByAndroidVersion() {
         val metadata = json().put("minSdk", 21)
         metadata.getJSONObject("apk").put("name", "hongguotv-kotlin-0.16.2-android5.apk")
@@ -58,35 +67,69 @@ class AppUpdatesTest {
         }
     }
 
-    @Test fun metadataUsesAcceleratorFirst() {
+    @Test fun automaticMetadataUsesGitHubFirst() {
         val urls = mutableListOf<String>()
         repository { url -> urls += url; json().toString().toByteArray() }.use {
             assertEquals(update(), it.latest())
         }
-        assertEquals(listOf(UpdateDownloadSources.MIRROR + AppUpdate.RELEASES + "/latest/download/update.json"), urls)
+        assertEquals(listOf(metadataUrl), urls)
     }
-    @Test fun malformedMirrorMetadataFallsBackToOrigin() {
+    @Test fun automaticMetadataTriesBothMirrorsAfterNetworkAndFormatFailures() {
         val urls = mutableListOf<String>()
-        repository { url -> urls += url; if (urls.size == 1) "<html>error</html>".toByteArray() else json().toString().toByteArray() }.use {
+        repository { url ->
+            urls += url
+            when (url) {
+                metadataUrl -> throw IOException("timeout")
+                "https://ghfast.top/$metadataUrl" -> "<html>error</html>".toByteArray()
+                else -> json().toString().toByteArray()
+            }
+        }.use {
             assertEquals(update(), it.latest())
         }
-        assertEquals(UpdateDownloadSources.urls(AppUpdate.RELEASES + "/latest/download/update.json"), urls)
+        assertEquals(automaticUrls(metadataUrl), urls)
     }
-    @Test fun corruptMirrorApkFallsBackAndVerifiesOrigin() = withFile { file ->
+    @Test fun corruptApkFallsBackAndVerifiesNextRoute() = withFile { file ->
         val urls = mutableListOf<String>()
-        repository { url -> urls += url; if (urls.size == 1) ByteArray(bytes.size) else bytes }.use {
+        repository { url ->
+            urls += url
+            if (url.startsWith("https://gh-proxy.org/")) bytes else ByteArray(bytes.size)
+        }.use {
             it.download(update(), file) {}
         }
-        assertEquals(UpdateDownloadSources.urls(update().downloadUrl), urls)
+        assertEquals(automaticUrls(update().downloadUrl), urls)
         assertTrue(UpdateFiles.verify(file, update()))
+        assertFalse(File(file.path + ".part").exists())
     }
-    @Test fun failedMirrorRequestFallsBack() {
-        var requests = 0
-        repository { if (++requests == 1) throw IOException("timeout") else json().toString().toByteArray() }.use {
-            assertEquals(update(), it.latest())
+
+    @Test fun manualRoutesUseOnlyTheSelectedSourceForMetadataAndApk() {
+        val prefixes = mapOf(
+            AppUpdateRoute.GITHUB to "",
+            AppUpdateRoute.GHFAST to "https://ghfast.top/",
+            AppUpdateRoute.GH_PROXY to "https://gh-proxy.org/",
+        )
+        for ((route, prefix) in prefixes) withFile { file ->
+            val urls = mutableListOf<String>()
+            repository(route = { route }) { url ->
+                urls += url
+                if (url.endsWith("/update.json")) json().toString().toByteArray() else bytes
+            }.use { source ->
+                val update = source.latest()
+                source.download(update, file) {}
+                assertTrue(UpdateFiles.verify(file, update))
+            }
+            assertEquals(listOf(prefix + metadataUrl, prefix + update().downloadUrl), urls)
         }
-        assertEquals(2, requests)
     }
+
+    @Test fun failedManualRouteDoesNotStartFallback() {
+        val urls = mutableListOf<String>()
+        repository(route = { AppUpdateRoute.GHFAST }) { url ->
+            urls += url
+            throw IOException("timeout")
+        }.use { assertThrows(IOException::class.java) { it.latest() } }
+        assertEquals(listOf("https://ghfast.top/$metadataUrl"), urls)
+    }
+
     @Test fun cancellationDoesNotStartFallback() {
         var requests = 0
         lateinit var source: AppUpdateRepository

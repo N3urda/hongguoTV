@@ -4,6 +4,7 @@ package com.hongguotv.nativeapp
 import android.app.Activity
 import android.os.Looper
 import com.hongguotv.core.AppUpdate
+import com.hongguotv.core.AppUpdateRoute
 import com.hongguotv.core.AppUpdateSource
 import java.io.File
 import java.time.Duration
@@ -22,6 +23,32 @@ import org.robolectric.annotation.LooperMode
 @Config(sdk = [23])
 @LooperMode(LooperMode.Mode.PAUSED)
 class AppUpdaterBackgroundTest {
+    @Test
+    fun selectedRouteSurvivesRecreationAndAllowsAFreshCheck() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val preferences = activity.getSharedPreferences("app_updates", 0)
+        preferences.edit().putString("route", "unknown-route").putLong("last_attempt", 1234L)
+            .putBoolean("automatic", false).commit()
+        val updater = AppUpdater(activity) { false }
+        try {
+            assertEquals(AppUpdateRoute.AUTOMATIC, updater.updateRoute)
+            updater.updateRoute = AppUpdateRoute.GH_PROXY
+            assertFalse(preferences.contains("last_attempt"))
+            assertFalse(preferences.getBoolean("automatic", true))
+
+            val recreated = AppUpdater(activity) { false }
+            try {
+                assertEquals(AppUpdateRoute.GH_PROXY, recreated.updateRoute)
+            } finally {
+                recreated.destroy()
+            }
+        } finally {
+            updater.destroy()
+            controller.pause().stop().destroy()
+        }
+    }
+
     @Test
     fun automaticCheckDoesNotOpenDialogOrStealBrowsingFocus() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()

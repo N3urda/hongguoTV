@@ -2393,6 +2393,19 @@ class MainActivity : Activity() {
                     })
                     lateinit var updates: TextView
                     updates = setting("检查更新") { updater.show(updates) }
+                    lateinit var route: TextView
+                    route = setting("更新线路  ·  ${updater.updateRoute.label}") {
+                        tvTools.choose(
+                            title = "更新线路",
+                            labels = AppUpdateRoute.entries.map { it.label },
+                            anchor = route,
+                            onChoice = { index ->
+                                updater.updateRoute = AppUpdateRoute.entries[index]
+                                route.text = "更新线路  ·  ${updater.updateRoute.label}"
+                            },
+                            selected = updater.updateRoute.ordinal,
+                        )
+                    }
                 }
                 1 -> {
                     lateinit var qualityButton: TextView
