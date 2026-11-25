@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
 import com.hongguotv.core.*
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
 import okhttp3.*
@@ -127,9 +128,20 @@ class InteractionFlowTest {
     }
 
     @Test fun cancelledHistoryLoadNeverReopensDialog() = historyFixture { account, show, _, _ ->
-        show()
-        val loading = ShadowAlertDialog.getLatestAlertDialog()
-        loading.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        val allowHistoryLoad = CountDownLatch(1)
+        val worker = get(account, "worker") as ExecutorService
+        // Keep the refresh pending until the dialog's posted dismissal has run.
+        val waitForCancellation = worker.submit { check(allowHistoryLoad.await(5, TimeUnit.SECONDS)) }
+        val loading = try {
+            show()
+            ShadowAlertDialog.getLatestAlertDialog().also { dialog ->
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+                ShadowLooper.idleMainLooper()
+            }
+        } finally {
+            allowHistoryLoad.countDown()
+        }
+        waitForCancellation.get(5, TimeUnit.SECONDS)
         flush(account)
         assertSame(loading, ShadowAlertDialog.getLatestAlertDialog())
         assertFalse(loading.isShowing)
