@@ -9,7 +9,7 @@ import org.junit.Test
 
 class SignerV5Test {
     @Test fun matchesVerifiedPlaybackWireContractWithSyntheticIdentity() {
-        val fixture = JSONObject(javaClass.getResource("/signing-v5-playback-312.json")!!.readText())
+        val fixture = JSONObject(javaClass.getResource("/signing-v5-playback-envelope.json")!!.readText())
         val values = fixture.getJSONObject("identity")
         val order = fixture.getJSONArray("queryOrder")
         val identity = (0 until order.length()).associate { order.getString(it).let { key -> key to values.getString(key) } }

@@ -96,8 +96,10 @@ live A/B checks. Replacing only field 21 in the otherwise successful native Medu
 with 377 returned 200/0B. Replacing only this field in the otherwise failing Kotlin
 Medusa with 312 returned models for both issue samples, including repeated calls.
 The first 16 bytes of F13 matched; its final four bytes and runtime metadata still
-differ, but transplanting those fields was unnecessary in these tests. No captured
-state or SDK output is used by the Kotlin implementation.
+differ, but transplanting those fields was unnecessary in these tests. A later
+measurement recovered playback with an expanded embedded device envelope; see
+[Medusa device envelope completeness](#medusa-device-envelope-completeness-2026-11-25).
+No captured state or SDK output is used by the Kotlin implementation.
 
 `MobilePlayback.signer` selects the verified current request profile, binds the
 exact gzip bytes and final query, and uses the existing bounded ticket selection.
@@ -120,6 +122,52 @@ that no signing SDK asset/library is packaged and uses the production player for
 three issue samples, the next episode, decoded progress, seek and pause/resume.
 The research record retains native and field-level A/B history separately from
 pure Kotlin playback acceptance. See [the evidence and limits](../docs/research/2026-11-23-issue102-nonweb-playback.md).
+
+### Medusa device envelope completeness (2026-11-25)
+
+On 0.16.14 (`ef328f3a`) the primary model POST returned HTTP 200 with a zero-byte
+body again, and the field-21 A/B above did not recover it. The remaining
+difference included the `env.device` sub-message: `medusaV5` emitted 14 fields.
+This change expands it to 36 populated fields through field number 38, based on
+observations of the official `v04.10.03` client.
+
+The added fields include register defaults rather than device readings
+(`7/8/10 = -888888`, `9 = 3`, `11 = "!notset!"`, `14 = 4`, `16..21` = six
+fixed32 zeros, `23 = 41`, `24 = 36`, `29 = -1`, `38 = 31`), plus the process
+metadata `28 = now`, the brand/type echoes `31/34/35/36`, and the `f16`/`f5`
+device token, which is the 24-character base64url process nonce prefixed with
+`A` to reach 25 characters. `env` additionally needs `1 = launch`,
+`2/3 = 247235599/247235596`, `5 = 7`, `7 = pid` and `13 = {ts, -2, 200}`; the
+counter block becomes `305/4/694367/1621072674`; and the outer and message flags
+become `4480000000000000` instead of eight zero bytes.
+
+A shape matrix held the gzip body, identity and timestamp fixed and varied only
+the query profile and endpoint. With the complete envelope, the current 74532
+profile returned 23934 and 23815 bytes from `preload/v1` and `player/v1`
+respectively, while the former 74332 profile returned zero bytes from both. The
+current request shape worked with the expanded envelope, so `MobilePlayback`
+is untouched by this fix.
+
+The repository's own `:core:run --args="--issue61"` probe then reported five
+renditions and decrypted MP4 bytes for consecutive episodes. On an Android 6
+`armeabi-v7a` TV (API 23), episode 1 produced a first HEVC frame in 1.9 s at
+1920x1080 with `OMX.amlogic.hevc.decoder.awesome`, and `↓`/`↑` switched episodes
+in 200-280 ms without leaving the app. `codec_type=1` on the fallback endpoint
+returns five `hvc1` renditions on this device, so the existing compatibility
+ladder already selects a hardware-decodable stream.
+
+These measurements establish that the expanded envelope works for the tested
+requests, not that every added field is individually necessary. A separate
+account-playback branch also rendered real guest/account video with the smaller
+envelope plus a 25-character F16 process token. Device identity, request profile,
+timestamp and episode can affect the result; an HTTP 200 empty body alone does
+not identify the rejected field.
+
+The synthetic wire fixture `signing-v5-playback-envelope.json` is independently
+decoded and resealed from the earlier public-input fixture with the reviewed
+envelope schema. It retains the original query/body digest and entropy and
+contains no captured account or device session. The existing independent digest
+and carrier vectors remain unchanged.
 
 ### Default playback acceptance
 

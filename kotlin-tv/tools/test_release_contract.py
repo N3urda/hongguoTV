@@ -22,7 +22,7 @@ class ReleaseContractTest(unittest.TestCase):
 
     def test_current_source_version(self):
         build = (ROOT / 'kotlin-tv/app/build.gradle.kts').read_text()
-        self.assertEqual(('0.16.14', 35, 21), r.source_version(build, 'kotlin-v0.16.14'))
+        self.assertEqual(('0.16.15', 36, 21), r.source_version(build, 'kotlin-v0.16.15'))
 
     def test_source_version(self):
         self.assertEqual(('0.10.0', 10, 21), r.source_version(self.build, self.tag))
