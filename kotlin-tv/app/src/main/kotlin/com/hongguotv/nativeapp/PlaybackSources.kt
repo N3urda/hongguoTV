@@ -35,6 +35,7 @@ internal fun playbackFailureSummary(problem: Throwable): String {
     if (causes.any { it is com.hongguotv.core.PlaybackDeviceRegistrationException })
         return "播放设备注册失败"
     causes.filterIsInstance<com.hongguotv.core.PlaybackAccountException>().firstOrNull()?.let { return it.message ?: "账号播放会话不可用" }
+    causes.filterIsInstance<com.hongguotv.core.AppSigningException>().firstOrNull()?.let { return it.message ?: "播放签名不可用" }
     causes.filterIsInstance<com.hongguotv.core.PlaybackCooldownException>().firstOrNull()?.let { return it.message ?: "播放服务暂时无响应" }
     if (causes.any { it is NoPlayableQualityException })
         return "本集低档为 VVC（bytevc2）编码，电视无法解码，可尝试其他集数"

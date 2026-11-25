@@ -2,3 +2,6 @@
 -dontwarn javax.naming.**
 -dontwarn javax.mail.**
 -dontwarn javax.activation.**
+-keep class com.bytedance.mobsec.metasec.ml.MS { *; }
+-keep class ms.bd.c.k3 { *; }
+-keep class ms.bd.c.q2 { *; }

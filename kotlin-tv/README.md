@@ -39,3 +39,5 @@ Kotlin + Android 原生 View + Media3，单 APK，默认 Android 6.0 / API 23；
 [第三方声明](NOTICE.md) · [GPL-3.0](LICENSE) · [原功能分支验证](UPSTREAM_SYNC.md)
 
 默认构建不带 FFmpeg；添加 `-PlegacyAudio=true` 构建 Android 5 兼容版。四种正式 APK（Android 5 通用、Android 6+ ARM32、ARM64 和通用） 与更新迁移见 [发布说明](AUTO_UPDATES.md)。
+
+可通过 `-PnativeSigningSdkDir=...` 本地构建 ARM64 原生 SDK 签名实验包；输入准备、支持范围与独立验收见 [原生签名构建](../docs/features/native-signing.md)。默认构建仍使用 Kotlin V5，不包含外部 SDK。

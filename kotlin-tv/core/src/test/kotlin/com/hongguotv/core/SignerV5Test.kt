@@ -9,7 +9,7 @@ import org.junit.Test
 
 class SignerV5Test {
     @Test fun matchesVerifiedPlaybackWireContractWithSyntheticIdentity() {
-        val fixture = JSONObject(javaClass.getResource("/signing-v5-playback-312.json")!!.readText())
+        val fixture = JSONObject(javaClass.getResource("/signing-v5-playback-f16.json")!!.readText())
         val values = fixture.getJSONObject("identity")
         val order = fixture.getJSONArray("queryOrder")
         val identity = (0 until order.length()).associate { order.getString(it).let { key -> key to values.getString(key) } }
@@ -20,6 +20,15 @@ class SignerV5Test {
         val expected = fixture.getJSONObject("headers")
         assertEquals(expected.keys().asSequence().toSet(), actual.headers.keys)
         expected.keys().forEach { assertEquals(it, expected.getString(it), actual.headers[it]) }
+        // The f16 repair changes only the encrypted envelope, not ticket selection,
+        // body digest, protocol version, or the other headers from the earlier vector.
+        val previous = JSONObject(javaClass.getResource("/signing-v5-playback-312.json")!!.readText())
+        assertEquals(previous.getString("url"), actual.url)
+        val previousHeaders = previous.getJSONObject("headers")
+        expected.keys().asSequence().filter { it != "x-medusa" }.forEach {
+            assertEquals(it, previousHeaders.getString(it), actual.headers[it])
+        }
+        assertNotEquals(previousHeaders.getString("x-medusa"), actual.headers["x-medusa"])
     }
 
     @Test fun matchesCarrierVectorsAcrossAllFourTimestampVariants() {

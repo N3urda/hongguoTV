@@ -1,4 +1,6 @@
 import java.util.Properties
+import java.security.MessageDigest
+import groovy.json.JsonSlurper
 
 plugins {
     id("com.android.application")
@@ -6,7 +8,34 @@ plugins {
 }
 
 val legacyAudio = providers.gradleProperty("legacyAudio").map { it.toBooleanStrict() }.getOrElse(false)
-if (!legacyAudio) layout.buildDirectory.set(file("build/platform"))
+val nativeSigningSdk = providers.gradleProperty("nativeSigningSdkDir").orNull?.let { file(it) }
+val nativeSigningEnabled = nativeSigningSdk != null
+check(!(nativeSigningEnabled && legacyAudio)) { "Native signing requires the ARM64 platform build" }
+val reviewedNativeSha256 = "c6831ab265a0cb76dacfa3b7041e9ea0f706490106a74e12f39058671cc14fe3"
+fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+    .joinToString("") { "%02x".format(it) }
+val verifyNativeSigningSdk = tasks.register("verifyNativeSigningSdk") {
+    nativeSigningSdk?.let { sdk ->
+        inputs.dir(sdk)
+        doLast {
+            val library = sdk.resolve("jniLibs/arm64-v8a/libmetasec_ml.so")
+            val metadata = sdk.resolve("assets/native-signing/sdk-metadata.json")
+            val manifest = JsonSlurper().parse(sdk.resolve("manifest.json")) as Map<*, *>
+            check(sha256(library) == reviewedNativeSha256 && manifest["sdkSha256"] == reviewedNativeSha256) {
+                "Native signing SDK SHA-256 mismatch"
+            }
+            check(sha256(metadata) == manifest["metadataSha256"]) { "Native signing metadata SHA-256 mismatch" }
+            val config = JsonSlurper().parse(metadata) as List<*>
+            check(config.size == 17 && config[0] == "8662" && config[12] == "5" && config[14] == "0" &&
+                listOf(6, 7, 8, 9, 13).all { config[it] == "" } &&
+                config[15] == emptyList<Any>() && config[16] == emptyList<Any>()) {
+                "Native signing metadata contains unsupported collection mode, identity or extension slots"
+            }
+        }
+    }
+}
+if (nativeSigningEnabled) layout.buildDirectory.set(file("build/native-signing"))
+else if (!legacyAudio) layout.buildDirectory.set(file("build/platform"))
 
 val signingProperties =
     Properties().apply {
@@ -27,6 +56,7 @@ android {
         minSdk = 21
         if (!legacyAudio) minSdk = 23
         buildConfigField("boolean", "LEGACY_AUDIO", legacyAudio.toString())
+        buildConfigField("boolean", "NATIVE_SIGNING_SDK_AVAILABLE", nativeSigningEnabled.toString())
         targetSdk = 36
         versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 35
         versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.16.14"
@@ -36,11 +66,18 @@ android {
         abi {
             isEnable = !legacyAudio
             reset()
-            include("armeabi-v7a", "arm64-v8a")
-            isUniversalApk = true
+            if (nativeSigningEnabled) include("arm64-v8a") else include("armeabi-v7a", "arm64-v8a")
+            isUniversalApk = !nativeSigningEnabled
         }
     }
     buildFeatures { buildConfig = true }
+    nativeSigningSdk?.let { sdk ->
+        sourceSets.getByName("main") {
+            jniLibs.srcDir(sdk.resolve("jniLibs"))
+            assets.srcDir(sdk.resolve("assets"))
+        }
+        packaging.jniLibs.useLegacyPackaging = true
+    }
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {
@@ -83,6 +120,8 @@ android {
     kotlinOptions { jvmTarget = "17" }
     packaging { resources.excludes += setOf("META-INF/versions/**", "META-INF/*.kotlin_module") }
 }
+
+tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(verifyNativeSigningSdk) }
 
 dependencies {
     testImplementation("junit:junit:4.13.2")

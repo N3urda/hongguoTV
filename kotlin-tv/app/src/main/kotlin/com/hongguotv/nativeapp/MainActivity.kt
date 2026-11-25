@@ -44,9 +44,20 @@ class MainActivity : Activity() {
         store = PreferencesPlaybackDeviceStore { getSharedPreferences("playback_device", MODE_PRIVATE) },
         deviceFactory = { androidPlaybackDevice(this) },
     )
+    private val selectedRequestSigner: AppRequestSigner by lazy {
+        if (BuildConfig.NATIVE_SIGNING_SDK_AVAILABLE) NativePlaybackSigner(applicationContext)
+        else KotlinAppRequestSigner()
+    }
+    // Activity.applicationContext is available only after attachment; defer SDK construction.
+    private val appRequestSigner = object : AppRequestSigner {
+        override val backend = if (BuildConfig.NATIVE_SIGNING_SDK_AVAILABLE) SigningBackend.NATIVE_SDK else SigningBackend.KOTLIN_V5
+        override fun sign(input: AppSigningInput) = selectedRequestSigner.sign(input)
+        override fun observeResponse(url: String, status: Int, headers: Map<String, List<String>>) =
+            selectedRequestSigner.observeResponse(url, status, headers)
+    }
     private val playbackContexts = PlaybackContextProvider(playbackSession, onAccountUpdated = { previous, next ->
         main.post { if (::cloudAccount.isInitialized) cloudAccount.updatePlaybackCredentials(previous, next) }
-    })
+    }, requestSigner = appRequestSigner)
     private val repository = ContentRepository(playbackSession = playbackSession, playbackContexts = playbackContexts)
     private val playbackPreferences get() = getSharedPreferences("playback_options", MODE_PRIVATE)
     private val phoneCatalog by lazy {
@@ -2317,7 +2328,8 @@ class MainActivity : Activity() {
     }
 
     private fun accountSettingsLabel() =
-        if (cloudAccount.signedIn) "当前已登录红果账户" else "当前未登录，可继续使用本机收藏与历史"
+        (if (cloudAccount.signedIn) "当前已登录红果账户" else "当前未登录，可继续使用本机收藏与历史") +
+            if (playbackContexts.accountPlaybackEnabled) "\n${playbackContexts.accountPlaybackStatus()}" else ""
 
     // 分类与内容并列显示；焦点位置仅在当前应用会话内记忆。
     private fun settings(parent: LinearLayout) {
@@ -2471,6 +2483,7 @@ class MainActivity : Activity() {
                     toggle("账号播放（实验）", playbackPreferences.getBoolean("account-playback", false)) { enabled ->
                         playbackPreferences.edit().putBoolean("account-playback", enabled).apply()
                         updatePlaybackContext()
+                        settingsAccountStatus?.text = accountSettingsLabel()
                     }
                     content.addView(text("默认关闭。开启后需使用短信重新登录；网页登录暂不支持。效果仍需实机验证。", 14f, muted))
                     setting("手机控制台 · 搜索 / 遥控 / 账户片单") { phoneConsole.show(null) }
@@ -3285,6 +3298,7 @@ class MainActivity : Activity() {
                         override fun onRenderedFirstFrame() {
                             if (active() && firstFrame) {
                                 firstFrame = false
+                                playbackContexts.recordFirstFrame(requestedId)
                                 playbackFirstFrame()
                                 android.util.Log.i(
                                     "HongguoTV",
@@ -4198,6 +4212,7 @@ class MainActivity : Activity() {
         val noPlayableQuality = causes.any { it is NoPlayableQualityException }
         val accountUnavailable = causes.any { it is PlaybackAccountException }
         val cooling = causes.any { it is PlaybackCooldownException }
+        val signingUnavailable = causes.any { it is AppSigningException }
         // The device claimed support it doesn't have (MediaCodecList over-reporting): learn the
         // runtime verdict and retry one tier lower automatically instead of surfacing the panel.
         if (
@@ -4251,14 +4266,14 @@ class MainActivity : Activity() {
             if (problem is PlaybackException)
                 problem.errorCode in 2000..2999 ||
                     problem.errorCode == PlaybackException.ERROR_CODE_TIMEOUT
-            else problem is java.io.IOException && !noPlayableQuality && !accountUnavailable && !cooling
+            else problem is java.io.IOException && !noPlayableQuality && !accountUnavailable && !cooling && !signingUnavailable
         // 按钮直接指向阶梯里真实存在的更低档：没有就明说，不再让用户循环点一个必然重放
         // 同一流（如本集仅剩电视解不了的 1080P）的按钮。
         val lowerTier =
-            if (noPlayableQuality || accountUnavailable || cooling) null else nextLowerQuality(attemptedQuality, currentTiers)
+            if (noPlayableQuality || accountUnavailable || cooling || signingUnavailable) null else nextLowerQuality(attemptedQuality, currentTiers)
         playbackText.text =
             when {
-                noPlayableQuality || accountUnavailable || cooling -> lastPlaybackFailure
+                noPlayableQuality || accountUnavailable || cooling || signingUnavailable -> lastPlaybackFailure
                 decoding && lowerTier != null -> "电视无法解码当前视频，可尝试更低清晰度。"
                 decoding -> "电视无法解码当前视频，本集没有更低清晰度可用。"
                 else -> "$lastPlaybackFailure · 可手动重试"

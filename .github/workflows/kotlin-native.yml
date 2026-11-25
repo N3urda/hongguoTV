@@ -13,7 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Check release metadata contract without publishing
-        run: python3 -m unittest discover -s kotlin-tv/tools -p 'test_*.py'
+        run: |
+          python3 -m unittest discover -s kotlin-tv/tools -p 'test_*.py'
+          python3 -m unittest discover -s scripts -p 'test_prepare_native_signing_sdk.py'
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin

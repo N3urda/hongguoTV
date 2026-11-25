@@ -114,6 +114,7 @@ class PlaybackContextProvider(
     val devices: PlaybackDeviceSession,
     private val clock: () -> Long = System::currentTimeMillis,
     private val onAccountUpdated: (AccountCredentials, AccountCredentials) -> Unit = { _, _ -> },
+    val requestSigner: AppRequestSigner = KotlinAppRequestSigner(),
 ) {
     @Volatile var accountPlaybackEnabled = false
         private set
@@ -146,11 +147,27 @@ class PlaybackContextProvider(
 
     @Synchronized fun close() { scope.cancel(); epoch++; current = null }
 
-    internal class Context(val profile: PlaybackDeviceSession.Profile, val accountSession: AppAccountSession?, val scope: RequestScope) {
+    internal class Context(val profile: PlaybackDeviceSession.Profile, val accountSession: AppAccountSession?, val scope: RequestScope,
+                           val requestSigner: AppRequestSigner) {
         val gate = PlaybackRequestGate()
+        private val models = linkedSetOf<String>()
+        private var decoded = false
+        @Volatile var authSent = "not-sent"
+        @Synchronized fun modelReady(id: String) { models += id; if (models.size > 16) models.remove(models.first()) }
+        @Synchronized fun firstFrame(id: String) { if (id in models) decoded = true }
+        @Synchronized fun validation() = if (decoded) "first-frame" else if (models.isNotEmpty()) "model-ready" else "unverified"
         fun transport(http: OkHttpClient): OkHttpClient = http.newBuilder()
             .cookieJar(CookieJar.NO_COOKIES).followRedirects(false).followSslRedirects(false)
-            .apply { accountSession?.let { interceptors().add(0, it) } }.build()
+            .apply {
+                interceptors().removeAll { it is AppAccountSession || it is AppSigningInterceptor }
+                accountSession?.let { interceptors().add(0, it) }
+                interceptors().add(if (accountSession == null) 0 else 1,
+                    AppSigningInterceptor(requestSigner, {
+                        AppSigningContext(profile.values, accountSession?.credentials?.signingGeneration())
+                    }, observed = { token, cookie ->
+                        authSent = when { token && cookie -> "token+cookie"; token -> "token"; cookie -> "cookie"; else -> "none" }
+                    }))
+            }.build()
     }
 
     internal fun snapshot(http: OkHttpClient, speculative: Boolean): Context {
@@ -180,7 +197,7 @@ class PlaybackContextProvider(
         }
         synchronized(this) {
             if (epoch != generation) throw java.io.InterruptedIOException("播放身份已变更")
-            return current ?: Context(profile, session, owner).also { current = it }
+            return current ?: Context(profile, session, owner, requestSigner).also { current = it }
         }
     }
 
@@ -194,7 +211,36 @@ class PlaybackContextProvider(
         devices.shouldDeferPlaybackPrefetch(clock())
 
     internal fun resolve(context: Context, id: String, action: () -> StreamLadder): StreamLadder =
-        run(context) { context.gate.run(id, clock, action) }
+        try {
+            run(context) { context.gate.run(id, clock, action) }.also {
+                synchronized(this) { if (current === context) context.modelReady(id) }
+            }
+        } catch (error: IOException) {
+            error.addSuppressed(PlaybackDiagnosticException(contextSummary(context)))
+            throw error
+        }
+
+    @Synchronized fun recordFirstFrame(id: String) { current?.firstFrame(id) }
+
+    @Synchronized fun diagnosticSummary(): String = current?.let(::contextSummary) ?: "media=unverified"
+
+    @Synchronized fun accountPlaybackStatus(): String {
+        if (!accountPlaybackEnabled) return "账号播放未开启"
+        if (!accountReady) return "正在恢复播放会话"
+        if (account == null) return "当前使用游客播放"
+        if (account?.source != "app") return "需通过短信登录建立 App 播放会话"
+        if (account?.token.isNullOrBlank() && account?.scopedCookies.isNullOrEmpty()) return "播放会话已失效，请重新登录"
+        return when (current?.validation()) {
+            "first-frame" -> "本次账号会话已成功播放"
+            "model-ready" -> "已取得播放信息，等待实际播放验证"
+            else -> "账号已登录，播放尚未验证"
+        }
+    }
+
+    private fun contextSummary(context: Context): String =
+        "mode=${if (context.accountSession == null) "guest" else "account"} " +
+            "signer=${if (context.requestSigner.backend == SigningBackend.NATIVE_SDK) "native" else "kotlin-v5"} " +
+            "auth=${context.authSent} media=${context.validation()}"
 }
 
 /** Coalesces overlapping model reads and shares backoff across episodes and manual retry buttons. */

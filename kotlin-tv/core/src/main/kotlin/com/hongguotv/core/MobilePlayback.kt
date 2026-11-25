@@ -34,6 +34,11 @@ internal object MobilePlayback {
             return MobileSignedRequest(request.url, request.headers + ("User-Agent" to PlaybackDeviceDefaults.userAgent(values)))
         }
     }
+    /** The context transport signs only after attaching the matching account headers. */
+    val deferredSigner = object : MobilePlaybackSigner {
+        override val currentAppProtocol = true
+        override fun sign(url: String, body: ByteArray, device: Map<String, String>) = MobileSignedRequest(url, emptyMap())
+    }
 
     private fun query(device: Map<String, String>, currentApp: Boolean = false): Map<String, String> =
         if (currentApp) PlaybackDeviceDefaults.values + device.filterKeys {
@@ -143,8 +148,8 @@ internal object MobilePlayback {
             val rows = PlaybackModels.renditions(model)
             if (rows.isEmpty() && currentApp) return@execute compatibleLadder(model,
                 http.newBuilder().cookieJar(CookieJar.NO_COOKIES).apply {
-                    interceptors().removeAll { it is AppAccountSession }
-                    networkInterceptors().removeAll { it is AppAccountSession }
+                    interceptors().removeAll { it is AppAccountSession || it is AppSigningInterceptor }
+                    networkInterceptors().removeAll { it is AppAccountSession || it is AppSigningInterceptor }
                 }.build())
             if (rows.isEmpty()) throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
             StreamLadder(rows)

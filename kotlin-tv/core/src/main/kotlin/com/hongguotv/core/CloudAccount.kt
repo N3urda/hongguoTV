@@ -22,6 +22,8 @@ data class AccountCredentials(
     val token: String = "",
     /** Serialized cookie metadata preserves domain, path, secure and expiry. */
     val scopedCookies: List<String> = emptyList(),
+    /** Opaque local login generation, retained across server Token/Cookie refresh. */
+    val signingSessionId: String = "",
 ) {
     fun toJson() =
         JSONObject()
@@ -31,6 +33,7 @@ data class AccountCredentials(
             .put("device", JSONObject(device))
             .put("source", source).put("appId", appId).put("token", token)
             .put("scopedCookies", JSONArray(scopedCookies))
+            .put("signingSessionId", signingSessionId)
             .toString()
 
     override fun toString() = "AccountCredentials([redacted])"
@@ -48,6 +51,7 @@ data class AccountCredentials(
                 json.optJSONArray("scopedCookies")?.let { cookies ->
                     (0 until cookies.length()).map { cookies.getString(it) }
                 }.orEmpty(),
+                json.optString("signingSessionId"),
             )
         }
     }
@@ -116,6 +120,7 @@ data class CloudReservation(
 
 class CloudAccountClient(
     private val http: OkHttpClient,
+    private val requestSigner: AppRequestSigner = KotlinAppRequestSigner(),
     private val onSessionUpdated: (AccountCredentials, AccountCredentials) -> Unit = { _, _ -> },
 ) {
     fun registerDevice(): DeviceRegister.Registered? {
@@ -160,13 +165,14 @@ class CloudAccountClient(
                     .apply { java.util.zip.GZIPOutputStream(this).use { it.write(body) } }
                     .toByteArray()
             else body
-        val signed =
-            Signer(device = device, mobileV5 = appSession)
+        val signed = if (appSession) null else
+            Signer(device = device)
                 .sign("https://${if (appSession) "reading.snssdk.com" else "api5-normal-sinfonlinea.fqnovel.com"}$path", device + params, wireBody)
-        val request = Request.Builder().url(signed.url)
+        val request = Request.Builder().url(signed?.url ?: appUnsignedUrl("https://reading.snssdk.com$path", device, params))
         if (!appSession) request.header("Cookie", credentials.cookie)
-        signed.headers.forEach { (k, v) -> request.header(k, v) }
+        signed?.headers?.forEach { (k, v) -> request.header(k, v) }
         if (appSession) request.header("User-Agent", PlaybackDeviceDefaults.userAgent(device))
+            .header("Accept", "application/json; charset=utf-8")
         if (wireBody != null)
             request.post(wireBody.toRequestBody("application/json; charset=utf-8".toMediaType()))
         if (gzip) request.header("Content-Encoding", "gzip")
@@ -181,6 +187,9 @@ class CloudAccountClient(
                     onSessionUpdated(next)
                     this@CloudAccountClient.onSessionUpdated(previous, next)
                 })
+                interceptors().add(1, AppSigningInterceptor(requestSigner,
+                    { AppSigningContext(device, credentials.signingGeneration()) },
+                    allowed = { it.host == "reading.snssdk.com" && it.encodedPath.startsWith("/reading/") }))
             }
         }.build()
         return transport.newCall(request.build()).execute().use { response ->

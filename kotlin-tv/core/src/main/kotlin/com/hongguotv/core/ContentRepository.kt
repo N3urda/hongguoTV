@@ -881,6 +881,7 @@ constructor(
         transport: OkHttpClient = http,
         strict: Boolean = false,
         mobileV5: Boolean = false,
+        signing: MobilePlaybackSigner = MobilePlayback.signer,
     ): JSONObject? {
         val extra = mapOf(
             "video_id" to id, "video_id_type" to "0", "device_level" to "1",
@@ -890,7 +891,7 @@ constructor(
         )
         // One preferred request; the legacy path retains the bounded cross-host retry budget.
         for (host in listOf(PlayRetryPlan.hosts.first())) {
-            val request = if (mobileV5) MobilePlayback.videoTabRequest(id, identity.values, host, clock())
+            val request = if (mobileV5) MobilePlayback.videoTabRequest(id, identity.values, host, clock(), signing)
             else playbackRequest(
                 "https://$host/reading/bookapi/video_tab/multi_video_model/v1/",
                 identity, extra,
@@ -984,9 +985,10 @@ constructor(
             val profile = context?.profile ?: if (speculative) playbackSession.existing()
                 ?: throw IOException("播放设备尚未就绪") else playbackSession.profile(http)
             val modelHttp = context?.transport(http) ?: http
+            val signing = if (context == null) MobilePlayback.signer else MobilePlayback.deferredSigner
             val read = read@{
                 try {
-                    MobilePlayback.ladder(id, profile.values, modelHttp, MobilePlayback.signer, clock(), accountTransport = context != null)
+                    MobilePlayback.ladder(id, profile.values, modelHttp, signing, clock(), accountTransport = context != null)
                         .also { profile.recordPlayablePrimaryModel() }
                 } catch (empty: EmptyPlaybackResponseException) {
                     profile.recordEmptyPrimaryModel(clock())
@@ -996,7 +998,7 @@ constructor(
                     val transport = context?.transport(http) ?: http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
                     val trace = PlaybackRequestTrace()
                     val entry = try {
-                        tabVideoModel(id, profile, trace, transport, strict = true, mobileV5 = true)
+                        tabVideoModel(id, profile, trace, transport, strict = true, mobileV5 = true, signing = signing)
                     } catch (_: EmptyPlaybackResponseException) {
                         throw EmptyPlaybackResponseException(empty.detail, allPlaybackModelsEmpty = true).apply {
                             addSuppressed(empty)
@@ -1026,7 +1028,7 @@ constructor(
                     val alternateHost = PlayRetryPlan.host(0)
                     try {
                         MobilePlayback.ladder(
-                            id, profile.values, modelHttp, MobilePlayback.signer, clock(), accountTransport = context != null, host = alternateHost,
+                            id, profile.values, modelHttp, signing, clock(), accountTransport = context != null, host = alternateHost,
                         )
                     } catch (alternate: IOException) {
                         RequestScope.ensureActive()

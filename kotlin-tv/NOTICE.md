@@ -91,3 +91,7 @@ of this software.
 https://github.com/qq294716498/HongguoTV-Phone-TV-NoAds/tree/8eafa3908e9191c0a5ae186d5beff11e3a971f3c/native/core 。保留原 MIT/GPL 声明与许可；未引入该项目的应用界面或账号数据。
 
 `core/src/test/resources/player-signing.json` 使用该固定 Go 实现、固定时间和 nonce 独立生成，用于逐字节校验，不含真实设备身份、账号或媒体地址。正式播放优先使用 `/novel/player/video_model/v1/` 和完整 Gorgon/Argus/Ladon，旧批量签名仅保留为有界兼容回退；前述历史“无签名播放请求”说明不再描述当前主路径。
+
+2026-11-25：V5 f16 的 `A` + 24 字符进程标识格式参考 OOIUa/hongguo-android 的 GPL-3.0 提交 [c0821c6](https://github.com/OOIUa/hongguo-android/commit/c0821c6fd15dc478d6d4cb11cdad0090ce645ef6)。本仓库固定设备分项实验只采用补入 f16 的最小修复，未复制该提交的环境、flags 或激活流程。`signing-v5-playback-f16.json` 为隔离候选生成的合成回归向量，不是独立 SDK oracle；保留原有 SDK 摘要与 carrier 向量。当前生产取流路径以 `MobilePlayback` 为准，以上关于单集优先的段落是历史记录。
+
+2026-11-25：可选原生签名适配器的 JNI 名称、调用约定与生命周期顺序依据官方 `com.phoenix.read` 7.4.5.32 APK 的本机研究，详见 [研究记录](../docs/research/2026-11-25-official-device-session-signing.md)。仓库提供自行编写的 ABI 适配与构建脚本，不包含官方 SDK 二进制或完整初始化配置；默认构建也不包含这些文件。显式原生构建所需的外部 SDK 不属于本仓库 GPL 源码，相关权利仍归其原权利人。

@@ -16,13 +16,26 @@ import com.hongguotv.core.Detail
 /** Explicit real-network acceptance: uses the Activity's production player, never a sample URL. */
 class LivePlaybackInstrumentation : Instrumentation() {
     private var issue102Samples = false
+    private var nativeSigningProbe = false
+    private var nativePlaybackSamples = false
+    private var nativePlaybackCompare = false
+    private var nativeSigningCapture = false
+    private var nativePlaybackSettle = false
     override fun onCreate(arguments: Bundle?) {
         issue102Samples = arguments?.getString("issue102Samples") == "true"
+        nativeSigningProbe = arguments?.getString("nativeSigningProbe") == "true"
+        nativePlaybackSamples = arguments?.getString("nativePlaybackSamples") == "true"
+        nativePlaybackCompare = arguments?.getString("nativePlaybackCompare") == "true"
+        nativeSigningCapture = arguments?.getString("nativeSigningCapture") == "true"
+        nativePlaybackSettle = arguments?.getString("nativePlaybackSettle") == "true"
         super.onCreate(arguments); start()
     }
     private fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
 
     override fun onStart() {
+        if (nativeSigningProbe || nativeSigningCapture) { NativeSigningAcceptance.run(this, nativeSigningCapture); return }
+        if (nativePlaybackCompare || nativePlaybackSettle) { NativeSigningAcceptance.compare(this, nativePlaybackSettle); return }
+        if (nativePlaybackSamples) { Issue102PlaybackAcceptance.run(this, native = true); return }
         if (issue102Samples) { Issue102PlaybackAcceptance.run(this); return }
         val result = Bundle()
         var activity: MainActivity? = null

@@ -1,0 +1,30 @@
+{
+  "headers": {
+    "x-medusa": "BdJJay2ZBqFJp0QoP2fnRyK/hT0AAAABhYogAACEgcwGWPs2ZRwS5Q0uQKcNPoZ+dDFfvv3AafLGcMGtzfgbFtOjTPp9Rs5TFs6KmW0R5rXnm8F5LhM6I2bxNax7tIeYT2QaF+DgICciAsl1tFC5AWJxKoWvSMbgerz3qM9rQo02AWBYO0GPW3+zr49Pl7DNINhA182Bl5vXifM/Oen3s+zVLHfSa9Q6XVu8aE3zY1jlziCFJjHSBOfZv0jlYHeFXzkrN/4A13DY+KaQQPKuYYPOaCxDsiqoviL4pp/2fAp+KEB/2C6x+Vor5WlHDnQ3NHJY2svpgeEtPMNZiu3S+0x6aN1ZgBy2kwzdnMOjfyXVVcukPo2kyHeJkBRbTu1kT66URMfIlZ6Jv655jl0VWMzySM9zYKGl3l++Rtqc7oZbMcXYU1P8WNQ+f7ZZANXKhQRYKjrB+21MRQkPp5lSXKr7KLvWl8wAD3jZSNo7C4Cs3p71giIsrEpPvrxQGSG3dotEtmNw+shJa9EURv2/cgcXY0OdeJDj9gNRyFDxNNUv0KUcNYnB2E7CcJyKfDNIzpQUXR8zD+nYcjEiAIkyf+3ZD1LxQ0rL8/ssbpW1////f////38AgA==",
+    "x-helios": "AAAAgOldh6XkgPCcSOD+1hk6geYVwA9oX+NbtYeS3DNddvJe",
+    "x-khronos": "1800000000",
+    "x-ss-stub": "8311EA30C1C81ED466F1C2D5BB128C5F",
+    "Content-Type": "application/json; charset=utf-8"
+  },
+  "queryOrder": [
+    "device_id",
+    "iid",
+    "cdid",
+    "version_name",
+    "channel",
+    "os_version",
+    "device_type"
+  ],
+  "provenance": "Synthetic regression vector: F16OnlySigner isolated candidate, 2026-11-25 fixed-device A/B. Adds only f16=AsyntheticAAAAAAAAAAAAAAA to the prior f21=312 envelope. This new complete-header vector is not an independent SDK oracle; existing carrier/digest oracle vectors remain unchanged. No real identity, account, or media URL.",
+  "identity": {
+    "cdid": "synthetic",
+    "version_name": "7.4.5.32",
+    "device_id": "123",
+    "iid": "456",
+    "os_version": "16",
+    "channel": "update_64",
+    "device_type": "TestTV"
+  },
+  "body": "H4sIAAECAwQ=",
+  "url": "https://example.test/model?device_id=123&iid=456&cdid=synthetic&version_name=7.4.5.32&channel=update_64&os_version=16&device_type=TestTV&_rticket=1800000000003"
+}

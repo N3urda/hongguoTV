@@ -370,6 +370,15 @@ internal class Signer(
         return (prefix + byteArrayOf(r.toByte(), (r shr 8).toByte(), 0, 1) + encrypted).base64()
     }
 
+    // Generate V5 f16 with this signer's process nonce; the native SDK's complete
+    // field semantics are not yet established. Do not use an account token or
+    // device_register's device_token here. A fixed-device A/B on 2026-11-25
+    // returned empty models without it (or with a bare 24-character nonce), and
+    // playable models with A + 24 characters. Keep the existing f5 and envelope.
+    // Format reference: OOIUa/hongguo-android c0821c6 (GPL-3.0-only).
+    private val v5ProcessToken = if (processNonce.length == 25 && processNonce.startsWith("A"))
+        processNonce else "A" + processNonce.take(24).padEnd(24, 'A')
+
     private fun medusaV5(url: String, body: ByteArray?, ts: Int, who: Map<String, String>): String {
         val query = sm3(url.substringAfter('?').toByteArray(Charsets.UTF_8))
         val f13 = hashF13(query, body?.let { digest("MD5", it) } ?: ByteArray(16), ts)
@@ -390,6 +399,7 @@ internal class Signer(
             f(7, version), f(8, "v04.10.03-ml-android"), f(9, 0x040a0300, "sint"),
             f(10, flags), f(12, ts, "sint"), f(13, f13), f(14, query.copyOf(6)),
             f(15, proto(f(1, 1, "sint"), f(2, 1, "sint"), f(3, 1, "sint"), f(5, 1, "sint"))),
+            f(16, v5ProcessToken),
             f(17, ts, "sint"), f(20, "none"), f(21, V5Constants.field21, "sint"), f(23, env),
             f(24, """{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}"""),
         )

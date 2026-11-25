@@ -134,7 +134,7 @@ class AccountController(
             .followRedirects(false)
             .followSslRedirects(false)
             .build()
-    private val client = CloudAccountClient(http) { previous, next ->
+    private val client = CloudAccountClient(http, playbackContexts?.requestSigner ?: KotlinAppRequestSigner()) { previous, next ->
         main.post { updatePlaybackCredentials(previous, next) }
     }
     // passport 短信登录沿用默认重定向策略（与网页登录的 no-redirect 客户端分开）。
@@ -718,7 +718,8 @@ class AccountController(
                         hint.text = safeError(it)
                         return@setOnClickListener
                     }
-            val fresh = PhoneLogin(phoneHttp, phoneRetryGate, playbackContexts?.takeIf { it.accountPlaybackEnabled }?.devices)
+            val fresh = PhoneLogin(phoneHttp, phoneRetryGate, playbackContexts?.takeIf { it.accountPlaybackEnabled }?.devices,
+                playbackContexts?.requestSigner ?: KotlinAppRequestSigner())
             login = null
             requestInFlight = true
             phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
