@@ -98,10 +98,13 @@ internal object MobilePlayback {
         val url = endpoint
             .toHttpUrl().newBuilder().apply { query.forEach { (k,v) -> addQueryParameter(k,v) } }.build()
         // TV uses platform decoders, not the official app's bytevc2 decoder.
-        // Level 3 can return only bytevc2; level 1 negotiates compatible renditions.
+        // Keep the older protocol's level 1; the current App protocol uses the verified tier below.
         val payload = JSONObject("""{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]},"dr_scene":"player"}""")
         if (currentApp) {
-            payload.getJSONObject("biz_param").put("device_level", 2)
+            // 2026-11-26: same-device A/B on three episodes returned HEVC at level 4.
+            // The bytevc2-only sample at level 2 no longer needed an extra VOD request.
+            // Keep platform 1024: platform 3 is rejected by this preload endpoint.
+            payload.getJSONObject("biz_param").put("device_level", 4)
             payload.put("dr_scene", "preload")
         }
         val output = ByteArrayOutputStream()

@@ -16,8 +16,8 @@ PACKAGE = 'com.hongguotv.nativeapp'
 CERTIFICATE = '3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98'
 ROOT = Path(__file__).resolve().parents[1]
 NOTES = (
-    '- 优先使用支持片源的硬件解码器。硬解不支持时可回退到 Android 系统软解。「设置 → 播放」新增默认关闭的「强制软件解码」，适用于正式播放和随心看（#125、#126）。\n'
-    '- 「设置 → 检查更新」新增「更新线路」。自动线路依次尝试 GitHub 直连、ghfast.top 和 gh-proxy.org，也可手动固定一条（#124、#127）。\n'
+    '- 优化部分剧集的取流能力参数，优先取得电视可解码的 HEVC 清晰度档位，减少额外的视频模型协商；保留现有编码协商和空响应恢复。\n'
+    '- 本次改动不要求手机号登录；继续使用注册游客设备及现有纯 Kotlin V5 签名。\n'
     '- 提供 Android 5 兼容版、Android 6+ 通用版及 ARM32 / ARM64 专用版四种安装包。'
 )
 
