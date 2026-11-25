@@ -415,7 +415,12 @@ internal fun shouldSelfHealTrial(
         attempts < TRIAL_SELF_HEAL_LIMIT
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-internal class Media3TrialPlayback(context: Context, private val speed: Float = 1f, private val frame: VideoFrameMode = VideoFrameMode.FIT) : TrialPlayback {
+internal class Media3TrialPlayback(
+    context: Context,
+    private val speed: Float = 1f,
+    private val frame: VideoFrameMode = VideoFrameMode.FIT,
+    forceSoftwareDecoding: () -> Boolean = { false },
+) : TrialPlayback {
     private var currentIndex = 0
     private var preloading = false
     private val preloadBuilder =
@@ -436,7 +441,7 @@ internal class Media3TrialPlayback(context: Context, private val speed: Float = 
                         }
                 },
             )
-            .setRenderersFactory(playbackRenderers(context))
+            .setRenderersFactory(playbackRenderers(context, forceSoftwareDecoding))
             .setLoadControl(
                 DefaultLoadControl.Builder()
                     .setBufferDurationsMs(2500, 10000, 500, 1000)
