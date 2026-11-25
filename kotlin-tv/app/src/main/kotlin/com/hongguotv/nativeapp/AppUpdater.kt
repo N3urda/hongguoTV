@@ -21,8 +21,9 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.FileProvider
 import com.hongguotv.core.AppUpdate
-import com.hongguotv.core.AppUpdateSource
 import com.hongguotv.core.AppUpdateRepository
+import com.hongguotv.core.AppUpdateRoute
+import com.hongguotv.core.AppUpdateSource
 import com.hongguotv.core.UpdateFiles
 import java.io.File
 import java.io.IOException
@@ -32,12 +33,13 @@ import java.util.concurrent.Future
 /** Foreground-only updater: no background service, and no networking or prompts during playback. */
 class AppUpdater(
     private val activity: Activity,
-    private val repository: AppUpdateSource = AppUpdateRepository(android.os.Build.VERSION.SDK_INT),
+    repository: AppUpdateSource? = null,
     private val idle: () -> Boolean,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val preferences = activity.getSharedPreferences("app_updates", Activity.MODE_PRIVATE)
+    private val repository = repository ?: AppUpdateRepository(Build.VERSION.SDK_INT) { updateRoute }
     private val apk = File(activity.cacheDir, "updates/update.apk")
     private var task: Future<*>? = null
     private var generation = 0
@@ -56,6 +58,19 @@ class AppUpdater(
     private var retryAfter = 0L
     private val auto
         get() = preferences.getBoolean("automatic", !BuildConfig.DEBUG)
+
+    internal var updateRoute: AppUpdateRoute
+        get() = AppUpdateRoute.fromPreference(preferences.all["route"] as? String)
+        set(value) {
+            if (value == updateRoute) return
+            interrupt()
+            preferences.edit().putString("route", value.name).remove("last_attempt").apply()
+            available = null
+            ready = false
+            retryAfter = 0L
+            updateStatus("已切换至 ${value.label}，可重新检查更新")
+            renderActions()
+        }
 
     private val poll =
         object : Runnable {
