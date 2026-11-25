@@ -10,13 +10,20 @@ import org.json.JSONObject
 
 /**
  * 手机号 + 验证码登录（大陆与境外号码都收）。
- * * [send]：沿用 passport 设备参数发送验证码，不进行匿名设备注册。
+ * * [send]：默认保留兼容设备参数；实验模式先取得持久注册身份，再发送验证码。
  * * [verify]：用**同一台设备**验码，平台在 `Set-Cookie` 里下发 `sessionid`。 换到的凭据带上这台设备的 `device_id` /
  *   `iid`（[AccountCredentials.device]）， 之后账号接口的签名都用它，会话与设备保持一致。
  *
  * 一个实例对应一次登录；调用方应在重新打开登录面板时复用 [RetryGate]，避免连续重试。
  */
-class PhoneLogin(private val http: OkHttpClient, private val retryGate: RetryGate = RetryGate()) {
+class PhoneLogin(
+    private val http: OkHttpClient,
+    private val retryGate: RetryGate = RetryGate(),
+    private val deviceSession: PlaybackDeviceSession? = null,
+) {
+    private var loginDevice: Map<String, String>? = null
+    private var scopedCookies = emptyList<String>()
+    private var accountToken = ""
     var deviceId = ""
     var installId = ""
     var mobile = ""
@@ -65,10 +72,13 @@ class PhoneLogin(private val http: OkHttpClient, private val retryGate: RetryGat
 
     fun send(mobile: String): Sent {
         retryGate.check()
-        // 官方 App 的短信登录不注册新设备：它直接用设备表里的固定 device_id/iid，且不携带
-        // 注册 cookie。实测新注册设备 + query 带 device_id 会被 passport 判 `2046`。
-        deviceId = VendorConstants.device.getValue("device_id")
-        installId = VendorConstants.device.getValue("iid")
+        // Keep the existing compatibility login when the experiment is off. The opt-in path
+        // registers once and retains that exact context through send, verify and playback.
+        loginDevice = deviceSession?.deviceValues(http)
+        deviceId = (loginDevice ?: VendorConstants.device).getValue("device_id")
+        installId = (loginDevice ?: VendorConstants.device).getValue("iid")
+        scopedCookies = emptyList()
+        accountToken = ""
         cookies.clear()
         ticket = ""
         expired = false
@@ -96,9 +106,13 @@ class PhoneLogin(private val http: OkHttpClient, private val retryGate: RetryGat
         var params =
             mapOf("mobile" to mobile, "code" to code, "type" to type, "mobile_ticket" to ticket)
         val failures = mutableListOf<Failure>()
+        var verified = false
         for ((path, form) in VERIFY_ATTEMPTS) {
             val reply = call(path, params, form)
-            if (cookies.containsKey("sessionid")) break
+            if (cookies.containsKey("sessionid") && (loginDevice == null || reply.optString("message") == "success")) {
+                verified = true
+                break
+            }
             val data = reply.optJSONObject("data")
             // 平台会在每次尝试后下发新的 mobile_ticket，后续端点沿用最新值。
             data?.optString("mobile_ticket")?.takeIf(String::isNotBlank)?.let { fresh ->
@@ -130,7 +144,7 @@ class PhoneLogin(private val http: OkHttpClient, private val retryGate: RetryGat
                     )
             }
         }
-        if (!cookies.containsKey("sessionid")) {
+        if (!verified) {
             throw failures.firstOrNull()
                 ?: Failure("登录没有成功，平台没有下发登录态")
         }
@@ -139,44 +153,60 @@ class PhoneLogin(private val http: OkHttpClient, private val retryGate: RetryGat
             .copy(
                 deviceId = deviceId,
                 installId = installId,
-                device = mapOf("device_id" to deviceId, "iid" to installId),
+                device = loginDevice ?: mapOf("device_id" to deviceId, "iid" to installId),
+                source = if (loginDevice != null) "app" else "legacy",
+                appId = if (loginDevice != null) "8662" else "",
+                token = accountToken,
+                scopedCookies = scopedCookies,
             )
     }
 
     /** 带这台设备的身份签名后发一次 passport 请求；`Set-Cookie` 并进 [cookies]，返回 JSON（非 JSON 时包成 `raw`）。 */
     private fun call(path: String, params: Map<String, String>, form: Boolean): JSONObject {
         val device =
-            LinkedHashMap(VendorConstants.device).apply {
+            LinkedHashMap(loginDevice ?: VendorConstants.device).apply {
                 put("device_id", deviceId)
                 put("iid", installId)
-                for (key in
+                if (loginDevice == null) for (key in
                     listOf(
                         "version_code",
                         "manifest_version_code",
                         "update_version_code",
                         "pv_player",
                     )) put(key, "73932")
-                put("version_name", "7.3.9.32")
+                if (loginDevice == null) put("version_name", "7.3.9.32")
             }
         val passport =
             mapOf("aid" to "8662", "app_name" to "novelread", "device_platform" to "android") +
                 params.filterValues { it.isNotBlank() }
         val payload = if (form) Signer.encode(passport).toByteArray() else null
-        // 官方 App 的 passport 请求把 device_id/iid 从 query 里去掉（设备靠 Cookie 识别），
-        // 带着它们发会被判异常设备；签名器内部仍使用完整设备表。
+        // 保留此前 passport 实测可用的 query 形态：省略 device_id/iid，
+        // 签名器内部仍使用本次登录的完整设备表；实验模式的服务端接受情况需实机验证。
         val queryDevice = device.filterKeys { it != "device_id" && it != "iid" }
         val signed =
-            Signer(device = device)
+            Signer(device = device, mobileV5 = loginDevice != null)
                 .sign(PASSPORT + path, if (form) queryDevice else queryDevice + passport, payload)
         val request = Request.Builder().url(signed.url)
         signed.headers.forEach { (k, v) -> request.header(k, v) }
-        // 刻意不回发 Cookie：实测把 send_code 下发的 cookie 带到 sms_login 会被 passport
+        if (loginDevice != null) {
+            val url = request.build().url
+            val matching = scopedCookies.mapNotNull(AccountCookies::decode)
+                .filter { it.matches(url) && it.expiresAt > System.currentTimeMillis() }
+            if (matching.isNotEmpty()) request.header("Cookie", matching.joinToString("; ") { "${it.name}=${it.value}" })
+            if (accountToken.isNotBlank()) request.header("X-Tt-Token", accountToken)
+            request.header("User-Agent", PlaybackDeviceDefaults.userAgent(device))
+        }
+        // 旧兼容路径刻意不回发 Cookie：实测把 send_code 下发的 cookie 带到 sms_login 会被 passport
         // 判 `2046`，而不带 cookie 时同一请求回 `1202 验证码错误`。Set-Cookie 仍会解析并保留，
         // 只用于判断是否已经拿到 sessionid。
         if (payload != null)
             request.post(payload.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
         val reply =
-            http.newCall(request.build()).execute().use { response ->
+            http.newBuilder().cookieJar(okhttp3.CookieJar.NO_COOKIES)
+                .followRedirects(false).followSslRedirects(false).build()
+                .newCall(request.build()).execute().use { response ->
+                scopedCookies = AccountCookies.merge(scopedCookies, okhttp3.Cookie.parseAll(response.request.url, response.headers), System.currentTimeMillis())
+                response.header("X-Tt-Token")?.let { accountToken = it }
                 response.headers("Set-Cookie").forEach { line ->
                     val pair = line.substringBefore(';')
                     val name = pair.substringBefore('=').trim()

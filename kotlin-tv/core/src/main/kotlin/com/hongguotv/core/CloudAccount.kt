@@ -17,6 +17,11 @@ data class AccountCredentials(
     val deviceId: String = "",
     val installId: String = "",
     val device: Map<String, String> = emptyMap(),
+    val source: String = "legacy",
+    val appId: String = "",
+    val token: String = "",
+    /** Serialized cookie metadata preserves domain, path, secure and expiry. */
+    val scopedCookies: List<String> = emptyList(),
 ) {
     fun toJson() =
         JSONObject()
@@ -24,6 +29,8 @@ data class AccountCredentials(
             .put("deviceId", deviceId)
             .put("installId", installId)
             .put("device", JSONObject(device))
+            .put("source", source).put("appId", appId).put("token", token)
+            .put("scopedCookies", JSONArray(scopedCookies))
             .toString()
 
     override fun toString() = "AccountCredentials([redacted])"
@@ -37,6 +44,10 @@ data class AccountCredentials(
                 json.str("deviceId"),
                 json.str("installId"),
                 device.keys().asSequence().associateWith { device.getString(it) },
+                json.optString("source", "legacy"), json.optString("appId"), json.optString("token"),
+                json.optJSONArray("scopedCookies")?.let { cookies ->
+                    (0 until cookies.length()).map { cookies.getString(it) }
+                }.orEmpty(),
             )
         }
     }
@@ -103,7 +114,10 @@ data class CloudReservation(
     val publishText: String = "",
 )
 
-class CloudAccountClient(private val http: OkHttpClient) {
+class CloudAccountClient(
+    private val http: OkHttpClient,
+    private val onSessionUpdated: (AccountCredentials, AccountCredentials) -> Unit = { _, _ -> },
+) {
     fun registerDevice(): DeviceRegister.Registered? {
         val body = DeviceRegister.payload(VendorConstants.device)
         val request = Request.Builder().url(DeviceRegister.url())
@@ -122,20 +136,22 @@ class CloudAccountClient(private val http: OkHttpClient) {
         params: Map<String, String> = emptyMap(),
         body: ByteArray? = null,
         gzip: Boolean = false,
+        onSessionUpdated: (AccountCredentials) -> Unit = {},
     ): JSONObject {
+        val appSession = credentials.source == "app" && credentials.appId == "8662"
         val device =
             VendorConstants.device.toMutableMap().apply {
                 putAll(credentials.device)
                 put("device_id", credentials.deviceId)
                 put("iid", credentials.installId)
-                for (key in
+                if (!appSession) for (key in
                     listOf(
                         "version_code",
                         "manifest_version_code",
                         "update_version_code",
                         "pv_player",
                     )) put(key, if (body != null) "73932" else "72232")
-                put("version_name", if (body != null) "7.3.9.32" else "7.2.2.32")
+                if (!appSession) put("version_name", if (body != null) "7.3.9.32" else "7.2.2.32")
             }
         val wireBody =
             if (gzip && body != null)
@@ -145,17 +161,28 @@ class CloudAccountClient(private val http: OkHttpClient) {
                     .toByteArray()
             else body
         val signed =
-            Signer(device = device)
-                .sign("https://api5-normal-sinfonlinea.fqnovel.com$path", device + params, wireBody)
-        val request = Request.Builder().url(signed.url).header("Cookie", credentials.cookie)
+            Signer(device = device, mobileV5 = appSession)
+                .sign("https://${if (appSession) "reading.snssdk.com" else "api5-normal-sinfonlinea.fqnovel.com"}$path", device + params, wireBody)
+        val request = Request.Builder().url(signed.url)
+        if (!appSession) request.header("Cookie", credentials.cookie)
         signed.headers.forEach { (k, v) -> request.header(k, v) }
+        if (appSession) request.header("User-Agent", PlaybackDeviceDefaults.userAgent(device))
         if (wireBody != null)
             request.post(wireBody.toRequestBody("application/json; charset=utf-8".toMediaType()))
         if (gzip) request.header("Content-Encoding", "gzip")
-        val transport =
-            if (path == "/reading/bookapi/bookshelf/video/update/v1/")
-                http.newBuilder().retryOnConnectionFailure(false).build()
-            else http
+        val transport = http.newBuilder().apply {
+            if (path == "/reading/bookapi/bookshelf/video/update/v1/") retryOnConnectionFailure(false)
+            if (appSession) {
+                cookieJar(okhttp3.CookieJar.NO_COOKIES)
+                followRedirects(false); followSslRedirects(false)
+                interceptors().add(0, AppAccountSession(credentials, System::currentTimeMillis,
+                    allowed = { url -> url.scheme == "https" && url.port == 443 &&
+                        url.host == "reading.snssdk.com" && url.encodedPath.startsWith("/reading/") }) { previous, next ->
+                    onSessionUpdated(next)
+                    this@CloudAccountClient.onSessionUpdated(previous, next)
+                })
+            }
+        }.build()
         return transport.newCall(request.build()).execute().use { response ->
             val text = try {
                 cloudResponse(response)
@@ -176,9 +203,9 @@ class CloudAccountClient(private val http: OkHttpClient) {
         }
     }
 
-    fun profile(credentials: AccountCredentials): CloudProfile {
+    fun profile(credentials: AccountCredentials, onSessionUpdated: (AccountCredentials) -> Unit = {}): CloudProfile {
         val data =
-            json(credentials, "/reading/user/info/v1/").optJSONObject("data")
+            json(credentials, "/reading/user/info/v1/", onSessionUpdated = onSessionUpdated).optJSONObject("data")
                 ?: throw IOException("账号资料为空")
         val id = data.str("biz_user_id")
         if (id.isBlank()) throw AccountNotProvisionedException()

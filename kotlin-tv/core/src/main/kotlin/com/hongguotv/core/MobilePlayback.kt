@@ -31,19 +31,14 @@ internal object MobilePlayback {
             val values = parsed.queryParameterNames.associateWith { parsed.queryParameter(it)!! }
             val now = values.getValue("_rticket").toLong()
             val request = v5Signer.signPlayback(parsed.newBuilder().query(null).build().toString(), values, body, now)
-            return MobileSignedRequest(request.url, request.headers)
+            return MobileSignedRequest(request.url, request.headers + ("User-Agent" to PlaybackDeviceDefaults.userAgent(values)))
         }
     }
 
     private fun query(device: Map<String, String>, currentApp: Boolean = false): Map<String, String> =
-        if (currentApp) linkedMapOf("aid" to "8662", "app_name" to "novelread",
-            "version_code" to "74532", "version_name" to "7.4.5.32", "update_version_code" to "74532",
-            "manifest_version_code" to "74532", "os" to "android", "ssmix" to "a",
-            "channel" to "update_64", "device_platform" to "android", "device_type" to "25053RT47C",
-            "device_brand" to "Redmi", "os_version" to "16", "os_api" to "36",
-            "ac" to "wifi", "language" to "zh", "host_abi" to "arm64-v8a",
-            "iid" to device.getValue("iid"), "cdid" to device.getValue("cdid"),
-            "device_id" to device.getValue("device_id")) else
+        if (currentApp) PlaybackDeviceDefaults.values + device.filterKeys {
+            it !in setOf("user_agent", "apk_first_install_time", "clientudid", "openudid", "device_token")
+        } else
         linkedMapOf("aid" to "8662", "app_name" to "novelread",
             "version_code" to "74332", "version_name" to "7.4.3.32",
             "channel" to "vivo_8662_64", "device_platform" to "android",
@@ -68,7 +63,7 @@ internal object MobilePlayback {
         val signed = signing.sign(url.toString(), ByteArray(0), device)
         RequestScope.ensureActive()
         return Request.Builder().url(signed.url).get()
-            .header("User-Agent", "com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)")
+            .header("User-Agent", PlaybackDeviceDefaults.userAgent(query(device, signing.currentAppProtocol)))
             .header("Accept", "application/json; charset=utf-8")
             .header("Accept-Language", "zh-CN,zh;q=0.9")
             .apply {
@@ -87,6 +82,7 @@ internal object MobilePlayback {
         signer: MobilePlaybackSigner,
         now: Long,
         host: String? = null,
+        accountTransport: Boolean = false,
     ): StreamLadder {
         require(id.matches(Regex("[0-9]{1,30}")))
         RequestScope.ensureActive()
@@ -108,7 +104,7 @@ internal object MobilePlayback {
         GZIPOutputStream(output).use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
         val bytes = output.toByteArray()
         val request = Request.Builder().url(url)
-            .header("User-Agent", if (currentApp) System.getProperty("http.agent", "okhttp/4.12.0") else
+            .header("User-Agent", if (currentApp) PlaybackDeviceDefaults.userAgent(query) else
                 "com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)")
             .header("Accept", "application/json").header("Content-Encoding", "gzip")
             .header("x-ss-stub", MessageDigest.getInstance("MD5").digest(bytes).joinToString("") { "%02X".format(it) })
@@ -117,8 +113,9 @@ internal object MobilePlayback {
         signed.headers.forEach { (k,v) -> request.header(k,v) }
         RequestScope.ensureActive()
         request.post(bytes.toRequestBody("application/json; charset=utf-8".toMediaType()))
-        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+        val transport = if (accountTransport) http else http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
         return RequestScope.execute(transport.newCall(request.build())) { response ->
+            if (response.code == 429 || response.code == 503) throw PlaybackServiceBackoffException()
             if (!response.isSuccessful) throw PlaybackSourceException(PlaybackSourceException.Reason.HTTP_REJECTED, response.code)
             val body = response.body ?: throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
             val limit = 2 * 1024 * 1024L
@@ -144,7 +141,11 @@ internal object MobilePlayback {
             val model = PlaybackModels.objectValue(entries.optJSONObject(id)?.opt("video_model"))
                 ?: throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
             val rows = PlaybackModels.renditions(model)
-            if (rows.isEmpty() && currentApp) return@execute compatibleLadder(model, transport)
+            if (rows.isEmpty() && currentApp) return@execute compatibleLadder(model,
+                http.newBuilder().cookieJar(CookieJar.NO_COOKIES).apply {
+                    interceptors().removeAll { it is AppAccountSession }
+                    networkInterceptors().removeAll { it is AppAccountSession }
+                }.build())
             if (rows.isEmpty()) throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
             StreamLadder(rows)
         }

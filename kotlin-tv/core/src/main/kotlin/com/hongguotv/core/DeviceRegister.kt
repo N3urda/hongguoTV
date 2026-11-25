@@ -9,6 +9,8 @@ import java.util.zip.GZIPOutputStream
 /**
  * 设备注册（`POST /service/2/device_register/`）。
  *
+ * 以下服务端行为来自 2026-10-21 的样本，不能作为长期放行保证；注册成功后仍可能返回空响应。
+ *
  * ## 为什么需要它
  *
  * 平台的**内容接口按设备放行**，而且认的是「服务端注册过的 `device_id` + `install_id` 这一对」：
@@ -65,6 +67,7 @@ object DeviceRegister {
         val newUser: Boolean = false,
         /** `Set-Cookie` 里可直接回写的那几项（`install_id` / `ttreq` / `store-region` …）。 */
         val cookies: Map<String, String> = emptyMap(),
+        val klinkEgdi: String = "",
     )
 
     /**
@@ -108,14 +111,14 @@ object DeviceRegister {
             "header",
             org.json.JSONObject().apply {
                 put("display_name", "红果免费短剧")
-                put("update_version_code", 73932)
-                put("manifest_version_code", 73932)
-                put("app_version_minor", "7.3.9.32")
+                put("update_version_code", value("update_version_code", "73932").toIntOrNull() ?: 73932)
+                put("manifest_version_code", value("manifest_version_code", "73932").toIntOrNull() ?: 73932)
+                put("app_version_minor", value("version_name", "7.3.9.32"))
                 put("aid", 8662)
                 put("channel", value("channel", "69310258a"))
                 put("package", "com.phoenix.read")
-                put("app_version", "7.3.9.32")
-                put("version_code", 73932)
+                put("app_version", value("version_name", "7.3.9.32"))
+                put("version_code", value("version_code", "73932").toIntOrNull() ?: 73932)
                 put("sdk_version", "3.7.0-rc.34-fanqie-xiaoshuo")
                 put("sdk_target_version", 29)
                 put("git_hash", "3a88f4e")
@@ -126,7 +129,7 @@ object DeviceRegister {
                 put("os_api", value("os_api", "32").toIntOrNull() ?: 32)
                 put("device_model", value("device_type", "AOSP on Intel Platform"))
                 put("device_brand", value("device_brand", "SAMSUNG"))
-                put("device_manufacturer", value("device_brand", "Intel"))
+                put("device_manufacturer", value("device_manufacturer", value("device_brand", "Intel")))
                 put("cpu_abi", value("host_abi", "arm64-v8a"))
                 put("release_build", "b5e187f")
                 put("density_dpi", value("dpi", "360").toIntOrNull() ?: 360)
@@ -147,7 +150,7 @@ object DeviceRegister {
                     "openudid",
                     value("openudid", UUID.randomUUID().toString().replace("-", "").take(16)),
                 )
-                put("clientudid", UUID.randomUUID().toString())
+                put("clientudid", value("clientudid", UUID.randomUUID().toString()))
                 put("ipv6_list", org.json.JSONArray())
                 put("region", "CN")
                 put("tz_name", "Asia/Shanghai")
@@ -167,7 +170,7 @@ object DeviceRegister {
                     },
                 )
                 put("pre_installed_channel", "")
-                put("apk_first_install_time", now)
+                put("apk_first_install_time", device["apk_first_install_time"]?.toLongOrNull() ?: now)
                 put("is_system_app", 0)
                 put("sdk_flavor", "china")
                 put("guest_mode", 0)
@@ -185,7 +188,7 @@ object DeviceRegister {
     ): Map<String, String> =
         linkedMapOf(
             "User-Agent" to
-                (device["user_agent"]?.takeIf { it.isNotBlank() } ?: VendorConstants.APP_UA),
+                (device["user_agent"]?.takeIf { it.isNotBlank() } ?: if (device["version_code"] == "74532") PlaybackDeviceDefaults.userAgent(device) else VendorConstants.APP_UA),
             "Content-Type" to "application/octet-stream;tt-data=a",
             "log-encode-type" to "gzip",
             "x-ss-dp" to "8662",
@@ -237,6 +240,7 @@ object DeviceRegister {
             json.optString("device_token", ""),
             json.optInt("new_user", 0) == 1,
             cookies,
+            json.optString("klink_egdi"),
         )
     }
 }

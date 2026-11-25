@@ -379,8 +379,8 @@ internal class Signer(
             f(1, 1, "sint"), f(2, 2, "sint"), f(3, "8662"), f(4, who.getValue("device_id")),
             f(5, processNonce), f(6, "!noperm!"), f(12, "Asia/Shanghai,8"), f(13, "zh_CN"),
             f(22, who.getValue("os_version")), f(25, processStarted, "sint"),
-            f(30, who.getValue("device_type")), f(31, "HONOR"),
-            f(32, who.getValue("device_type")), f(34, "HONOR"),
+            f(30, who.getValue("device_type")), f(31, who["device_brand"] ?: "HONOR"),
+            f(32, who.getValue("device_type")), f(34, who["device_manufacturer"] ?: who["device_brand"] ?: "HONOR"),
         )
         val env = proto(f(6, "v04.10.03.04-bugfix"), f(8, who.getValue("channel")),
             f(12, deviceInfo), f(14, version))
@@ -463,6 +463,21 @@ internal class Signer(
         playback: Boolean = false,
     ): Request {
         val now = clock()
+        if (mobileV5) {
+            // App GETs sign MD5(empty), not a zero digest. Keep identity separate for passport
+            // routes which omit did/iid from their query, and use the wider v5 ticket search.
+            val signed = signPlayback(base, values, body ?: ByteArray(0), now, identity ?: device)
+            val headers = signed.headers.toMutableMap().apply {
+                put("User-Agent", PlaybackDeviceDefaults.userAgent(identity ?: device))
+                put("Accept", "application/json; charset=utf-8")
+                put("x-ss-req-ticket", signed.url.substringAfterLast("_rticket=").substringBefore('&'))
+                put("x-xs-from-web", "0")
+                put("sdk-version", "2")
+                put("passport-sdk-version", "5051452")
+                if (body == null) { remove("Content-Type"); remove("x-ss-stub") }
+            }
+            return Request(signed.url, headers, body)
+        }
         val ts = (now / 1000).toInt()
         var ticket = now
         var query: String
@@ -521,6 +536,7 @@ internal class Signer(
         values: Map<String, String>,
         body: ByteArray? = null,
         now: Long = clock(),
+        identity: Map<String, String>? = null,
     ): Request {
         val ts = (now / 1000).toInt()
         for (offset in 0..1023) {
@@ -535,7 +551,7 @@ internal class Signer(
                 "x-xs-from-web" to "0", "x-khronos" to ts.toString(),
                 "x-ladon" to be32(ts).base64(), "x-argus" to le32(ts).base64(),
                 "x-gorgon" to gorgon(query, body, ts, (random() * 65536).toInt()),
-                "x-helios" to helios(ts), "x-medusa" to medusa(url, body, ts, if (mobileV5) values else null),
+                "x-helios" to helios(ts), "x-medusa" to medusa(url, body, ts, if (mobileV5) identity ?: values else null),
             )
             if (mobileV5) headers.keys.retainAll(setOf("x-khronos", "x-helios", "x-medusa"))
             if (body != null) {

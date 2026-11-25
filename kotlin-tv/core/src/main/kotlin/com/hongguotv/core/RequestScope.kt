@@ -44,8 +44,18 @@ class RequestScope {
         }
     }
 
+    /** Add a session owner without replacing the navigation owner or extending its deadline. */
+    internal fun <T> alongside(action: () -> T): T {
+        val previous = additional.get().orEmpty()
+        additional.set(previous + this)
+        return try { ensureActive(); action() } finally {
+            if (previous.isEmpty()) additional.remove() else additional.set(previous)
+        }
+    }
+
     companion object {
         private val current = ThreadLocal<RequestScope>()
+        private val additional = ThreadLocal<List<RequestScope>>()
         private val deadline = ThreadLocal<Long>()
 
         fun deadlineAtMost(endNanos: Long): Long = minOf(deadline.get() ?: endNanos, endNanos)
@@ -63,22 +73,22 @@ class RequestScope {
 
         /** 在签名、状态提交和重试前检查取消，避免旧任务污染下一次播放。 */
         fun ensureActive() {
-            val owner = current.get()
-            if (Thread.currentThread().isInterrupted || owner != null && synchronized(owner) { owner.cancelled })
+            val owners = listOfNotNull(current.get()) + additional.get().orEmpty()
+            if (Thread.currentThread().isInterrupted || owners.any { synchronized(it) { it.cancelled } })
                 throw java.io.InterruptedIOException("请求已取消")
         }
 
         fun <T> execute(call: Call, consume: (Response) -> T): T {
-            val owner = current.get()
-            owner?.attach(call)
+            val owners = (listOfNotNull(current.get()) + additional.get().orEmpty()).distinct()
             try {
+                owners.forEach { it.attach(call) }
                 deadline.get()?.let { end ->
                     val timeout = call.timeout()
                     timeout.deadlineNanoTime(if (timeout.hasDeadline()) minOf(timeout.deadlineNanoTime(), end) else end)
                 }
                 return call.execute().use(consume)
             } finally {
-                owner?.detach(call)
+                owners.forEach { it.detach(call) }
             }
         }
     }

@@ -216,7 +216,8 @@ class WebLogin(http: OkHttpClient) {
                 .filter {
                     it.matches(BASE.toHttpUrl()) && it.expiresAt > System.currentTimeMillis()
                 }
-                .joinToString("; ") { "${it.name}=${it.value}" }
+                .joinToString("; ") { "${it.name}=${it.value}" },
+            source = "web", appId = "513755", scopedCookies = cookies.map(AccountCookies::encode),
         )
     }
 

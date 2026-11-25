@@ -119,7 +119,11 @@ internal data class ReservationState(
 /**
  * Cloud history is kept separate from guest records; only explicit playback creates local history.
  */
-class AccountController(private val activity: Activity, private val play: (CloudProgress) -> Unit) {
+class AccountController(
+    private val activity: Activity,
+    private val playbackContexts: PlaybackContextProvider? = null,
+    private val play: (CloudProgress) -> Unit,
+) {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val http =
@@ -130,7 +134,9 @@ class AccountController(private val activity: Activity, private val play: (Cloud
             .followRedirects(false)
             .followSslRedirects(false)
             .build()
-    private val client = CloudAccountClient(http)
+    private val client = CloudAccountClient(http) { previous, next ->
+        main.post { updatePlaybackCredentials(previous, next) }
+    }
     // passport 短信登录沿用默认重定向策略（与网页登录的 no-redirect 客户端分开）。
     private val phoneHttp =
         okhttp3.OkHttpClient.Builder()
@@ -163,6 +169,24 @@ class AccountController(private val activity: Activity, private val play: (Cloud
     private var draining = false
     private var dialog: AlertDialog? = null
     var onHistoryChanged: (() -> Unit)? = null
+
+    internal val playbackAccountRestored get() = accountRestored && !accountRestoreFailed
+    internal fun playbackCredentials() = credentials
+
+    /** Called on main; serialize disk updates on the same worker as login/logout. */
+    internal fun updatePlaybackCredentials(previous: AccountCredentials, next: AccountCredentials) {
+        if (closed || credentials != previous) return
+        credentials = next
+        playbackContexts?.refreshAccount(previous, next)
+        val token = generation
+        worker.execute {
+            val result = runCatching { store.save(next) }
+            main.post {
+                if (closed || generation != token) return@post
+                if (result.isFailure) toast("播放会话更新未能保存，请检查存储空间")
+            }
+        }
+    }
 
     internal fun recommendationCredentials() = credentials?.takeIf { profile != null }
 
@@ -694,7 +718,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                         hint.text = safeError(it)
                         return@setOnClickListener
                     }
-            val fresh = PhoneLogin(phoneHttp, phoneRetryGate)
+            val fresh = PhoneLogin(phoneHttp, phoneRetryGate, playbackContexts?.takeIf { it.accountPlaybackEnabled }?.devices)
             login = null
             requestInFlight = true
             phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
@@ -871,7 +895,11 @@ class AccountController(private val activity: Activity, private val play: (Cloud
      */
     private fun validatePhoneAccount(
         credentials: AccountCredentials
-    ): Pair<AccountCredentials, CloudProfile> = credentials to client.profile(credentials)
+    ): Pair<AccountCredentials, CloudProfile> {
+        var next = credentials
+        val account = client.profile(credentials) { next = it }
+        return next to account
+    }
 
     private fun validateAccount(web: AccountCredentials): Pair<AccountCredentials, CloudProfile> {
         val device = client.registerDevice() ?: throw java.io.IOException("账号设备初始化失败")

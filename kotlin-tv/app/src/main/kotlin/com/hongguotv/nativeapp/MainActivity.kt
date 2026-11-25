@@ -40,7 +40,15 @@ class MainActivity : Activity() {
     private val muted get() = TvStyle.muted
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newFixedThreadPool(3)
-    private val repository = ContentRepository(playbackSession = PlaybackDeviceSession.shared)
+    private val playbackSession = PlaybackDeviceSession(
+        store = PreferencesPlaybackDeviceStore { getSharedPreferences("playback_device", MODE_PRIVATE) },
+        deviceFactory = { androidPlaybackDevice(this) },
+    )
+    private val playbackContexts = PlaybackContextProvider(playbackSession, onAccountUpdated = { previous, next ->
+        main.post { if (::cloudAccount.isInitialized) cloudAccount.updatePlaybackCredentials(previous, next) }
+    })
+    private val repository = ContentRepository(playbackSession = playbackSession, playbackContexts = playbackContexts)
+    private val playbackPreferences get() = getSharedPreferences("playback_options", MODE_PRIVATE)
     private val phoneCatalog by lazy {
         PhoneControlCatalog(library, cloudAccount) { series, progress ->
             // Save while the old detail still identifies the playing episode.
@@ -161,7 +169,7 @@ class MainActivity : Activity() {
     }
     private val preparedNext =
         PreparedSlot<OpenedStream>({ android.os.SystemClock.elapsedRealtime() })
-    private val recentPlaybackSources = PlaybackSourceCache()
+    private var recentPlaybackSources = PlaybackSourceCache()
     private var prefetchJob: java.util.concurrent.Future<*>? = null
     private var prefetchScope: RequestScope? = null
 
@@ -635,10 +643,12 @@ class MainActivity : Activity() {
         CodecCapabilities.init(this)
         CodecCapabilities.logDeviceCapabilities()
         cloudAccount =
-            AccountController(this) { remote ->
+            AccountController(this, playbackContexts) { remote ->
                 openDetail(remote.series, true, cloudProgress = remote)
             }
+        playbackContexts.configure(playbackPreferences.getBoolean("account-playback", false), null, restored = false)
         cloudAccount.onHistoryChanged = {
+            updatePlaybackContext()
             settingsAccountStatus?.text = accountSettingsLabel()
             if (homeFeedIdentity != cloudAccount.recommendationIdentity) {
                 homeFeedState.refresh(resetRecommendations = true)
@@ -1138,6 +1148,8 @@ class MainActivity : Activity() {
                         account = cloudAccount.recommendationCredentials(),
                         startupCache = cloudAccount.recommendationStartupCache(),
                         recentSources = recentPlaybackSources,
+                        playbackSession = playbackSession,
+                        playbackContexts = playbackContexts,
                     ),
                     Media3TrialPlayback(this, library.playbackSpeed, library.frameMode),
                     autoPreview = library.homeAutoplay,
@@ -2290,6 +2302,20 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun updatePlaybackContext() {
+        if (!playbackContexts.configure(playbackPreferences.getBoolean("account-playback", false),
+                cloudAccount.playbackCredentials(), cloudAccount.playbackAccountRestored)) return
+        recentPlaybackSources = PlaybackSourceCache()
+        cancelPrefetch()
+        cancelWork()
+        if (screen == "player" && detail != null) {
+            val position = currentPosition()
+            val autoplay = player?.playWhenReady ?: requestedAutoplay
+            releasePlayer()
+            playEpisode(episodeIndex, position, autoplay)
+        }
+    }
+
     private fun accountSettingsLabel() =
         if (cloudAccount.signedIn) "当前已登录红果账户" else "当前未登录，可继续使用本机收藏与历史"
 
@@ -2442,6 +2468,11 @@ class MainActivity : Activity() {
                         setPadding(0, 0, 0, dp(14))
                     })
                     setting("登录与账户管理") { cloudAccount.show() }
+                    toggle("账号播放（实验）", playbackPreferences.getBoolean("account-playback", false)) { enabled ->
+                        playbackPreferences.edit().putBoolean("account-playback", enabled).apply()
+                        updatePlaybackContext()
+                    }
+                    content.addView(text("默认关闭。开启后需使用短信重新登录；网页登录暂不支持。效果仍需实机验证。", 14f, muted))
                     setting("手机控制台 · 搜索 / 遥控 / 账户片单") { phoneConsole.show(null) }
                 }
                 4 -> {
@@ -4163,8 +4194,10 @@ class MainActivity : Activity() {
         cancelPrefetch()
         // 确定性失败（本集无任何可解码档，bytevc2 锁定集）：重试与降档都只会得到同一结果，
         // 不再进入自动恢复预算，不给降档按钮；手动重试保留（供给可能随服务端转码翻转）。
-        val noPlayableQuality =
-            generateSequence(problem) { it.cause }.take(8).any { it is NoPlayableQualityException }
+        val causes = generateSequence(problem) { it.cause }.take(8).toList()
+        val noPlayableQuality = causes.any { it is NoPlayableQualityException }
+        val accountUnavailable = causes.any { it is PlaybackAccountException }
+        val cooling = causes.any { it is PlaybackCooldownException }
         // The device claimed support it doesn't have (MediaCodecList over-reporting): learn the
         // runtime verdict and retry one tier lower automatically instead of surfacing the panel.
         if (
@@ -4218,14 +4251,14 @@ class MainActivity : Activity() {
             if (problem is PlaybackException)
                 problem.errorCode in 2000..2999 ||
                     problem.errorCode == PlaybackException.ERROR_CODE_TIMEOUT
-            else problem is java.io.IOException && !noPlayableQuality
+            else problem is java.io.IOException && !noPlayableQuality && !accountUnavailable && !cooling
         // 按钮直接指向阶梯里真实存在的更低档：没有就明说，不再让用户循环点一个必然重放
         // 同一流（如本集仅剩电视解不了的 1080P）的按钮。
         val lowerTier =
-            if (noPlayableQuality) null else nextLowerQuality(attemptedQuality, currentTiers)
+            if (noPlayableQuality || accountUnavailable || cooling) null else nextLowerQuality(attemptedQuality, currentTiers)
         playbackText.text =
             when {
-                noPlayableQuality -> lastPlaybackFailure
+                noPlayableQuality || accountUnavailable || cooling -> lastPlaybackFailure
                 decoding && lowerTier != null -> "电视无法解码当前视频，可尝试更低清晰度。"
                 decoding -> "电视无法解码当前视频，本集没有更低清晰度可用。"
                 else -> "$lastPlaybackFailure · 可手动重试"
@@ -4240,6 +4273,7 @@ class MainActivity : Activity() {
                 playEpisode(episodeIndex, retryPosition, retryAutoplay)
             }
         }
+        if (accountUnavailable) addButton(actions, "账户管理") { cloudAccount.show() }
         addButton(actions, "返回选集") { returnToDetail(true) }
         addButton(actions, "查看错误详情") { tvTools.info("播放诊断", playbackDiagnostics().trim(), currentFocus) }
         if (retryable && !sleepStopped) {
@@ -5229,6 +5263,7 @@ class MainActivity : Activity() {
 
     // 页面销毁时释放播放器、请求和工作线程，避免资源继续持有旧 Activity。
     override fun onDestroy() {
+        playbackContexts.close()
         phoneConsole.stop()
         gradualPreloader?.close()
         generation++

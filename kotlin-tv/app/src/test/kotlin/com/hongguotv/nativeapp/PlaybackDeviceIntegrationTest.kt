@@ -16,13 +16,19 @@ class PlaybackDeviceIntegrationTest {
         target.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(target)
 
     @Test
-    fun homepageAndFullscreenUseTheSameLazyAnonymousSession() {
+    fun homepageAndFullscreenShareThePersistentDeviceAndAccountProvider() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
-        val home = PublicFeedBackend(720)
+        val activity = controller.get()
+        val session = field(activity, "playbackSession") as PlaybackDeviceSession
+        val contexts = field(activity, "playbackContexts") as com.hongguotv.core.PlaybackContextProvider
+        val home = PublicFeedBackend(720, playbackSession = session, playbackContexts = contexts)
         try {
             val fullscreenRepository = field(controller.get(), "repository")!!
             val homeRepository = field(home, "repository")!!
-            assertSame(PlaybackDeviceSession.shared, field(fullscreenRepository, "playbackSession"))
+            assertSame(session, field(fullscreenRepository, "playbackSession"))
+            assertSame(contexts, field(fullscreenRepository, "playbackContexts"))
+            assertSame(contexts, field(homeRepository, "playbackContexts"))
+            assertFalse(contexts.accountPlaybackEnabled)
             assertSame(
                 field(fullscreenRepository, "playbackSession"),
                 field(homeRepository, "playbackSession"),

@@ -3,7 +3,6 @@ package com.hongguotv.core
 
 import java.io.IOException
 import java.io.InterruptedIOException
-import java.util.UUID
 import okhttp3.CookieJar
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -13,25 +12,28 @@ import okhttp3.RequestBody.Companion.toRequestBody
 class PlaybackDeviceRegistrationException(cause: Throwable? = null) :
     IOException("播放设备注册失败，请稍后重试", cause)
 
-/** Anonymous playback identity. Register once, then keep the same identity across repositories. */
+/** One persistent registration shared by playback, prefetch and opt-in App login. */
 class PlaybackDeviceSession(
-    private val register: (OkHttpClient) -> DeviceRegister.Registered? = { http ->
-        val body = DeviceRegister.payload(VendorConstants.device)
+    private val store: PlaybackDeviceStore? = null,
+    private val device: Map<String, String> = PlaybackDeviceDefaults.values,
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val deviceFactory: (() -> Map<String, String>)? = null,
+    private val register: ((OkHttpClient) -> DeviceRegister.Registered?)? = null,
+) {
+    private fun registerRequest(http: OkHttpClient, values: Map<String, String>): DeviceRegister.Registered? {
+        register?.let { return it(http) }
+        val body = DeviceRegister.payload(values, clock())
         val request = Request.Builder().url(DeviceRegister.url())
-        DeviceRegister.headers(body, VendorConstants.device).forEach { (key, value) ->
-            request.header(key, value)
-        }
-        request.post(body.toRequestBody("application/octet-stream".toMediaType()))
-        // Registration has no account cookies. Cancellation belongs to the requesting work scope.
-        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-        RequestScope.execute(transport.newCall(request.build())) { response ->
+        DeviceRegister.headers(body, values, clock()).forEach { (key, value) -> request.header(key, value) }
+        request.post(body.toRequestBody("application/octet-stream;tt-data=a".toMediaType()))
+        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).followRedirects(false).build()
+        return RequestScope.execute(transport.newCall(request.build())) { response ->
             val text = try { cloudResponse(response) } catch (_: EmptyAccountResponseException) {
                 throw EmptyPlaybackResponseException("stage=register")
             }
             DeviceRegister.parse(text, response.headers("Set-Cookie"))
         }
     }
-) {
     companion object {
         val shared = PlaybackDeviceSession()
         private const val EMPTY_MODEL_PREFETCH_PAUSE_MILLIS = 5_000L
@@ -42,6 +44,7 @@ class PlaybackDeviceSession(
         val cookie: String,
         val routes: PlaybackRoutes = PlaybackRoutes(),
     ) {
+        override fun toString() = "PlaybackProfile([redacted])"
         private var playbackSigner: Signer? = null
         private var recommendationSigner: Signer? = null
         private data class Model(val entry: org.json.JSONObject, val owner: Any, val savedAt: Long)
@@ -85,8 +88,19 @@ class PlaybackDeviceSession(
             recommendationSigner ?: Signer(clock, values).also { recommendationSigner = it }
     }
 
-    private var cdid = UUID.randomUUID().toString()
+    private var context: PlaybackDeviceContext? = null
+    private fun context(): PlaybackDeviceContext = context ?: run {
+        val saved = store?.load()
+        val value = if (saved != null) PlaybackDeviceContext.parse(saved)
+            else PlaybackDeviceContext.fresh(deviceFactory?.invoke() ?: device, clock()).also { store?.save(it.toJson()) }
+        value.also { context = it }
+    }
+
+    /** Registration and login use the same full identity. Values returned to callers are immutable copies. */
+    fun deviceValues(http: OkHttpClient): Map<String, String> = profile(http).values.toMap()
     @Volatile private var ready: Profile? = null
+    private var registrationFailures = 0
+    private var registrationRetryAt = 0L
 
     @Synchronized
     internal fun profile(http: OkHttpClient): Profile {
@@ -94,7 +108,22 @@ class PlaybackDeviceSession(
             return it
         }
         if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
-        return toProfile(registerDevice(http)).also { ready = it }
+        val seed = context()
+        val registered = seed.registered ?: run {
+            if (clock() < registrationRetryAt)
+                throw PlaybackCooldownException(((registrationRetryAt - clock() + 999) / 1000).toInt())
+            try {
+                registerDevice(http, seed.values).also { registrationFailures = 0 }
+            } catch (error: IOException) {
+                RequestScope.ensureActive()
+                if (++registrationFailures >= 2) registrationRetryAt = clock() + 30_000
+                throw error
+            }
+        }
+        val complete = PlaybackDeviceContext(seed.values, registered)
+        if (seed.registered == null) store?.save(complete.toJson())
+        context = complete
+        return toProfile(registered, seed.values).also { ready = it }
     }
 
     internal fun shouldDeferPlaybackPrefetch(now: Long): Boolean =
@@ -116,9 +145,10 @@ class PlaybackDeviceSession(
         if (Thread.currentThread().isInterrupted) return false
         // 共享会话的其他仓库实例已替换该失败身份，直接复用。
         if (expected != null && ready !== expected && ready != null) return true
+        val seed = PlaybackDeviceContext.fresh(deviceFactory?.invoke() ?: device, clock())
         val device =
             try {
-                register(http) ?: return false
+                registerRequest(http, seed.values) ?: return false
             } catch (error: InterruptedIOException) {
                 // 网络超时也可能使用此异常类型，不能据此把正常工作线程标为已取消。
                 return false
@@ -126,15 +156,17 @@ class PlaybackDeviceSession(
                 return false
             }
         if (!validDevice(device)) return false
-        cdid = UUID.randomUUID().toString()
-        ready = toProfile(device)
+        val complete = PlaybackDeviceContext(seed.values, device)
+        store?.save(complete.toJson())
+        context = complete
+        ready = toProfile(device, seed.values)
         return true
     }
 
-    private fun registerDevice(http: OkHttpClient): DeviceRegister.Registered {
+    private fun registerDevice(http: OkHttpClient, values: Map<String, String>): DeviceRegister.Registered {
         val device =
             try {
-                register(http) ?: throw PlaybackDeviceRegistrationException()
+                registerRequest(http, values) ?: throw PlaybackDeviceRegistrationException()
             } catch (error: InterruptedIOException) {
                 throw error
             } catch (error: IOException) {
@@ -148,14 +180,13 @@ class PlaybackDeviceSession(
     private fun validDevice(device: DeviceRegister.Registered) =
         validId.matches(device.deviceId) && validId.matches(device.installId)
 
-    private fun toProfile(device: DeviceRegister.Registered): Profile =
+    private fun toProfile(device: DeviceRegister.Registered, values: Map<String, String>): Profile =
         Profile(
-            VendorConstants.device +
+            values +
                 mapOf(
                     "device_id" to device.deviceId,
                     "iid" to device.installId,
-                    "cdid" to cdid,
-                ),
+                ) + if (device.klinkEgdi.isBlank()) emptyMap() else mapOf("klink_egdi" to device.klinkEgdi),
             device.cookies
                 .filterKeys {
                     it in setOf("install_id", "ttreq", "store-region", "store-region-src")

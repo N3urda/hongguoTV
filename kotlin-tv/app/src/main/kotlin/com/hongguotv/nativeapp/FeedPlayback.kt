@@ -93,6 +93,7 @@ internal class PublicFeedBackend(
     private val startupCache: FeedStartupCache? = null,
     private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared,
     private val recentSources: PlaybackSourceCache = PlaybackSourceCache(),
+    private val playbackContexts: com.hongguotv.core.PlaybackContextProvider? = null,
 ) : FeedBackend {
     companion object {
         // Reuse idle public TLS connections across homepage visits. Dispatchers remain per backend,
@@ -101,7 +102,7 @@ internal class PublicFeedBackend(
     }
 
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
-    private val repository = ContentRepository(http, playbackSession = playbackSession)
+    private val repository = ContentRepository(http, playbackSession = playbackSession, playbackContexts = playbackContexts)
     override fun related(series: Series) = RelatedWorks.ordered(series, repository.related(series.id))
 
     private val recommendationAccount = account

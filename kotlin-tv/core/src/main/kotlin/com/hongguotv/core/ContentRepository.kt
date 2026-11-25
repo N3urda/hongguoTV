@@ -192,6 +192,7 @@ constructor(
     private val clock: () -> Long = System::currentTimeMillis,
     private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession(),
     private val sleep: (Long) -> Unit = Thread::sleep,
+    private val playbackContexts: PlaybackContextProvider? = null,
 ) {
     // 签名时钟与应用时钟同源：测试可注入，重签后的 ts/_rticket 保持在同一时间基上。
     private val signer = Signer(clock)
@@ -969,9 +970,9 @@ constructor(
         else info
     }
 
-    fun shouldDeferPlaybackPrefetch(): Boolean = playbackSession.shouldDeferPlaybackPrefetch(clock())
+    fun shouldDeferPlaybackPrefetch(): Boolean = playbackContexts?.deferPrefetch() ?: playbackSession.shouldDeferPlaybackPrefetch(clock())
 
-    /** v5 model requests use the same anonymous registration across foreground and prefetch. */
+    /** v5 model requests use the same device/account snapshot across foreground and prefetch. */
     fun streamLadderWithCompatibility(
         id: String,
         metadataAhead: List<String> = emptyList(),
@@ -979,60 +980,67 @@ constructor(
         onPrimaryEmpty: (() -> Unit)? = null,
     ): StreamLadder =
         RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(if (speculative) 2 else 8)) {
-            val profile = if (speculative) playbackSession.existing()
+            val context = playbackContexts?.snapshot(http, speculative)
+            val profile = context?.profile ?: if (speculative) playbackSession.existing()
                 ?: throw IOException("播放设备尚未就绪") else playbackSession.profile(http)
-            try {
-                MobilePlayback.ladder(id, profile.values, http, MobilePlayback.signer, clock())
-                    .also { profile.recordPlayablePrimaryModel() }
-            } catch (empty: EmptyPlaybackResponseException) {
-                profile.recordEmptyPrimaryModel(clock())
-                if (speculative) throw empty
-                RequestScope.ensureActive()
-                onPrimaryEmpty?.invoke()
-                val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-                val trace = PlaybackRequestTrace()
-                val entry = try {
-                    tabVideoModel(id, profile, trace, transport, strict = true, mobileV5 = true)
-                } catch (_: EmptyPlaybackResponseException) {
-                    throw EmptyPlaybackResponseException(empty.detail, allPlaybackModelsEmpty = true).apply {
-                        addSuppressed(empty)
-                        addSuppressed(PlaybackDiagnosticException("video-tab-empty ${trace.summary()}"))
-                    }
-                } catch (fallback: IOException) {
-                    val failure = if (fallback is ContentHttpException)
-                        PlaybackSourceException(PlaybackSourceException.Reason.HTTP_REJECTED, fallback.statusCode)
-                    else fallback
-                    throw failure.apply {
-                        addSuppressed(empty)
-                        addSuppressed(PlaybackDiagnosticException("video-tab ${trace.summary()}"))
-                    }
-                }
-                RequestScope.ensureActive()
-                val model = entry?.optJSONObject("video_model")
-                if (model == null) {
-                    empty.addSuppressed(PlaybackDiagnosticException("video-tab-no-model ${trace.summary()}"))
-                    throw empty
-                }
-                val rows = PlaybackModels.renditions(model)
-                if (rows.isNotEmpty()) return@withDeadline StreamLadder(rows)
-
-                // The tab model can contain only bytevc2. The mobile model on the same host can supply HEVC.
-                val alternateHost = PlayRetryPlan.host(0)
+            val modelHttp = context?.transport(http) ?: http
+            val read = read@{
                 try {
-                    MobilePlayback.ladder(
-                        id, profile.values, http, MobilePlayback.signer, clock(), host = alternateHost,
-                    )
-                } catch (alternate: IOException) {
+                    MobilePlayback.ladder(id, profile.values, modelHttp, MobilePlayback.signer, clock(), accountTransport = context != null)
+                        .also { profile.recordPlayablePrimaryModel() }
+                } catch (empty: EmptyPlaybackResponseException) {
+                    profile.recordEmptyPrimaryModel(clock())
+                    if (speculative) throw empty
                     RequestScope.ensureActive()
-                    alternate.addSuppressed(empty)
-                    alternate.addSuppressed(
-                        PlaybackDiagnosticException(
-                            "video-tab-no-compatible-source ${trace.summary()} alternate-model=${PlayRetryPlan.tag(alternateHost)}"
+                    onPrimaryEmpty?.invoke()
+                    val transport = context?.transport(http) ?: http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+                    val trace = PlaybackRequestTrace()
+                    val entry = try {
+                        tabVideoModel(id, profile, trace, transport, strict = true, mobileV5 = true)
+                    } catch (_: EmptyPlaybackResponseException) {
+                        throw EmptyPlaybackResponseException(empty.detail, allPlaybackModelsEmpty = true).apply {
+                            addSuppressed(empty)
+                            addSuppressed(PlaybackDiagnosticException("video-tab-empty ${trace.summary()}"))
+                        }
+                    } catch (fallback: IOException) {
+                        val failure = if (fallback is ContentHttpException && fallback.statusCode in setOf(429, 503))
+                            PlaybackServiceBackoffException()
+                        else if (fallback is ContentHttpException)
+                            PlaybackSourceException(PlaybackSourceException.Reason.HTTP_REJECTED, fallback.statusCode)
+                        else fallback
+                        throw failure.apply {
+                            addSuppressed(empty)
+                            addSuppressed(PlaybackDiagnosticException("video-tab ${trace.summary()}"))
+                        }
+                    }
+                    RequestScope.ensureActive()
+                    val model = entry?.optJSONObject("video_model")
+                    if (model == null) {
+                        empty.addSuppressed(PlaybackDiagnosticException("video-tab-no-model ${trace.summary()}"))
+                        throw empty
+                    }
+                    val rows = PlaybackModels.renditions(model)
+                    if (rows.isNotEmpty()) return@read StreamLadder(rows)
+
+                    // The tab model can contain only bytevc2. The mobile model on the same host can supply HEVC.
+                    val alternateHost = PlayRetryPlan.host(0)
+                    try {
+                        MobilePlayback.ladder(
+                            id, profile.values, modelHttp, MobilePlayback.signer, clock(), accountTransport = context != null, host = alternateHost,
                         )
-                    )
-                    throw alternate
+                    } catch (alternate: IOException) {
+                        RequestScope.ensureActive()
+                        alternate.addSuppressed(empty)
+                        alternate.addSuppressed(
+                            PlaybackDiagnosticException(
+                                "video-tab-no-compatible-source ${trace.summary()} alternate-model=${PlayRetryPlan.tag(alternateHost)}"
+                            )
+                        )
+                        throw alternate
+                    }
                 }
             }
+            if (context == null) read() else playbackContexts!!.resolve(context, id, read)
         }
 
     /** Retained legacy transport for compatibility regression coverage. */
