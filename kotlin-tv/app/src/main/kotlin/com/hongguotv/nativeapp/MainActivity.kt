@@ -128,7 +128,8 @@ class MainActivity : Activity() {
             "quality" -> {
                 val quality = body.getInt("value")
                 require(quality in PlaybackQuality.options)
-                if (library.maxQuality != quality) {
+                if (library.maxQuality != quality || softwareQualityLimitedEpisode != null) {
+                    softwareQualityLimitedEpisode = null
                     library.maxQuality = quality
                     playEpisode(episodeIndex, currentPosition(), player?.playWhenReady ?: requestedAutoplay)
                 }
@@ -455,6 +456,7 @@ class MainActivity : Activity() {
     private var panel = false
     // Consume the entire shortcut press, even when ACTION_DOWN opens a focusable panel.
     private val playerShortcutKeys = mutableSetOf<Int>()
+    private var playerBackDownTime: Long? = null
     private var pendingEpisodeTarget: Int? = null
     private var pendingEpisodeSwitch: Runnable? = null
     private var automaticEpisodeFrom = -1
@@ -486,6 +488,7 @@ class MainActivity : Activity() {
     private var currentRendition: Rendition? = null
     private var currentTiers: List<Rendition> = emptyList()
     private var autoDowngrades = 0
+    private var softwareQualityLimitedEpisode: String? = null
     private val stallGuard = PlaybackStallGuard()
     private var lastPlaybackDiagnosticAt = 0L
     private val tick =
@@ -804,6 +807,7 @@ class MainActivity : Activity() {
     private fun invalidatePage() {
         cancelEpisodeSwitch()
         cancelNextSeason()
+        playerBackDownTime = null
         generation++
         cancelWork()
         artwork.cancelPage()
@@ -2973,7 +2977,12 @@ class MainActivity : Activity() {
             player?.play()
             return
         }
-        val prepareKey = "${data.episodes[selectedIndex]}:${library.maxQuality}"
+        val requestedId = data.episodes[selectedIndex]
+        if (screen != "player" || softwareQualityLimitedEpisode != requestedId) softwareQualityLimitedEpisode = null
+        val requestedQuality = library.maxQuality
+        val maxQuality = if (softwareQualityLimitedEpisode == null) requestedQuality
+            else minOf(requestedQuality, SoftwareVideoFallback.QUALITY_LIMIT)
+        val prepareKey = "$requestedId:$maxQuality"
         // Retain a nearly completed prefetch while keeping most of the foreground deadline available.
         val pending =
             if (position == 0L && !recovering) claimPendingPreparation(prepareKey) else null
@@ -3167,8 +3176,6 @@ class MainActivity : Activity() {
             if (restoreControlTag != null) controls.findViewWithTag<View>(restoreControlTag)?.requestFocus()
         }
         syncMediaSession()
-        val requestedId = data.episodes[episodeIndex]
-        val maxQuality = library.maxQuality
         val ticket = generation
         var usedPending = false
         work(
@@ -3204,7 +3211,7 @@ class MainActivity : Activity() {
                 }
                 val remote = opened.video
                 video = remote
-                applyOpenedStream(opened, maxQuality)
+                applyOpenedStream(opened, requestedQuality)
                 val p =
                     ensurePlayer()
                 p.setPlaybackSpeed(library.playbackSpeed)
@@ -3594,6 +3601,7 @@ class MainActivity : Activity() {
             automaticEpisodeAt = android.os.SystemClock.uptimeMillis()
         }
         episodeIndex = queuedEpisode
+        softwareQualityLimitedEpisode = null
         group = episodeIndex / 20
         queuedNext = null
         queuedHttp = null
@@ -3772,6 +3780,27 @@ class MainActivity : Activity() {
         currentTiers = opened.tiers
     }
 
+    private fun lowerSoftwareVideoQuality(p: ExoPlayer) {
+        if (player !== p || !p.isPlaying || attemptedQuality <= SoftwareVideoFallback.QUALITY_LIMIT) return
+        val id = p.currentMediaItem?.mediaId ?: return
+        val ticket = generation
+        main.post {
+            if (player !== p || generation != ticket || !p.isPlaying || !foreground ||
+                !playbackReady || playError || waitingForFirstFrame || pendingSeek != null || pendingEpisodeTarget != null ||
+                playerModalOpen() || detail?.episodes?.getOrNull(episodeIndex) != id ||
+                p.currentMediaItem?.mediaId != id || softwareQualityLimitedEpisode == id
+            ) return@post
+            val hasLowerTier = currentTiers.any {
+                it.quality in 1..SoftwareVideoFallback.QUALITY_LIMIT && CodecCapabilities.supports(it)
+            }
+            if (!hasLowerTier) return@post
+
+            softwareQualityLimitedEpisode = id
+            android.util.Log.i("HongguoTV", "Reducing software HEVC playback from ${attemptedQuality}P after sustained dropped frames")
+            playEpisode(episodeIndex, currentPosition(), p.playWhenReady)
+        }
+    }
+
     /** 懒建播放器（正式路径与伴机路径共用）；已存在则原样返回。 */
     private fun ensurePlayer(): ExoPlayer =
         player
@@ -3791,6 +3820,8 @@ class MainActivity : Activity() {
                 val renderers = playbackRenderers(this) { library.forceSoftwareDecoding }
                 ExoPlayer.Builder(this, renderers).setLoadControl(load).build().also {
                     player = it
+                    // Buffer the start of the queued episode once current media loading settles.
+                    it.preloadConfiguration = ExoPlayer.PreloadConfiguration(2_000_000L)
                     it.addListener(bufferingIndicator)
                     playerView?.player = it
                     it.setAudioAttributes(
@@ -3803,6 +3834,9 @@ class MainActivity : Activity() {
                     it.setHandleAudioBecomingNoisy(true)
                     it.addAnalyticsListener(PlaybackDiagnostics("player"))
                     it.addAnalyticsListener(playbackDriftListener(it))
+                    if (SoftwareVideoFallback.appliesTo(this)) {
+                        it.addAnalyticsListener(SoftwareVideoFallback(it, ::lowerSoftwareVideoQuality))
+                    }
                 }
             }
 
@@ -4733,7 +4767,8 @@ class MainActivity : Activity() {
         val options = PlaybackQuality.options
         tvTools.choose("全局默认清晰度", options.map { "${it}P" }, anchor, { index ->
             val target = options[index]
-            val changed = library.maxQuality != target
+            val changed = library.maxQuality != target || (inPlayer && softwareQualityLimitedEpisode != null)
+            if (inPlayer) softwareQualityLimitedEpisode = null
             library.maxQuality = target
             if (anchor.tag != "playback-settings")
                 anchor.text = (if (inPlayer) "清晰度 " else "默认清晰度  ·  ") + "${target}P"
@@ -5047,10 +5082,26 @@ class MainActivity : Activity() {
             return true
         }
         if (screen == "player") {
-            if (playerModalOpen()) return super.dispatchKeyEvent(event)
+            if (key == KeyEvent.KEYCODE_MENU) {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 &&
+                    !playerModalOpen() && !playerControlsOpen()
+                ) showPanel()
+                return true
+            }
+            if (playerModalOpen()) {
+                if (key == KeyEvent.KEYCODE_BACK) playerBackDownTime = null
+                return super.dispatchKeyEvent(event)
+            }
             if (panel && !playError && event.action == KeyEvent.ACTION_DOWN) showHud()
             if (key == KeyEvent.KEYCODE_BACK) {
-                if (event.action == KeyEvent.ACTION_UP) goBack()
+                when (event.action) {
+                    KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) playerBackDownTime = event.downTime
+                    KeyEvent.ACTION_UP -> {
+                        val paired = playerBackDownTime == event.downTime
+                        playerBackDownTime = null
+                        if (paired && !event.isCanceled) goBack()
+                    }
+                }
                 return true
             }
             if (
@@ -5089,7 +5140,6 @@ class MainActivity : Activity() {
                             KeyEvent.KEYCODE_ENTER,
                             KeyEvent.KEYCODE_DPAD_UP,
                             KeyEvent.KEYCODE_DPAD_DOWN,
-                            KeyEvent.KEYCODE_MENU,
                         )
                 ) {
                     if (event.action == KeyEvent.ACTION_DOWN) {
@@ -5105,7 +5155,6 @@ class MainActivity : Activity() {
                             }
                             KeyEvent.KEYCODE_DPAD_DOWN -> if (event.repeatCount == 0) skipEpisode(1, event.downTime)
                             KeyEvent.KEYCODE_DPAD_UP -> if (event.repeatCount == 0) skipEpisode(-1, event.downTime)
-                            KeyEvent.KEYCODE_MENU -> if (event.repeatCount == 0) showPanel()
                             else -> showHud()
                         }
                     }
@@ -5191,6 +5240,7 @@ class MainActivity : Activity() {
     override fun onPause() {
         cancelEpisodeSwitch()
         playerShortcutKeys.clear()
+        playerBackDownTime = null
         gradualPreloader?.pause()
         stallGuard.suspendObservation()
         cancelNextSeason()

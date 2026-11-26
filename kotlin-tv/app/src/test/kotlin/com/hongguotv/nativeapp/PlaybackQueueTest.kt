@@ -64,6 +64,7 @@ class PlaybackQueueTest {
         val items = mutableListOf(MediaItem.Builder().setMediaId("101").build())
         val calls = mutableListOf<String>()
         var index = 0
+        var position = 0L
         var playing = true
         val player =
             Proxy.newProxyInstance(
@@ -75,7 +76,7 @@ class PlaybackQueueTest {
                     "getCurrentMediaItem" -> items.getOrNull(index)
                     "getMediaItemCount" -> items.size
                     "getCurrentMediaItemIndex" -> index
-                    "getCurrentPosition" -> 0L
+                    "getCurrentPosition" -> position
                     "getDuration" -> 90000L
                     "getPlaybackState" -> Player.STATE_READY
                     "getPlaybackParameters" -> PlaybackParameters(1f)
@@ -201,6 +202,84 @@ class PlaybackQueueTest {
             invoke(activity, "updateClock")
             assertEquals(android.view.View.GONE, clock.visibility)
         }
+
+    @Test
+    fun longMenuPressConsumesRepeatedReleasesAndKeepsSettingsFocused() = fixture { activity, fake, _, _ ->
+        val now = android.os.SystemClock.uptimeMillis()
+        assertTrue(activity.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MENU, 0)))
+        val controls = get(activity, "controls") as LinearLayout
+        val settings = controls.findViewWithTag<TextView>("playback-settings")
+        assertTrue(settings.requestFocus())
+
+        val repeat = KeyEvent(now, now + 600L, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MENU, 1)
+        assertTrue(activity.dispatchKeyEvent(KeyEvent.changeFlags(repeat, KeyEvent.FLAG_LONG_PRESS)))
+        val up = KeyEvent(now, now + 700L, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MENU, 0)
+        assertTrue(activity.dispatchKeyEvent(up))
+        assertTrue(activity.dispatchKeyEvent(up))
+
+        assertEquals(true, get(activity, "panel"))
+        assertSame(settings, controls.findFocus())
+        assertTrue(settings.performClick())
+        assertTrue((get(activity, "tvTools") as TvTools).showing)
+        assertTrue(fake.playing)
+    }
+
+    @Test
+    fun menuPanelIgnoresUnmatchedAndCanceledBackReleases() = fixture { activity, _, _, _ ->
+        press(activity, KeyEvent.KEYCODE_MENU, repeats = 3)
+        assertTrue(activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK)))
+        assertEquals(true, get(activity, "panel"))
+
+        val down = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK)
+        assertTrue(activity.dispatchKeyEvent(down))
+        val up = KeyEvent.changeAction(down, KeyEvent.ACTION_UP)
+        assertTrue(activity.dispatchKeyEvent(KeyEvent.changeFlags(up, KeyEvent.FLAG_CANCELED)))
+        assertEquals(true, get(activity, "panel"))
+
+        press(activity, KeyEvent.KEYCODE_BACK)
+        assertEquals(false, get(activity, "panel"))
+        assertEquals("player", get(activity, "screen"))
+    }
+
+    @Test
+    fun episodePlayerPreloadsSamplesOfTheQueuedMediaItem() = fixture { activity, _, _, _ ->
+        set(activity, "player", null)
+        val player = invoke(activity, "ensurePlayer") as ExoPlayer
+        assertEquals(2_000_000L, player.preloadConfiguration.targetPreloadDurationUs)
+    }
+
+    @Test
+    fun overloadedSoftwareDecoderResumesTheSameEpisodeAtALowerQuality() = fixture { activity, fake, library, opened ->
+        val requests = blockDuplicateMetadataRequests(activity)
+        library.maxQuality = 1080
+        val lower = requireNotNull(opened.rendition).copy(width = null, height = null)
+        val higher = lower.copy(quality = 1080)
+        set(activity, "attemptedQuality", 1080)
+        set(activity, "currentTiers", listOf(higher))
+        fake.position = 12_000L
+        invoke(activity, "lowerSoftwareVideoQuality", fake.player)
+        ShadowLooper.idleMainLooper()
+        assertNull(get(activity, "softwareQualityLimitedEpisode"))
+
+        val tiers = listOf(higher, lower)
+        set(activity, "currentTiers", tiers)
+        set(activity, "playerView", PlayerView(activity))
+        @Suppress("UNCHECKED_CAST")
+        val slot = get(activity, "preparedNext") as PreparedSlot<OpenedStream>
+        assertSame(opened, slot.take("102:${library.maxQuality}"))
+        slot.complete(slot.begin("101:720"), "101:720", OpenedStream(opened.video, lower, tiers, opened.track))
+        invoke(activity, "lowerSoftwareVideoQuality", fake.player)
+        ShadowLooper.idleMainLooper()
+        (get(activity, "workJob") as Future<*>).get(5, TimeUnit.SECONDS)
+        ShadowLooper.idleMainLooper()
+
+        assertEquals("101", fake.player.currentMediaItem?.mediaId)
+        assertEquals(12_000L, get(activity, "startPosition"))
+        assertEquals(720, get(activity, "attemptedQuality"))
+        assertEquals("720P（自动降清）", get(activity, "quality"))
+        assertEquals(1080, library.maxQuality)
+        assertEquals(0, requests.get())
+    }
 
     @Test
     fun automaticTransitionReusesPlayerAndUpdatesEpisodeProgress() =
