@@ -11,6 +11,7 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import okhttp3.OkHttpClient
+import org.json.JSONObject
 
 /**
  * 离线缓存：把已打开的视频按绝对偏移顺序落盘（RemoteVideo 负责解密），
@@ -39,13 +40,14 @@ internal class OfflineDownloads(private val context: Context, private val http: 
     fun status(id: String): Status =
         states[id] ?: file(id)?.let { Status(State.DONE, it.length(), it.length()) } ?: Status(State.IDLE, 0, 0)
 
-    fun start(id: String, video: RemoteVideo) {
+    fun start(id: String, video: RemoteVideo, meta: Map<String, String> = emptyMap()) {
         if (status(id).state == State.DOWNLOADING) return
         val copy = video.preparedSource()?.open(http) ?: run {
             states[id] = Status(State.FAILED, 0, 0, "视频尚未就绪")
             return
         }
         states[id] = Status(State.DOWNLOADING, 0, copy.total)
+        if (meta.isNotEmpty()) writeMeta(id, meta)
         // 复用旧分片前先确认远程资源长度没变，避免拼出损坏文件。
         if (recordedSize(id) != copy.total) part(id).delete()
         recordSize(id, copy.total)
@@ -82,7 +84,23 @@ internal class OfflineDownloads(private val context: Context, private val http: 
         File(directory, "$id.mp4").delete()
         part(id).delete()
         File(directory, "$id.size").delete()
+        File(directory, "$id.json").delete()
         states[id] = Status(State.IDLE, 0, 0)
+    }
+
+    /** 该系列已缓存的一集；断网打不开详情页时用它直接播放。 */
+    fun cachedEpisode(seriesId: String): String? =
+        directory.listFiles { file -> file.isFile && file.name.endsWith(".json") }
+            ?.mapNotNull { file ->
+                val id = file.name.removeSuffix(".json")
+                val owner = runCatching { JSONObject(file.readText()).optString("seriesId") }.getOrNull()
+                if (owner == seriesId && file(id) != null) file.lastModified() to id else null
+            }
+            ?.maxByOrNull { it.first }
+            ?.second
+
+    private fun writeMeta(id: String, meta: Map<String, String>) {
+        runCatching { File(directory, "$id.json").writeText(JSONObject(meta as Map<*, *>).toString()) }
     }
 
     private fun download(id: String, video: RemoteVideo) {

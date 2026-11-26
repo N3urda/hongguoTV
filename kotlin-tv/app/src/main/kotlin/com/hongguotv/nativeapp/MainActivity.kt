@@ -2672,7 +2672,18 @@ class MainActivity : Activity() {
                 playEpisode(target.index, target.position, autoplay = detailAutoplay)
             },
             { problem ->
-                error(body, problem) {
+                // 断网打不开详情时，用已缓存的这一集直接续播，不再卡在错误页。
+                val cachedId = if (resume) offline.cachedEpisode(series.id) else null
+                if (cachedId != null) {
+                    detail = Detail(series, listOf(cachedId))
+                    episodeIndex = 0
+                    val progress = library.progress(series.id)
+                    playEpisode(
+                        0,
+                        if (progress?.episodeId == cachedId) progress.position else 0,
+                        autoplay = detailAutoplay,
+                    )
+                } else error(body, problem) {
                     if (cloudProgress != null && accountScope != cloudAccount.historyScope)
                         showCatalog()
                     else openDetail(series, resume, detailAutoplay, cloudProgress, fromRelated, fromHome, fromPhone)
@@ -3598,7 +3609,18 @@ class MainActivity : Activity() {
                 val remote = video
                 if (remote == null) Toast.makeText(this, "请先播放本集再下载", Toast.LENGTH_SHORT).show()
                 else {
-                    offline.start(id, remote)
+                    val data = detail
+                    offline.start(
+                        id,
+                        remote,
+                        buildMap {
+                            data?.let {
+                                put("seriesId", it.series.id)
+                                put("title", it.series.title)
+                            }
+                            put("episode", (episodeIndex + 1).toString())
+                        },
+                    )
                     Toast.makeText(this, "已开始下载本集，可继续观看", Toast.LENGTH_SHORT).show()
                 }
             }
