@@ -3580,6 +3580,12 @@ class MainActivity : Activity() {
     }
 
     private fun toggleOffline(anchor: TextView) {
+        togglePlaybackOffline()
+        anchor.text = offlineLabel()
+    }
+
+    /** 播放中可直接下载/取消/删除本集；设置页只在有播放会话时才能真正开始下载。 */
+    private fun togglePlaybackOffline() {
         val id = playbackEpisodeId
         if (id.isEmpty()) {
             Toast.makeText(this, "请先播放一集", Toast.LENGTH_SHORT).show()
@@ -3590,14 +3596,24 @@ class MainActivity : Activity() {
             OfflineDownloads.State.DONE -> offline.remove(id)
             else -> {
                 val remote = video
-                if (remote == null) Toast.makeText(this, "本集已在本地缓存中", Toast.LENGTH_SHORT).show()
+                if (remote == null) Toast.makeText(this, "请先播放本集再下载", Toast.LENGTH_SHORT).show()
                 else {
                     offline.start(id, remote)
                     Toast.makeText(this, "已开始下载本集，可继续观看", Toast.LENGTH_SHORT).show()
                 }
             }
         }
-        anchor.text = offlineLabel()
+    }
+
+    private fun offlineMenuLabel(): String {
+        val id = playbackEpisodeId
+        if (id.isEmpty()) return "离线缓存  下载本集"
+        return when (offline.status(id).state) {
+            OfflineDownloads.State.DOWNLOADING -> "离线缓存  下载中 ${offline.status(id).percent}%（选择取消）"
+            OfflineDownloads.State.DONE -> "离线缓存  已下载（选择删除）"
+            OfflineDownloads.State.FAILED -> "离线缓存  失败，选择重试"
+            else -> "离线缓存  下载本集"
+        }
     }
 
     private fun queuePreparedEpisode(key: String) {
@@ -4777,6 +4793,7 @@ class MainActivity : Activity() {
             "定时 ${sleepTimer.label()}", "从头播放", "高级设置",
             "画面旋转 ${library.videoRotation}°",
             "常驻播放进度 ${if (library.alwaysShowProgress) "开启" else "关闭"}",
+            offlineMenuLabel(),
         ), anchor, { choice ->
             main.post {
                 if (screen == "player" && anchor.isAttachedToWindow) when (choice) {
@@ -4787,6 +4804,7 @@ class MainActivity : Activity() {
                     4 -> showAdvancedPlaybackSettings(anchor)
                     5 -> showRotationPicker(anchor)
                     6 -> { library.alwaysShowProgress = !library.alwaysShowProgress; updatePersistentProgress(); showPlaybackSettings(anchor) }
+                    7 -> { togglePlaybackOffline(); showPlaybackSettings(anchor) }
                 }
             }
         })
