@@ -12,6 +12,7 @@ import android.graphics.drawable.GradientDrawable
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -21,6 +22,7 @@ import android.view.*
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import androidx.media3.common.*
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
@@ -444,6 +446,15 @@ class MainActivity : Activity() {
     private var synopsisExpanded = false
     private var player: ExoPlayer? = null
     private var video: RemoteVideo? = null
+    private var playbackEpisodeId = ""
+    private var playingLocal = false
+    private val offline by lazy {
+        OfflineDownloads(this, repository.http).also { downloads ->
+            downloads.onComplete = {
+                Toast.makeText(this, "离线缓存已完成，断网也能播放", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
     private var playbackReady = false
     private var pausedForLifecycle = false
     private lateinit var hud: LinearLayout
@@ -2418,6 +2429,17 @@ class MainActivity : Activity() {
                     frame = setting("画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame, false) }
                     lateinit var rotationButton: TextView
                     rotationButton = setting("画面旋转  ·  ${library.videoRotation}°") { showRotationPicker(rotationButton) }
+                    lateinit var offlineButton: TextView
+                    offlineButton = setting(offlineLabel()) { toggleOffline(offlineButton) }
+                    val offlineTick = object : Runnable {
+                        override fun run() {
+                            if (offlineButton.isAttachedToWindow) {
+                                offlineButton.text = offlineLabel()
+                                main.postDelayed(this, 700)
+                            }
+                        }
+                    }
+                    main.post(offlineTick)
                     toggle("强制软件解码（花屏时开启，下次播放生效）", library.forceSoftwareDecoding) { library.forceSoftwareDecoding = it }
                     toggle("常驻播放进度", library.alwaysShowProgress) { library.alwaysShowProgress = it }
                     toggle("自动连播", library.autoNext) { library.autoNext = it }
@@ -3168,6 +3190,8 @@ class MainActivity : Activity() {
         }
         syncMediaSession()
         val requestedId = data.episodes[episodeIndex]
+        playbackEpisodeId = requestedId
+        playingLocal = false
         val maxQuality = library.maxQuality
         val ticket = generation
         var usedPending = false
@@ -3177,24 +3201,28 @@ class MainActivity : Activity() {
                     playbackPreparationUntil - android.os.SystemClock.elapsedRealtime()
                 if (remaining <= 0) throw java.net.SocketTimeoutException("播放准备超时")
                 RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(remaining)) {
-                    val prepared =
-                        prefetched
-                            ?: pending?.let {
-                                awaitPreparedEpisode(it, remaining).also { ready -> usedPending = ready != null }
+                    // 已离线缓存：完全跳过网络取流，断网也能直接播放。
+                    if (offline.file(requestedId) != null) null
+                    else {
+                        val prepared =
+                            prefetched
+                                ?: pending?.let {
+                                    awaitPreparedEpisode(it, remaining).also { ready -> usedPending = ready != null }
+                                }
+                        prepared
+                            ?: openStream(
+                                repository.http,
+                                repository,
+                                requestedId,
+                                maxQuality,
+                                CodecCapabilities::supports,
+                                recentPlaybackSources,
+                                metadataAhead = data.episodes.drop(selectedIndex + 1).take(2),
+                            ) {
+                                it == null || CodecCapabilities.supports(it)
                             }
-                    prepared
-                        ?: openStream(
-                            repository.http,
-                            repository,
-                            requestedId,
-                            maxQuality,
-                            CodecCapabilities::supports,
-                            recentPlaybackSources,
-                            metadataAhead = data.episodes.drop(selectedIndex + 1).take(2),
-                        ) {
-                            it == null || CodecCapabilities.supports(it)
-                        }
-                        ?: throw java.io.IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+                            ?: throw java.io.IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+                    }
                 }
             },
             { opened ->
@@ -3202,9 +3230,20 @@ class MainActivity : Activity() {
                 if (pending != null) {
                     if (usedPending) playbackHttp = pending.http else closeTransport(pending.http)
                 }
-                val remote = opened.video
-                video = remote
-                applyOpenedStream(opened, maxQuality)
+                val local = if (opened == null) offline.file(requestedId) else null
+                playingLocal = local != null
+                val remote = opened?.video
+                if (opened != null && remote != null) {
+                    video = remote
+                    applyOpenedStream(opened, maxQuality)
+                } else {
+                    video = null
+                    quality = "本地"
+                    attemptedQuality = 0
+                    currentTrack = null
+                    currentRendition = null
+                    currentTiers = emptyList()
+                }
                 val p =
                     ensurePlayer()
                 p.setPlaybackSpeed(library.playbackSpeed)
@@ -3325,7 +3364,11 @@ class MainActivity : Activity() {
                     }
                 playerListener = listener
                 p.addListener(listener)
-                val source = episodeSource(remote, requestedId)
+                val source = when {
+                    local != null -> localSource(local, requestedId)
+                    remote != null -> episodeSource(remote, requestedId)
+                    else -> throw java.io.IOException("视频源已失效")
+                }
                 p.setMediaSource(source)
                 p.seekTo(position.coerceAtLeast(0))
                 p.prepare()
@@ -3504,14 +3547,58 @@ class MainActivity : Activity() {
             .build()
 
     private fun episodeSource(remote: RemoteVideo, id: String) =
-        playbackSourceFactory { VideoDataSource(remote) }
+        offline.file(id)?.let { localSource(it, id) }
+            ?: playbackSourceFactory { VideoDataSource(remote) }
+                .createMediaSource(
+                    MediaItem.Builder()
+                        .setMediaId(id)
+                        .setUri("hongguotv://episode/$id")
+                        .setMimeType(MimeTypes.VIDEO_MP4)
+                        .build()
+                )
+
+    /** 本地已缓存文件，由 media3 直接读取，不经过自建数据源。 */
+    private fun localSource(file: java.io.File, id: String) =
+        playbackSourceFactory { DefaultDataSource.Factory(applicationContext).createDataSource() }
             .createMediaSource(
                 MediaItem.Builder()
                     .setMediaId(id)
-                    .setUri("hongguotv://episode/$id")
+                    .setUri(Uri.fromFile(file))
                     .setMimeType(MimeTypes.VIDEO_MP4)
                     .build()
             )
+
+    private fun offlineLabel(): String {
+        val id = playbackEpisodeId
+        if (id.isEmpty()) return "离线缓存  ·  播放时可下载"
+        return when (offline.status(id).state) {
+            OfflineDownloads.State.DOWNLOADING -> "离线缓存  ·  下载中 ${offline.status(id).percent}%"
+            OfflineDownloads.State.DONE -> "离线缓存  ·  已下载（点击删除）"
+            OfflineDownloads.State.FAILED -> "离线缓存  ·  失败，点击重试"
+            else -> "离线缓存  ·  下载本集"
+        }
+    }
+
+    private fun toggleOffline(anchor: TextView) {
+        val id = playbackEpisodeId
+        if (id.isEmpty()) {
+            Toast.makeText(this, "请先播放一集", Toast.LENGTH_SHORT).show()
+            return
+        }
+        when (offline.status(id).state) {
+            OfflineDownloads.State.DOWNLOADING -> offline.cancel(id)
+            OfflineDownloads.State.DONE -> offline.remove(id)
+            else -> {
+                val remote = video
+                if (remote == null) Toast.makeText(this, "本集已在本地缓存中", Toast.LENGTH_SHORT).show()
+                else {
+                    offline.start(id, remote)
+                    Toast.makeText(this, "已开始下载本集，可继续观看", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        anchor.text = offlineLabel()
+    }
 
     private fun queuePreparedEpisode(key: String) {
         val p = player ?: return
@@ -4352,7 +4439,7 @@ class MainActivity : Activity() {
         if (waitingForFirstFrame && !sleepStopped) {
             playbackText.text = if (!requestedAutoplay && playbackReady)
                 (if (recoveryDisplayActive) "$lastPlaybackFailure\n" else "") + "已准备好 · 保持暂停，按播放开始"
-                else preparingPlaybackText(recoveryDisplayActive, lastPlaybackFailure, video != null)
+                else preparingPlaybackText(recoveryDisplayActive, lastPlaybackFailure, video != null || playingLocal)
             return
         }
         if (sleepStopped) {
@@ -4362,7 +4449,11 @@ class MainActivity : Activity() {
         if (!playbackReady) {
             playbackText.text =
                 (if (!requestedAutoplay) "准备后保持暂停 · " else "") +
-                    if (video == null) "正在获取播放地址…" else "正在缓冲…"
+                    when {
+                        playingLocal -> "正在读取本地缓存…"
+                        video == null -> "正在获取播放地址…"
+                        else -> "正在缓冲…"
+                    }
             return
         }
         val p = player ?: return
