@@ -254,7 +254,7 @@ class TvUsabilityTest {
             listOf("检查更新", "播放", "外观与操作", "账户", "关于应用").forEach { title ->
                 assertTrue(rows.any { it.text == title })
             }
-            val decoding = rows.single { it.text == "解码方式  ·  自动" }
+            val decoding = rows.single { it.text == "解码方式  ·  硬解优先（自动回退）" }
             assertTrue(decoding.isFocusable)
             assertEquals(VideoDecoderMode.AUTOMATIC, library.videoDecoderMode)
             decoding.performClick()

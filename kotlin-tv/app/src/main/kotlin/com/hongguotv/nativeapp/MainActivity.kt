@@ -4720,7 +4720,8 @@ class MainActivity : Activity() {
 
     private fun showPlaybackSettings(anchor: TextView) {
         tvTools.choose("更多设置", listOf(
-            "清晰度 ${library.maxQuality}P", "画面 ${library.frameMode.label}",
+            "清晰度 ${library.maxQuality}P", "解码方式 ${library.videoDecoderMode.label}",
+            "画面 ${library.frameMode.label}",
             "定时 ${sleepTimer.label()}", "从头播放", "高级设置",
             "画面旋转 ${library.videoRotation}°",
             "常驻播放进度 ${if (library.alwaysShowProgress) "开启" else "关闭"}",
@@ -4729,13 +4730,14 @@ class MainActivity : Activity() {
             main.post {
                 if (screen == "player" && anchor.isAttachedToWindow) when (choice) {
                     0 -> showQualityPicker(anchor, true)
-                    1 -> showFramePicker(anchor, true)
-                    2 -> showSleepPicker(anchor)
-                    3 -> { seekTo(0); hidePanel() }
-                    4 -> showAdvancedPlaybackSettings(anchor)
-                    5 -> showRotationPicker(anchor)
-                    6 -> { library.alwaysShowProgress = !library.alwaysShowProgress; updatePersistentProgress(); showPlaybackSettings(anchor) }
-                    7 -> {
+                    1 -> showVideoDecoderPicker(anchor, true)
+                    2 -> showFramePicker(anchor, true)
+                    3 -> showSleepPicker(anchor)
+                    4 -> { seekTo(0); hidePanel() }
+                    5 -> showAdvancedPlaybackSettings(anchor)
+                    6 -> showRotationPicker(anchor)
+                    7 -> { library.alwaysShowProgress = !library.alwaysShowProgress; updatePersistentProgress(); showPlaybackSettings(anchor) }
+                    8 -> {
                         val format = if (playbackReady) player?.videoFormat else null
                         val decoder = if (playbackReady) playerDiagnostics?.videoDecoder else null
                         tvTools.info("播放信息", playbackVideoInfo(quality, format, decoder), anchor)
@@ -4748,7 +4750,6 @@ class MainActivity : Activity() {
     private fun showAdvancedPlaybackSettings(anchor: TextView) {
         tvTools.choose("高级设置", listOf(
             "伴机代解码 ${if (relayStore.enabled) "开" else "关"}", "重置设备能力记录",
-            "解码方式 ${library.videoDecoderMode.label}",
         ), anchor, { choice ->
             main.post {
                 if (screen == "player" && anchor.isAttachedToWindow) when (choice) {
@@ -4758,7 +4759,6 @@ class MainActivity : Activity() {
                         CodecCapabilities.resetLearned()
                         playbackText.text = if (count > 0) "已清除 $count 条设备能力记录" else "暂无设备能力记录"
                     }
-                    2 -> showVideoDecoderPicker(anchor, true)
                 }
             }
         }, onBack = { showPlaybackSettings(anchor) })
@@ -4778,7 +4778,7 @@ class MainActivity : Activity() {
                 }
             }
         }, selected = library.videoDecoderMode.ordinal,
-            onBack = if (inPlayer) ({ showAdvancedPlaybackSettings(anchor) }) else null)
+            onBack = if (inPlayer) ({ showPlaybackSettings(anchor) }) else null)
     }
 
     private fun showSpeedPicker(anchor: TextView, inPlayer: Boolean = true) {

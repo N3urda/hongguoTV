@@ -34,13 +34,15 @@ internal fun playbackRenderers(
 internal fun <T> orderVideoDecoders(
     candidates: List<T>,
     softwareOnly: (T) -> Boolean,
+    hardwareAccelerated: (T) -> Boolean,
     supportsFormat: (T) -> Boolean,
     supportsCompatibleHardware: (T) -> Boolean = { false },
 ): List<T> {
-    val (software, hardware) = candidates.partition(softwareOnly)
-    val (supported, unsupported) = hardware.partition(supportsFormat)
-    if (software.isEmpty()) return supported + unsupported
-    return supported + unsupported.filter(supportsCompatibleHardware) + software
+    val (software, others) = candidates.partition(softwareOnly)
+    val (supported, unsupported) = others.partition(supportsFormat)
+    val preferred = supported.sortedByDescending(hardwareAccelerated)
+    if (software.isEmpty()) return preferred + unsupported
+    return preferred + unsupported.filter(supportsCompatibleHardware) + software
 }
 
 // Some HEVC streams declare a higher level than their coded dimensions and frame rate need.
@@ -65,6 +67,7 @@ private class PlaybackVideoRenderer(
         return orderVideoDecoders(
             super.getDecoderInfos(mediaCodecSelector, format, requiresSecureDecoder),
             { it.softwareOnly },
+            { it.hardwareAccelerated },
             { it.isFormatSupported(format) },
         ) { tryCompatibleHardware && supportsHevcWithoutLevel(it, format) }
     }

@@ -2,7 +2,7 @@
 package com.hongguotv.nativeapp
 
 internal enum class VideoDecoderMode(val label: String) {
-    AUTOMATIC("自动"),
+    AUTOMATIC("硬解优先（自动回退）"),
     COMPATIBLE_HARDWARE("尝试兼容硬解（HEVC）"),
     SOFTWARE_ONLY("强制软件解码"),
 }
