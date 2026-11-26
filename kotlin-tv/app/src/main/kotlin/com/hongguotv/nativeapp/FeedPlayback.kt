@@ -419,7 +419,7 @@ internal class Media3TrialPlayback(
     context: Context,
     private val speed: Float = 1f,
     private val frame: VideoFrameMode = VideoFrameMode.FIT,
-    forceSoftwareDecoding: () -> Boolean = { false },
+    videoDecoderMode: () -> VideoDecoderMode = { VideoDecoderMode.AUTOMATIC },
 ) : TrialPlayback {
     private var currentIndex = 0
     private var preloading = false
@@ -441,7 +441,7 @@ internal class Media3TrialPlayback(
                         }
                 },
             )
-            .setRenderersFactory(playbackRenderers(context, forceSoftwareDecoding))
+            .setRenderersFactory(playbackRenderers(context, videoDecoderMode = videoDecoderMode))
             .setLoadControl(
                 DefaultLoadControl.Builder()
                     .setBufferDurationsMs(2500, 10000, 500, 1000)
