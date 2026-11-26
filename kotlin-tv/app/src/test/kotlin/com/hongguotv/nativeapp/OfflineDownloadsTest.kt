@@ -63,6 +63,21 @@ class OfflineDownloadsTest {
     }
 
     @Test
+    fun cachedEpisodeFindsOnlyFinishedEpisodesOfThatSeries() {
+        cached("ep-5")
+        File(directory, "ep-5.json").writeText("""{"seriesId":"series-a","episode":"5"}""")
+        cached("ep-6")
+        File(directory, "ep-6.json").writeText("""{"seriesId":"series-b","episode":"1"}""")
+        File(directory, "ep-7.part").writeBytes(ByteArray(16))
+        File(directory, "ep-7.json").writeText("""{"seriesId":"series-c","episode":"2"}""")
+        val offline = downloads
+        assertEquals("ep-5", offline.cachedEpisode("series-a"))
+        assertEquals("ep-6", offline.cachedEpisode("series-b"))
+        assertNull(offline.cachedEpisode("series-c"))
+        assertNull(offline.cachedEpisode("series-missing"))
+    }
+
+    @Test
     fun startingWithoutAPreparedStreamFailsInsteadOfDownloading() {
         val offline = downloads
         offline.start(
