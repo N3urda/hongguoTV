@@ -517,7 +517,7 @@ class PlaybackQueueTest {
     }
 
     @Test
-    fun migratedMenuPreservesRotationAndPersistentProgressSettings() = fixture { activity, _, _, _ ->
+    fun playbackSettingsOffersDecoderSwitchBesideQuality() = fixture { activity, _, _, _ ->
         press(activity, KeyEvent.KEYCODE_MENU)
         val anchor = (get(activity, "controls") as LinearLayout).findViewWithTag<TextView>("playback-settings")
         invoke(activity, "showPlaybackSettings", anchor)
@@ -528,6 +528,8 @@ class PlaybackQueueTest {
             else -> emptyList()
         }
         val titles = labels(dialog.window!!.decorView)
+        val decoder = dialog.window!!.decorView.findViewWithTag<View>("choice-1")
+        assertEquals("解码方式 硬解优先（自动回退）", decoder.contentDescription)
         assertTrue(titles.any { it.startsWith("画面旋转") })
         assertTrue(titles.any { it.startsWith("常驻播放进度") })
         dialog.dismiss()

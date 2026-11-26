@@ -254,13 +254,16 @@ class TvUsabilityTest {
             listOf("检查更新", "播放", "外观与操作", "账户", "关于应用").forEach { title ->
                 assertTrue(rows.any { it.text == title })
             }
-            val softwareDecoding = rows.single { it.text.startsWith("强制软件解码") }.parent as View
-            assertTrue(softwareDecoding.isFocusable)
-            assertFalse(library.forceSoftwareDecoding)
-            softwareDecoding.performClick()
-            assertTrue(library.forceSoftwareDecoding)
-            softwareDecoding.performClick()
-            assertFalse(library.forceSoftwareDecoding)
+            val decoding = rows.single { it.text == "解码方式  ·  硬解优先（自动回退）" }
+            assertTrue(decoding.isFocusable)
+            assertEquals(VideoDecoderMode.AUTOMATIC, library.videoDecoderMode)
+            decoding.performClick()
+            ShadowDialog.getLatestDialog().window!!.decorView.findViewWithTag<View>("choice-2").performClick()
+            assertEquals(VideoDecoderMode.SOFTWARE_ONLY, library.videoDecoderMode)
+            decoding.performClick()
+            ShadowDialog.getLatestDialog().window!!.decorView.findViewWithTag<View>("choice-1").performClick()
+            assertEquals(VideoDecoderMode.COMPATIBLE_HARDWARE, library.videoDecoderMode)
+            assertEquals("解码方式  ·  尝试兼容硬解（HEVC）", decoding.text.toString())
             val danmaku = rows.single { it.text == "弹幕设置" }
             assertTrue(danmaku.requestFocus())
             danmaku.performClick()

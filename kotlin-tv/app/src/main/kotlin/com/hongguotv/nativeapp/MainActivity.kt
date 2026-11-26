@@ -444,6 +444,7 @@ class MainActivity : Activity() {
     private var group = 0
     private var synopsisExpanded = false
     private var player: ExoPlayer? = null
+    private var playerDiagnostics: PlaybackDiagnostics? = null
     private var video: RemoteVideo? = null
     private var playbackReady = false
     private var pausedForLifecycle = false
@@ -1143,7 +1144,7 @@ class MainActivity : Activity() {
                         startupCache = cloudAccount.recommendationStartupCache(),
                         recentSources = recentPlaybackSources,
                     ),
-                    Media3TrialPlayback(this, library.playbackSpeed, library.frameMode) { library.forceSoftwareDecoding },
+                    Media3TrialPlayback(this, library.playbackSpeed, library.frameMode) { library.videoDecoderMode },
                     autoPreview = library.homeAutoplay,
                     backgroundBusy = { gradualPreloader?.busy == true },
                     loadCover = ::loadCover,
@@ -2422,7 +2423,8 @@ class MainActivity : Activity() {
                     frame = setting("画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame, false) }
                     lateinit var rotationButton: TextView
                     rotationButton = setting("画面旋转  ·  ${library.videoRotation}°") { showRotationPicker(rotationButton) }
-                    toggle("强制软件解码（花屏时开启，下次播放生效）", library.forceSoftwareDecoding) { library.forceSoftwareDecoding = it }
+                    lateinit var decoder: TextView
+                    decoder = setting("解码方式  ·  ${library.videoDecoderMode.label}") { showVideoDecoderPicker(decoder, false) }
                     toggle("常驻播放进度", library.alwaysShowProgress) { library.alwaysShowProgress = it }
                     toggle("自动连播", library.autoNext) { library.autoNext = it }
                     toggle("跨季自动连播（需开启自动连播）", library.seasonAutoplay) { library.seasonAutoplay = it }
@@ -3817,9 +3819,11 @@ class MainActivity : Activity() {
                         )
                         .setTargetBufferBytes(12 * 1024 * 1024)
                         .build()
-                val renderers = playbackRenderers(this) { library.forceSoftwareDecoding }
+                val diagnostics = PlaybackDiagnostics("player")
+                val renderers = playbackRenderers(this, diagnostics) { library.videoDecoderMode }
                 ExoPlayer.Builder(this, renderers).setLoadControl(load).build().also {
                     player = it
+                    playerDiagnostics = diagnostics
                     // Buffer the start of the queued episode once current media loading settles.
                     it.preloadConfiguration = ExoPlayer.PreloadConfiguration(2_000_000L)
                     it.addListener(bufferingIndicator)
@@ -3832,10 +3836,10 @@ class MainActivity : Activity() {
                         true,
                     )
                     it.setHandleAudioBecomingNoisy(true)
-                    it.addAnalyticsListener(PlaybackDiagnostics("player"))
+                    it.addAnalyticsListener(diagnostics)
                     it.addAnalyticsListener(playbackDriftListener(it))
-                    if (SoftwareVideoFallback.appliesTo(this)) {
-                        it.addAnalyticsListener(SoftwareVideoFallback(it, ::lowerSoftwareVideoQuality))
+                    if (Build.SUPPORTED_64_BIT_ABIS.isEmpty()) {
+                        it.addAnalyticsListener(SoftwareVideoFallback(it, diagnostics, ::lowerSoftwareVideoQuality))
                     }
                 }
             }
@@ -4716,20 +4720,28 @@ class MainActivity : Activity() {
 
     private fun showPlaybackSettings(anchor: TextView) {
         tvTools.choose("更多设置", listOf(
-            "清晰度 ${library.maxQuality}P", "画面 ${library.frameMode.label}",
+            "清晰度 ${library.maxQuality}P", "解码方式 ${library.videoDecoderMode.label}",
+            "画面 ${library.frameMode.label}",
             "定时 ${sleepTimer.label()}", "从头播放", "高级设置",
             "画面旋转 ${library.videoRotation}°",
             "常驻播放进度 ${if (library.alwaysShowProgress) "开启" else "关闭"}",
+            "播放信息",
         ), anchor, { choice ->
             main.post {
                 if (screen == "player" && anchor.isAttachedToWindow) when (choice) {
                     0 -> showQualityPicker(anchor, true)
-                    1 -> showFramePicker(anchor, true)
-                    2 -> showSleepPicker(anchor)
-                    3 -> { seekTo(0); hidePanel() }
-                    4 -> showAdvancedPlaybackSettings(anchor)
-                    5 -> showRotationPicker(anchor)
-                    6 -> { library.alwaysShowProgress = !library.alwaysShowProgress; updatePersistentProgress(); showPlaybackSettings(anchor) }
+                    1 -> showVideoDecoderPicker(anchor, true)
+                    2 -> showFramePicker(anchor, true)
+                    3 -> showSleepPicker(anchor)
+                    4 -> { seekTo(0); hidePanel() }
+                    5 -> showAdvancedPlaybackSettings(anchor)
+                    6 -> showRotationPicker(anchor)
+                    7 -> { library.alwaysShowProgress = !library.alwaysShowProgress; updatePersistentProgress(); showPlaybackSettings(anchor) }
+                    8 -> {
+                        val format = if (playbackReady) player?.videoFormat else null
+                        val decoder = if (playbackReady) playerDiagnostics?.videoDecoder else null
+                        tvTools.info("播放信息", playbackVideoInfo(quality, format, decoder), anchor)
+                    }
                 }
             }
         })
@@ -4750,6 +4762,23 @@ class MainActivity : Activity() {
                 }
             }
         }, onBack = { showPlaybackSettings(anchor) })
+    }
+
+    private fun showVideoDecoderPicker(anchor: TextView, inPlayer: Boolean) {
+        val modes = VideoDecoderMode.entries
+        tvTools.choose("解码方式", modes.map { it.label }, anchor, { choice ->
+            val mode = modes[choice]
+            if (mode != library.videoDecoderMode) {
+                library.videoDecoderMode = mode
+                if (!inPlayer) {
+                    anchor.text = "解码方式  ·  ${mode.label}"
+                } else if (screen == "player" && anchor.isAttachedToWindow) {
+                    softwareQualityLimitedEpisode = null
+                    playEpisode(episodeIndex, currentPosition(), player?.playWhenReady ?: requestedAutoplay, recreateView = true)
+                }
+            }
+        }, selected = library.videoDecoderMode.ordinal,
+            onBack = if (inPlayer) ({ showPlaybackSettings(anchor) }) else null)
     }
 
     private fun showSpeedPicker(anchor: TextView, inPlayer: Boolean = true) {
@@ -4969,6 +4998,7 @@ class MainActivity : Activity() {
         persistentBar = null
         player?.release()
         player = null
+        playerDiagnostics = null
         playbackReady = false
         transportPlay = null
         sleepButton = null

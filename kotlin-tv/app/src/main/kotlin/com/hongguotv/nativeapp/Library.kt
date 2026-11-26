@@ -64,11 +64,11 @@ class Library(context: Context) {
             viewing = viewing.copy(seasonAutoplay = value)
             put("seasonAutoplay", value)
         }
-    var forceSoftwareDecoding: Boolean
-        get() = viewing.forceSoftwareDecoding
+    internal var videoDecoderMode: VideoDecoderMode
+        get() = viewing.videoDecoderMode
         set(value) {
-            viewing = viewing.copy(forceSoftwareDecoding = value)
-            put("forceSoftwareDecoding", value)
+            viewing = viewing.copy(videoDecoderMode = value)
+            put("videoDecoderMode", value.name)
         }
     var homeAutoplay: Boolean
         get() = viewing.homeAutoplay
