@@ -99,6 +99,10 @@ internal class OfflineDownloads(private val context: Context, private val http: 
             ?.maxByOrNull { it.first }
             ?.second
 
+    /** 下载时记录的集数；没有元数据时返回 0。 */
+    fun episodeNumber(id: String): Int =
+        runCatching { JSONObject(File(directory, "$id.json").readText()).optInt("episode") }.getOrDefault(0)
+
     private fun writeMeta(id: String, meta: Map<String, String>) {
         runCatching { File(directory, "$id.json").writeText(JSONObject(meta as Map<*, *>).toString()) }
     }
