@@ -50,13 +50,32 @@ platformApk 时仍可读取。旧客户端忽略新字段，先更新到兼容�
 更新时才自动选择平台包。因此希望立即移除 FFmpeg 的现有 Android 6+ 用户应
 手动同签名覆盖安装 android6.apk，无需卸载。不会自动重复安装同版本。
 
-「设置 → 检查更新 → 更新线路」默认使用自动线路，依次尝试 GitHub 直连、
-ghfast.top 和 gh-proxy.org。也可以固定其中一条线路，应用会记住选择。
-检查更新和下载 APK 都使用所选线路。
+## 更新线路
 
-下载通过固定 HTTPS 源，校验大小、SHA256、包名、版本、最低 SDK 和安装签名；
+「设置 → 检查更新 → 更新线路」提供“自动线路”及 GitHub 直连、`gh-proxy.org`、`ghfast.top`、
+`v6.gh-proxy.org` 手动选项。默认自动线路依次尝试 GitHub 直连、
+`gh-proxy.org`、`ghfast.top` 和 `v6.gh-proxy.org`，任一线路请求失败、
+返回的元数据无效或 APK 摘要不匹配时继续下一条；手动选择只使用指定线路，
+便于排查单一镜像。自动检查成功后，同一次更新下载优先复用成功线路；
+切换线路会取消当前任务并清除旧检查结果。选择保存在本机，升级后继续沿用。
+
+下载只访问 HTTPS 白名单主机及其重定向，镜像请求不携带账号凭据；校验大小、SHA256、
+包名、版本、最低 SDK 和安装签名；
 由 Android 系统确认安装。issue #55 的真机崩溃尚未复现，移除 FFmpeg 是隔离措施，
 构建和打包检查不能替代问题设备回测。
+
+更新下载可单独做电视端真实网络验收，不打开系统安装器：
+
+```sh
+adb shell am instrument -w -r \
+  -e updateDownload true \
+  -e updateRoute AUTOMATIC \
+  com.hongguotv.nativeapp.debug.test/com.hongguotv.nativeapp.LivePlaybackInstrumentation
+```
+
+`updateRoute` 可改为 `GITHUB`、`GH_PROXY`、`GHFAST` 或
+`GH_PROXY_V6`。APK 会保存到应用外部
+`update-acceptance/` 目录，输出包含实际大小和 SHA256；验收入口不会发起安装。
 
 本地发布需干净工作区且 main/tag/HEAD 一致，再执行
 `python3 scripts/release_tv.py publish kotlin-vX.Y.Z --local`。没有明确发布指令时不执行。

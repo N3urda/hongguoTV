@@ -77,8 +77,9 @@ interface AppUpdateSource : java.io.Closeable {
 enum class AppUpdateRoute(val label: String, internal val mirrorHost: String? = null) {
     AUTOMATIC("自动线路"),
     GITHUB("GitHub 直连"),
+    GH_PROXY("gh-proxy.org", "gh-proxy.org"),
     GHFAST("ghfast.top", "ghfast.top"),
-    GH_PROXY("gh-proxy.org", "gh-proxy.org");
+    GH_PROXY_V6("v6.gh-proxy.org", "v6.gh-proxy.org");
 
     companion object {
         fun fromPreference(value: String?): AppUpdateRoute =
@@ -88,15 +89,43 @@ enum class AppUpdateRoute(val label: String, internal val mirrorHost: String? = 
 
 /** Public release files only. The updater uses its own client with no account credentials. */
 internal object UpdateDownloadSources {
-    private val automaticRoutes = AppUpdateRoute.entries.filter { it != AppUpdateRoute.AUTOMATIC }
+    private val automaticOrder =
+        listOf(
+            AppUpdateRoute.GITHUB,
+            AppUpdateRoute.GH_PROXY,
+            AppUpdateRoute.GHFAST,
+            AppUpdateRoute.GH_PROXY_V6,
+        )
 
     fun urls(origin: String, selection: AppUpdateRoute): List<String> =
-        (if (selection == AppUpdateRoute.AUTOMATIC) automaticRoutes else listOf(selection)).map { route ->
-            route.mirrorHost?.let { "https://$it/$origin" } ?: origin
-        }
+        sources(origin, selection).map { it.second }
+
+    fun sources(
+        origin: String,
+        selection: AppUpdateRoute,
+        preferred: AppUpdateRoute? = null,
+        avoided: Set<AppUpdateRoute> = emptySet(),
+    ): List<Pair<AppUpdateRoute, String>> {
+        val order =
+            when (selection) {
+                AppUpdateRoute.AUTOMATIC -> automaticOrder
+                else -> listOf(selection)
+            }
+        val preferredOrder =
+            if (selection == AppUpdateRoute.AUTOMATIC && preferred != null && preferred in order)
+                listOf(preferred) + order.filterNot { it == preferred }
+            else
+                order
+        val retryLast = preferredOrder.filter { it in avoided }
+        val remaining = preferredOrder.filterNot { it in avoided }
+        return (remaining + retryLast).map { it to routeUrl(origin, it) }
+    }
+
+    private fun routeUrl(origin: String, route: AppUpdateRoute): String =
+        route.mirrorHost?.let { "https://$it/$origin" } ?: origin
 
     val hosts = setOf("github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com") +
-        automaticRoutes.mapNotNull { it.mirrorHost }
+        automaticOrder.mapNotNull { it.mirrorHost }
 }
 
 class AppUpdateRepository internal constructor(
@@ -109,11 +138,10 @@ class AppUpdateRepository internal constructor(
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .callTimeout(5, TimeUnit.MINUTES)
-            .followSslRedirects(false)
             .addNetworkInterceptor { chain ->
                 val request = chain.request()
                 val url = request.url
-                // Restrict redirects as well as initial requests to known HTTPS download hosts.
+                // Restrict redirects as well as initial requests to known HTTPS hosts.
                 if (url.scheme != "https" || url.host !in UpdateDownloadSources.hosts)
                     throw IOException("更新下载地址不受支持")
                 chain.proceed(request)
@@ -126,32 +154,49 @@ class AppUpdateRepository internal constructor(
     private val cancellation = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val activeCalls = java.util.concurrent.ConcurrentHashMap.newKeySet<okhttp3.Call>()
     private val generation = java.util.concurrent.atomic.AtomicLong()
+    @Volatile private var preferredRoute: AppUpdateRoute? = null
+    private val avoidedRoutes = java.util.concurrent.ConcurrentHashMap.newKeySet<AppUpdateRoute>()
+    val lastSuccessfulRoute: AppUpdateRoute?
+        get() = preferredRoute
     private fun request(url: String) = Request.Builder().url(url).header("User-Agent", "HongguoTV-Updater")
         .header("Cache-Control", "no-cache").build()
 
     private fun <T> fromSources(origin: String, seconds: Long, action: (okhttp3.Response) -> T): T {
         val ticket = generation.get()
+        val selected = route()
         var failure: IOException? = null
-        for (url in UpdateDownloadSources.urls(origin, route())) {
+        for ((source, url) in UpdateDownloadSources.sources(origin, selected, preferredRoute, avoidedRoutes)) {
             if (Thread.currentThread().isInterrupted || generation.get() != ticket) throw IOException("下载已取消")
             val call = http.newCall(request(url))
             call.timeout().timeout(seconds, TimeUnit.SECONDS)
             activeCalls.add(call)
             try {
                 if (generation.get() != ticket || Thread.currentThread().isInterrupted) throw IOException("下载已取消")
-                return call.execute().use { response ->
+                val result = call.execute().use { response ->
                     if (generation.get() != ticket || Thread.currentThread().isInterrupted) throw IOException("下载已取消")
                     if (!response.isSuccessful) throw IOException("更新源暂不可用，请稍后重试")
                     action(response)
                 }
+                if (selected == AppUpdateRoute.AUTOMATIC) {
+                    preferredRoute = source
+                    avoidedRoutes.remove(source)
+                }
+                return result
             } catch (error: IOException) {
                 if (generation.get() != ticket || Thread.currentThread().isInterrupted) throw error
+                if (selected == AppUpdateRoute.AUTOMATIC) avoidedRoutes.add(source)
                 failure = error
             } finally {
                 activeCalls.remove(call)
             }
         }
-        throw failure ?: IOException("更新源暂不可用，请稍后重试")
+        throw IOException(
+            if (selected == AppUpdateRoute.AUTOMATIC)
+                "自动更新线路均不可用，请稍后重试"
+            else
+                "${selected.label} 线路不可用，请稍后重试或切换线路",
+            failure,
+        )
     }
 
     override fun latest(): AppUpdate = fromSources("${AppUpdate.RELEASES}/latest/download/update.json", 15) { response ->
