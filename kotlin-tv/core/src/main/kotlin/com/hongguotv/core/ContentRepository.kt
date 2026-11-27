@@ -845,16 +845,35 @@ constructor(
             router("$site/detail?series_id=$id")
                 .optJSONObject("detail_page")
                 ?.optJSONObject("seriesDetail") ?: throw IOException("剧集详情暂不可用")
-        val raw = o.optJSONArray("vid_list") ?: throw IOException("分集暂不可用")
-        val episodes = (0 until raw.length()).map { raw.getString(it) }
-        if (
-            episodes.isEmpty() ||
-                episodes.any { !it.matches(Regex("[0-9]{1,30}")) } ||
-                episodes.distinct().size != episodes.size
-        )
-            throw IOException("分集数据异常")
+        // Since 2026-11-27 the website can expose only three obfuscated preview IDs.
+        // Keep its metadata, but obtain the complete ordered directory from the App API.
+        val episodes = EpisodeDirectory.fromWeb(o)
+            ?: directoryEpisodes(id, EpisodeDirectory.expectedCount(o))
+        RequestScope.ensureActive()
         return Detail(card(o).copy(id = id), episodes)
     }
+
+    private fun directoryEpisodes(id: String, expectedCount: Int): List<String> =
+        RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(15)) {
+            val transport = http.newBuilder().connectTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(8, TimeUnit.SECONDS).callTimeout(10, TimeUnit.SECONDS).build()
+            var failure: IOException? = null
+            // Existing browsing signature: no account login or playback-device registration.
+            for (host in listOf("api5-normal-sinfonlinea.fqnovel.com", "api5-normal-sinfonlineb.fqnovel.com")) {
+                RequestScope.ensureActive()
+                val request = signer.sign("https://$host/reading/bookapi/directory/all_items/v/",
+                    VendorConstants.device + mapOf("book_id" to id, "need_version" to "true"))
+                try {
+                    val body = text(request.url, request, client = transport)
+                    RequestScope.ensureActive()
+                    return@withDeadline EpisodeDirectory.parse(body, expectedCount)
+                } catch (problem: IOException) {
+                    RequestScope.ensureActive()
+                    failure = problem
+                }
+            }
+            throw IOException("完整分集暂不可用，请稍后重试", failure)
+        }
 
     /**
      * 官方 App 现行的播放模型接口：`GET /reading/bookapi/video_tab/multi_video_model/v1/`。
