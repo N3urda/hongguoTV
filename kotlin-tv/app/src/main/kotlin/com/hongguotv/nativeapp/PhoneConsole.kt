@@ -28,6 +28,7 @@ internal class PhoneConsole(
         LanInputAddresses.find(activity.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as ConnectivityManager).firstOrNull()?.address
     },
     private val httpProvider: () -> OkHttpClient = { ContentRepository().http },
+    private val childMode: ChildModeStore? = null,
     private val showSearch: (String, Int, CatalogPage) -> Unit,
 ) {
     private val main = Handler(Looper.getMainLooper())
@@ -39,6 +40,7 @@ internal class PhoneConsole(
     private var address: String? = null
 
     private class Session(val http: OkHttpClient, val repository: ContentRepository, val active: AtomicBoolean, val covers: PhoneCoverLoader) {
+        val parentTokens = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
         val browsing = AtomicBoolean(false)
         val readingCover = AtomicBoolean(false)
         val suggesting = AtomicBoolean(false)
@@ -67,6 +69,7 @@ internal class PhoneConsole(
 
     fun resume() { foreground = true; if (enabled) start(null, false) }
     fun stop() {
+        childMode?.revokeSessions()
         foreground = false
         generation++
         starting = false
@@ -157,7 +160,95 @@ internal class PhoneConsole(
         finally { task.cancel(false); main.removeCallbacks(task) }
     }
 
-    private fun request(current: Session, body: JSONObject): JSONObject {
+    private fun childGuard(body: JSONObject) {
+        val policy = childMode ?: return
+        val action = body.getString("action")
+        if (!policy.enabled) return
+        if (action in setOf("loginQr", "loginSend", "loginVerify", "loginPoll", "account", "favorite", "reserve") ||
+            body.optBoolean("sync")) throw IllegalStateException("儿童模式下不能执行此操作，请先退出儿童模式")
+        if (action in setOf("search", "related", "suggest", "discover", "list"))
+            check(policy.authorized(body.optString("parentToken"))) { "请先输入家长密码" }
+        if (action in setOf("play", "cover") && !policy.contains(body.optString("id"))) {
+            check(action == "cover" && policy.authorized(body.optString("parentToken"))) { "请家长将作品加入儿童片单" }
+        }
+    }
+
+    private fun request(current: Session, body: JSONObject): JSONObject = try {
+        requestWithPolicy(current, body)
+    } catch (e: IllegalArgumentException) {
+        JSONObject().put("error", e.message ?: "参数无效，请刷新重试")
+    } catch (e: IllegalStateException) {
+        JSONObject().put("error", e.message ?: "操作失败，请重试")
+    }
+
+    private fun requestWithPolicy(current: Session, body: JSONObject): JSONObject {
+        if (body.optString("parentToken") !in current.parentTokens) body.remove("parentToken")
+        childGuard(body)
+        val action = body.getString("action")
+        val policy = childMode
+        val parentToken = body.optString("parentToken")
+        if (policy != null && (action.startsWith("child") || action.startsWith("parent"))) {
+            if (!current.allowCommand()) return JSONObject().put("error", "操作过快，请稍后重试")
+            check(current.active.get())
+            fun status() = JSONObject().put("enabled", policy.enabled).put("configured", policy.configured)
+                .put("broken", policy.broken).put("revision", policy.revision).put("parent", policy.authorized(parentToken))
+            return when (action) {
+                "childStatus" -> status()
+                "parentUnlock" -> {
+                    val token = policy.unlock(body.getString("pin"))
+                    current.parentTokens.removeAll { !policy.authorized(it) }
+                    current.parentTokens.add(token)
+                    if (!current.active.get()) { policy.lock(token); error("连接已关闭，请重新扫码") }
+                    JSONObject().put("parentToken", token)
+                }
+                "parentLock" -> { policy.lock(parentToken); status() }
+                "childEnable" -> { policy.enable(parentToken); status() }
+                "childDisable" -> { policy.disable(body.getString("pin")); status() }
+                "childChangePin" -> JSONObject().put("recoveryCode", policy.changePin(body.getString("oldPin"), body.getString("newPin"), body.getString("confirmPin")))
+                "childRecover" -> JSONObject().put("recoveryCode", policy.recover(body.getString("recoveryCode"), body.getString("newPin"), body.getString("confirmPin")))
+                "childAdd" -> {
+                    check(policy.authorized(parentToken)) { "请先输入家长密码" }
+                    val series = onMain(current) { catalog.series(body.getString("id")) }
+                    policy.add(parentToken, series)
+                    status().put("message", "已加入儿童片单，允许全部集数及后续更新")
+                }
+                "childRemove" -> { policy.remove(parentToken, body.getString("id")); status().put("message", "已移出儿童片单") }
+                "childList" -> onMain(current) {
+                    val page = body.optInt("page", 1).also { require(it in 1..25) }
+                    val entries = policy.entries()
+                    catalog.result(entries.drop((page - 1) * 40).take(40).map { RelatedWork(it, "儿童片单", false) }, entries.size > page * 40)
+                        .also { result -> annotateChild(result, policy, parentToken) }
+                }
+                else -> throw IllegalArgumentException("未知儿童模式操作")
+            }
+        }
+        val result = requestUnchecked(current, body)
+        childGuard(body) // A browse/auth request may have completed after mode/session changed.
+        if (policy != null) {
+            annotateChild(result, policy, parentToken)
+            if (policy.authorized(parentToken) && action in setOf("search", "related", "discover", "list")) policy.touch(parentToken)
+            if (action == "status" && policy.enabled && !policy.authorized(parentToken)) {
+                listOf("account", "accountStatus", "signedIn", "favorite", "reservation").forEach(result::remove)
+            }
+        }
+        return result
+    }
+
+    private fun annotateChild(result: JSONObject, policy: ChildModeStore, token: String) {
+        result.put("child", JSONObject().put("enabled", policy.enabled).put("configured", policy.configured)
+            .put("broken", policy.broken).put("revision", policy.revision).put("parent", policy.authorized(token)))
+        result.optJSONArray("items")?.let { items ->
+            for (i in 0 until items.length()) {
+                val item = items.optJSONObject(i) ?: continue
+                item.put("childAllowed", policy.contains(item.optString("id")))
+                if (policy.enabled && !policy.authorized(token)) {
+                    listOf("favorite", "favoritePending", "reservationLabel", "reservable").forEach(item::remove)
+                }
+            }
+        }
+    }
+
+    private fun requestUnchecked(current: Session, body: JSONObject): JSONObject {
         val action = body.getString("action")
         if (action != "status" && !current.allowCommand()) return JSONObject().put("error", "操作过快，请稍候再试")
         if (action == "cover") {
@@ -215,12 +306,14 @@ internal class PhoneConsole(
                 val result = current.repository.searchAll(query, page)
                 return onMain(current) {
                     check(scope == control(JSONObject().put("action", "status")).getInt("scope"))
+                    childGuard(body)
                     if (body.optBoolean("sync")) showSearch(query, page, result)
                     catalog.result(result.items.map { RelatedWork(it, "", false) }, result.hasMore)
                 }
             } finally { reading.set(false) }
         }
         return onMain(current) {
+            childGuard(body)
             when (action) {
                 "list" -> catalog.list(body)
                 "play", "favorite", "reserve" -> catalog.act(body)
@@ -271,7 +364,7 @@ internal class PhoneConsole(
                 }
                 else -> throw IllegalArgumentException("Unknown login action")
             }
-            onMain(current) { catalog.login(credentials, scope) }
+            onMain(current) { childGuard(body); catalog.login(credentials, scope) }
             current.login = null
             return JSONObject().put("submitted", true).put("message", "验证成功，正在同步到电视…")
         } catch (e: PhoneLogin.Failure) {

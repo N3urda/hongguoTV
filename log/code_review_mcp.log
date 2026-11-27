@@ -1,0 +1,54 @@
+2026-11-27 16:59:51 - code_review_mcp - INFO - Registered capability: sddl_check (SDDL database query analysis)
+2026-11-27 16:59:51 - code_review_mcp - INFO - Registered capability: sddl_check (SDDL database query analysis)
+2026-11-27 16:59:51 - code_review_mcp - INFO - Registered capability: tms_check (TMS tracking event validation)
+2026-11-27 16:59:51 - code_review_mcp - INFO - Registered capability: tms_check (TMS tracking event validation)
+2026-11-27 16:59:51 - code_review_mcp - INFO - Registered tools for capability: sddl_check
+2026-11-27 16:59:51 - code_review_mcp - INFO - Registered tools for capability: sddl_check
+2026-11-27 16:59:51 - code_review_mcp - INFO - Registered tools for capability: tms_check
+2026-11-27 16:59:51 - code_review_mcp - INFO - Registered tools for capability: tms_check
+2026-11-27 16:59:51 - code_review_mcp - INFO - Starting Code Review MCP Server...
+2026-11-27 16:59:51 - code_review_mcp - INFO - ARC_ENV=live  base_url=https://arc.shopee.io
+2026-11-27 16:59:51 - code_review_mcp - INFO - Local log files will be saved to ./log/ directory
+2026-11-27 16:59:51 - code_review_mcp - INFO - Starting Code Review MCP Server...
+2026-11-27 16:59:51 - code_review_mcp - INFO - ARC_ENV=live  base_url=https://arc.shopee.io
+2026-11-27 16:59:51 - code_review_mcp - INFO - Local log files will be saved to ./log/ directory
+2026-11-27 16:59:51 - code_review_mcp - INFO - SQLite schema initialized at /Users/andy.zheng/.skynet-review/review.db
+2026-11-27 16:59:51 - code_review_mcp - INFO - SQLite schema ready at /Users/andy.zheng/.skynet-review/review.db
+2026-11-27 16:59:51 - code_review_mcp - INFO - SQLite schema initialized at /Users/andy.zheng/.skynet-review/review.db
+2026-11-27 16:59:51 - code_review_mcp - INFO - SQLite schema ready at /Users/andy.zheng/.skynet-review/review.db
+2026-11-27 17:03:11 - code_review_mcp - INFO - Registered capability: sddl_check (SDDL database query analysis)
+2026-11-27 17:03:11 - code_review_mcp - INFO - Registered capability: tms_check (TMS tracking event validation)
+2026-11-27 17:03:11 - code_review_mcp - INFO - Registered tools for capability: sddl_check
+2026-11-27 17:03:11 - code_review_mcp - INFO - Registered tools for capability: tms_check
+2026-11-27 17:03:11 - code_review_mcp - INFO - Starting Code Review MCP Server...
+2026-11-27 17:03:11 - code_review_mcp - INFO - ARC_ENV=live  base_url=https://arc.shopee.io
+2026-11-27 17:03:11 - code_review_mcp - INFO - Local log files will be saved to ./log/ directory
+2026-11-27 17:03:11 - code_review_mcp - INFO - SQLite schema initialized at /Users/andy.zheng/.skynet-review/review.db
+2026-11-27 17:03:11 - code_review_mcp - INFO - SQLite schema ready at /Users/andy.zheng/.skynet-review/review.db
+2026-11-27 17:57:56 - code_review_mcp - INFO - Registered capability: sddl_check (SDDL database query analysis)
+2026-11-27 17:57:56 - code_review_mcp - INFO - Registered capability: tms_check (TMS tracking event validation)
+2026-11-27 17:57:56 - code_review_mcp - INFO - Registered tools for capability: sddl_check
+2026-11-27 17:57:56 - code_review_mcp - INFO - Registered tools for capability: tms_check
+2026-11-27 17:57:56 - code_review_mcp - INFO - Starting Code Review MCP Server...
+2026-11-27 17:57:56 - code_review_mcp - INFO - ARC_ENV=live  base_url=https://arc.shopee.io
+2026-11-27 17:57:56 - code_review_mcp - INFO - Local log files will be saved to ./log/ directory
+2026-11-27 17:57:56 - code_review_mcp - INFO - SQLite schema initialized at /Users/andy.zheng/.skynet-review/review.db
+2026-11-27 17:57:56 - code_review_mcp - INFO - SQLite schema ready at /Users/andy.zheng/.skynet-review/review.db
+2026-11-27 17:58:02 - code_review_mcp - INFO - Registered capability: sddl_check (SDDL database query analysis)
+2026-11-27 17:58:02 - code_review_mcp - INFO - Registered capability: tms_check (TMS tracking event validation)
+2026-11-27 17:58:02 - code_review_mcp - INFO - Registered tools for capability: sddl_check
+2026-11-27 17:58:02 - code_review_mcp - INFO - Registered tools for capability: tms_check
+2026-11-27 17:58:02 - code_review_mcp - INFO - Starting Code Review MCP Server...
+2026-11-27 17:58:02 - code_review_mcp - INFO - ARC_ENV=live  base_url=https://arc.shopee.io
+2026-11-27 17:58:02 - code_review_mcp - INFO - Local log files will be saved to ./log/ directory
+2026-11-27 17:58:02 - code_review_mcp - INFO - SQLite schema initialized at /Users/andy.zheng/.skynet-review/review.db
+2026-11-27 17:58:02 - code_review_mcp - INFO - SQLite schema ready at /Users/andy.zheng/.skynet-review/review.db
+2026-11-27 19:45:24 - code_review_mcp - INFO - Registered capability: sddl_check (SDDL database query analysis)
+2026-11-27 19:45:24 - code_review_mcp - INFO - Registered capability: tms_check (TMS tracking event validation)
+2026-11-27 19:45:24 - code_review_mcp - INFO - Registered tools for capability: sddl_check
+2026-11-27 19:45:24 - code_review_mcp - INFO - Registered tools for capability: tms_check
+2026-11-27 19:45:24 - code_review_mcp - INFO - Starting Code Review MCP Server...
+2026-11-27 19:45:24 - code_review_mcp - INFO - ARC_ENV=live  base_url=https://arc.shopee.io
+2026-11-27 19:45:24 - code_review_mcp - INFO - Local log files will be saved to ./log/ directory
+2026-11-27 19:45:24 - code_review_mcp - INFO - SQLite schema initialized at /Users/andy.zheng/.skynet-review/review.db
+2026-11-27 19:45:24 - code_review_mcp - INFO - SQLite schema ready at /Users/andy.zheng/.skynet-review/review.db

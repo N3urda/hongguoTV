@@ -21,6 +21,7 @@ class TvSocial(
     private val readComments: (String, String, String) -> JSONObject = AppCommentPages()::read,
     private val readReviews: (String, String) -> JSONObject =
         PublicComments(okhttp3.OkHttpClient())::read,
+    private val childRestricted: () -> Boolean = { false },
 ) {
     private companion object {
         const val DEFAULT_FONT_DP = 24
@@ -36,6 +37,18 @@ class TvSocial(
     private val worker = Executors.newFixedThreadPool(2)
     private val timed = TimedComments()
     private val prefs = activity.getSharedPreferences("social", 0)
+    init {
+        if (!prefs.getBoolean("child-default-off-v1", false)) {
+            prefs.edit().putBoolean("enabled", false).putBoolean("child-default-off-v1", true).commit()
+        }
+    }
+    private fun bulletsEnabled() = !childRestricted() && prefs.getBoolean("enabled", false)
+    fun enforceChildMode() {
+        if (childRestricted()) {
+            prefs.edit().putBoolean("enabled", false).commit()
+            reset()
+        }
+    }
     private var active = false
     private var key: Pair<String, String>? = null
     private var scope: RequestScope? = null
@@ -66,7 +79,7 @@ class TvSocial(
                 if (
                     p != null &&
                         next != null &&
-                        prefs.getBoolean("enabled", true) &&
+                        bulletsEnabled() &&
                         !loading &&
                         p.duration in 1..86400000 &&
                         p.currentPosition < p.duration &&
@@ -140,7 +153,7 @@ class TvSocial(
             try {
                 val page = request.run { timed.read(ids.first, ids.second, start, duration, cursor) }
                 main.post {
-                    if (ticket != generation || !active) return@post
+                    if (ticket != generation || !active || childRestricted()) return@post
                     loading = false
                     pages[start] = page
                     timedStatus = "最近区间 ${start / 1000}–${page.getLong("nextMS") / 1000} 秒：接口 ${page.optInt("rawCount", -1)} 条，有效 ${page.getJSONArray("items").length()} 条"
@@ -180,6 +193,7 @@ class TvSocial(
         }
 
     fun settings(anchor: View) {
+        if (childRestricted()) { enforceChildMode(); return }
         dialog?.dismiss()
         val d = Dialog(activity)
         dialog = d
@@ -258,8 +272,8 @@ class TvSocial(
             body.addView(content)
             return content
         }
-        option({ "弹幕：${if(prefs.getBoolean("enabled",true)) "开" else "关"}" }) {
-            prefs.edit().putBoolean("enabled", !prefs.getBoolean("enabled", true)).apply()
+        option({ "弹幕：${if(bulletsEnabled()) "开" else "关"}" }) {
+            prefs.edit().putBoolean("enabled", !childRestricted() && !bulletsEnabled()).apply()
         }
         cycle(DanmakuArea.entries, { DanmakuArea.fromPreference(prefs.getString("area", null)) },
             { "显示区域：${it.label}" }) {
@@ -321,6 +335,7 @@ class TvSocial(
     }
 
     fun showComments(anchor: View, target: Pair<String, String>? = null) {
+        if (childRestricted()) return
         val ids = target ?: identity() ?: return
         dialog?.dismiss()
         commentScope?.cancel()
@@ -592,7 +607,7 @@ class TvSocial(
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             val p = player() ?: return
-            if (!active || scheduled.isEmpty() || !prefs.getBoolean("enabled", true)) return
+            if (!active || scheduled.isEmpty() || !bulletsEnabled()) return
             val now = p.currentPosition
             val first = DanmakuLayout.firstStartingAfter(scheduled, now - travelMs)
             val end = DanmakuLayout.firstStartingAfter(scheduled, now)

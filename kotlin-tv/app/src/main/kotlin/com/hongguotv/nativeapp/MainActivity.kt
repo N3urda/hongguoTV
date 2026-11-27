@@ -40,9 +40,13 @@ class MainActivity : Activity() {
     private val muted get() = TvStyle.muted
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newFixedThreadPool(3)
+    private val childMode by lazy { ChildModeStore(this) }
+    private val childUi by lazy { ChildModeUi(this, childMode) }
+    private var lastChildMode = false
     private val repository = ContentRepository(playbackSession = PlaybackDeviceSession.shared)
     private val phoneCatalog by lazy {
         PhoneControlCatalog(library, cloudAccount) { series, progress ->
+            check(childMode.allows(series.id)) { "请家长将作品加入儿童片单" }
             // Save while the old detail still identifies the playing episode.
             saveProgress()
             library.flush()
@@ -52,7 +56,7 @@ class MainActivity : Activity() {
         }
     }
     private val phoneConsole by lazy {
-        PhoneConsole(this, tvTools, phoneCatalog, ::phoneControl) { keyword, requestedPage, result ->
+        PhoneConsole(this, tvTools, phoneCatalog, ::phoneControl, childMode = childMode) { keyword, requestedPage, result ->
             saveProgress()
             releasePlayer()
             library.rememberSearch(keyword, ContentType.SHORT)
@@ -71,6 +75,8 @@ class MainActivity : Activity() {
 
     private fun phoneControl(body: JSONObject): JSONObject {
         val action = body.getString("action")
+        if (childMode.enabled && action == "account") return JSONObject().put("error", "请先退出儿童模式")
+        if (action == "key" && childUi.showing) return JSONObject().put("error", "请在电视完成家长验证")
         val active = screen == "player" && detail != null
         if (action == "status") return JSONObject()
             .put("active", active).put("title", if (active) detail?.series?.title.orEmpty() else "")
@@ -188,7 +194,7 @@ class MainActivity : Activity() {
     private var gradualPreloader: GradualPreloader? = null
 
     private fun startGradualPreloading() {
-        if (gradualPreloader != null) return
+        if (childMode.enabled || gradualPreloader != null) return
         val warmer = GradualPreloader(allowed = {
             foreground && library.isLoaded && workJob?.isDone != false &&
                 screen == "catalog" && !rankBrowser.isRefreshing(rankBrowser.board) &&
@@ -313,6 +319,7 @@ class MainActivity : Activity() {
                     }
                 else null
             },
+            childRestricted = { childMode.enabled },
         )
     }
     private lateinit var favoriteMonitor: FavoriteMonitor
@@ -631,6 +638,9 @@ class MainActivity : Activity() {
             View.SYSTEM_UI_FLAG_FULLSCREEN or
                 View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        lastChildMode = childMode.enabled
+        childMode.onChanged = { main.post { if (!isDestroyed) applyChildPolicy() } }
+        social.enforceChildMode()
         library = Library(this)
         artwork = ArtworkLoader(this)
         tvTools = TvTools(this)
@@ -1070,11 +1080,74 @@ class MainActivity : Activity() {
         }
 
     // 内容页总入口：复用顶部导航，只替换当前栏目的内容。
+    private fun applyChildPolicy() {
+        val enabled = childMode.enabled
+        social.enforceChildMode()
+        if (enabled) gradualPreloader?.pause() else gradualPreloader?.resume()
+        val changed = lastChildMode != enabled
+        lastChildMode = enabled
+        if (changed || enabled && detail?.let { !childMode.allows(it.series.id) } == true) {
+            saveProgress()
+            invalidatePage()
+            releasePlayer()
+            releaseCatalogViews()
+            tvTools.close()
+            detail = null
+            if (enabled) showChildHome() else showCatalog(load = true)
+        } else if (enabled && screen == "child") showChildHome()
+    }
+
+    private fun showChildHome() {
+        invalidatePage()
+        releasePlayer()
+        releaseCatalogViews()
+        favoriteMonitor.stop()
+        pendingDetail = null
+        detail = null
+        detailTrail.clear()
+        initialCatalogPending = false
+        restoreStoppedPage = false
+        screen = "child"
+        val body = base()
+        body.addView(text("儿童片单", 26f))
+        val actions = row()
+        val phone = addButton(actions, "手机遥控 · 添加作品") { phoneConsole.show(null) }
+        addButton(actions, "家长入口") { childUi.show() }
+        body.addView(actions)
+        if (childMode.broken) {
+            body.addView(text("儿童模式配置异常，已限制播放。请保留数据并联系维护者。", 18f))
+            phone.requestFocus()
+            return
+        }
+        val scroll = ScrollView(this)
+        val list = column()
+        scroll.addView(list)
+        body.addView(scroll, lp(-1, 0).apply { weight = 1f })
+        val allowed = childMode.entries()
+        val recent = library.history().filter { entry -> allowed.any { it.id == entry.series.id } }.take(6)
+        var first: View? = null
+        if (recent.isNotEmpty()) {
+            list.addView(text("继续观看", 18f))
+            recent.forEach { entry ->
+                val button = addButton(list, entry.series.title) { openDetail(entry.series, resume = true) }
+                if (first == null) first = button
+            }
+        }
+        list.addView(text("我的片单 · ${allowed.size} 部", 18f))
+        allowed.forEach { series ->
+            val button = addButton(list, series.title) { openDetail(series) }
+            if (first == null) first = button
+        }
+        if (allowed.isEmpty()) list.addView(text("还没有允许观看的作品，请家长使用手机控制台添加。", 18f))
+        (first ?: phone).requestFocus()
+    }
+
     private fun showCatalog(
         load: Boolean = false,
         focusNav: Boolean = false,
         focusType: Boolean = false,
     ) {
+        if (childMode.enabled) { showChildHome(); return }
         val loadRemote = load && !localCatalog()
         relatedSection = null
         detailTrail.clear()
@@ -2461,6 +2534,7 @@ class MainActivity : Activity() {
                         settingsAccountStatus = this
                         setPadding(0, 0, 0, dp(14))
                     })
+                    setting("儿童模式 · 家长密码与片单") { childUi.show() }
                     setting("登录与账户管理") { cloudAccount.show() }
                     setting("手机控制台 · 搜索 / 遥控 / 账户片单") { phoneConsole.show(null) }
                 }
@@ -2589,6 +2663,10 @@ class MainActivity : Activity() {
         fromHome: Boolean = false,
         fromPhone: Boolean = false,
     ) {
+        if (!childMode.allows(series.id)) {
+            Toast.makeText(this, "请家长将作品加入儿童片单", Toast.LENGTH_SHORT).show()
+            return
+        }
         val trial = if (fromHome && resume) homeFeed?.currentPlayback(series.id) else null
         val trialEpisodeId = trial?.episodeId
         val trialSource = trial?.video?.preparedSource()
@@ -2680,6 +2758,7 @@ class MainActivity : Activity() {
         releaseCatalogViews()
         screen = "detail"
         val data = detail ?: return showCatalog()
+        if (!childMode.allows(data.series.id)) { showChildHome(); return }
         val body = base("剧集详情")
         val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
         val content = column()
@@ -2825,16 +2904,24 @@ class MainActivity : Activity() {
         val groupButtons = selector.groupButtons
         val jump = selector.jump
         val episodes = selector.episodes
-        val primary = listOf(play, detailComments)
+        var childAddButton: TextView? = null
+        if (childMode.enabled) {
+            detailComments.visibility = View.GONE
+            producerButton.visibility = View.GONE
+            accountFavoriteButton?.visibility = View.GONE
+        } else {
+            childAddButton = addButton(secondary, "加入儿童片单") { childUi.add(data.series) }
+        }
+        val primary = if (childMode.enabled) listOf(play) else listOf(play, detailComments)
         play.setTextColor(accent)
-        val secondaryActions = listOf(accountFavoriteButton!!, synopsisButton)
+        val secondaryActions = if (childMode.enabled) listOf(synopsisButton) else listOfNotNull(accountFavoriteButton, synopsisButton, childAddButton)
         secondaryActions.forEach {
             it.textSize = 13f
             it.setTextColor(muted)
         }
         producerButton.nextFocusDownId = play.id
         primary.forEachIndexed { i, v ->
-            v.nextFocusUpId = producerButton.id
+            v.nextFocusUpId = if (childMode.enabled) v.id else producerButton.id
             v.nextFocusLeftId = primary.getOrNull(i - 1)?.id ?: v.id
             v.nextFocusRightId = primary.getOrNull(i + 1)?.id ?: v.id
             v.nextFocusDownId = secondaryActions[minOf(i, secondaryActions.lastIndex)].id
@@ -2855,6 +2942,11 @@ class MainActivity : Activity() {
         jump.nextFocusUpId = secondaryActions.last().id
         jump.nextFocusDownId = episodes.firstOrNull()?.id ?: jump.id
         episodes.take(10).forEach { it.nextFocusUpId = groupButtons[group].id }
+        if (childMode.enabled) {
+            if (focusEpisode) episodes.getOrNull((episodeIndex - group * 20).coerceAtLeast(0))?.requestFocus()
+            else play.requestFocus()
+            return
+        }
         lateinit var section: RelatedWorksView
         fun loadRelated(force: Boolean = false) {
             section.loading()
@@ -2940,6 +3032,11 @@ class MainActivity : Activity() {
         automaticNext: Boolean = false,
         recreateView: Boolean = false,
     ) {
+        val permitted = detail
+        if (permitted == null || !childMode.allows(permitted.series.id) || index !in permitted.episodes.indices) {
+            if (childMode.enabled) showChildHome()
+            return
+        }
         val keepOverlayHidden = screen == "player" && !panel && hud.visibility != View.VISIBLE
         val restoreControls = automaticNext && panel && !playError
         val restoreControlTag = if (restoreControls) controls.findFocus()?.tag else null
@@ -3207,6 +3304,11 @@ class MainActivity : Activity() {
                 }
             },
             { opened ->
+                if (!childMode.allows(data.series.id) || detail?.series?.id != data.series.id ||
+                    requestedId !in data.episodes || ticket != generation) {
+                    opened.close()
+                    return@work
+                }
                 if (promotedPreparation === pending) promotedPreparation = null
                 if (pending != null) {
                     if (usedPending) playbackHttp = pending.http else closeTransport(pending.http)
@@ -3335,6 +3437,10 @@ class MainActivity : Activity() {
                 playerListener = listener
                 p.addListener(listener)
                 val source = episodeSource(remote, requestedId)
+                if (!childMode.allows(data.series.id)) {
+                    releasePlayer()
+                    return@work
+                }
                 p.setMediaSource(source)
                 p.seekTo(position.coerceAtLeast(0))
                 p.prepare()
@@ -3525,6 +3631,7 @@ class MainActivity : Activity() {
     private fun queuePreparedEpisode(key: String) {
         val p = player ?: return
         val data = detail ?: return
+        if (!childMode.allows(data.series.id)) return
         val next = episodeIndex + 1
         if (
             !foreground ||
@@ -3564,6 +3671,7 @@ class MainActivity : Activity() {
     private fun advanceQueuedEpisode(oldPosition: Long, completed: Boolean): Boolean {
         val p = player ?: return false
         val data = detail ?: return false
+        if (!childMode.allows(data.series.id)) { releasePlayer(); return false }
         val next = queuedNext ?: return false
         if (
             queuedEpisode != episodeIndex + 1 ||
@@ -3884,6 +3992,8 @@ class MainActivity : Activity() {
         position: Long,
         qualityLabel: String,
     ) {
+        val permitted = detail
+        if (permitted == null || !childMode.allows(permitted.series.id) || id !in permitted.episodes) return
         p.stop()
         p.clearMediaItems()
         playbackReady = false
@@ -4421,6 +4531,9 @@ class MainActivity : Activity() {
     }
 
     private fun requestPlayback(play: Boolean) {
+        if (play && childMode.enabled && detail?.let { childMode.allows(it.series.id) } != true) {
+            showChildHome(); return
+        }
         requestedAutoplay = play
         pausedForLifecycle = !play
         if (play) sleepStopped = false
@@ -4691,8 +4804,10 @@ class MainActivity : Activity() {
         speed = item(primary, "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}", "speed") { showSpeedPicker(speed) }
         lateinit var danmaku: TextView
         danmaku = item(primary, "弹幕设置", "danmaku") { social.settings(danmaku) }
+        if (childMode.enabled) danmaku.visibility = View.GONE
         lateinit var comments: TextView
         comments = item(primary, "本集评论", "comments") { social.showComments(comments) }
+        if (childMode.enabled) comments.visibility = View.GONE
         lateinit var more: TextView
         more = item(primary, "更多设置", "playback-settings") { showPlaybackSettings(more) }
         val rows = mutableListOf(primary)
@@ -4707,7 +4822,7 @@ class MainActivity : Activity() {
             }
         }
         // Explicit paths keep focus inside the menu; episode shortcuts belong to fullscreen playback.
-        val buttons = rows.map { row -> (0 until row.childCount).map { row.getChildAt(it) }.filter { it.isFocusable } }
+        val buttons = rows.map { row -> (0 until row.childCount).map { row.getChildAt(it) }.filter { it.isFocusable && it.visibility == View.VISIBLE } }
         buttons.forEachIndexed { r, cells -> cells.forEachIndexed { c, view ->
             view.nextFocusLeftId = cells[maxOf(0, c - 1)].id
             view.nextFocusRightId = cells[minOf(cells.lastIndex, c + 1)].id
@@ -4924,6 +5039,7 @@ class MainActivity : Activity() {
     }
 
     private fun offerNextSeason(current: Detail) {
+        if (childMode.enabled) return
         if (!library.seasonAutoplay || !library.autoNext || seasonSuppressed || seasonPending || !foreground) return
         seasonPending = true
         val token = ++seasonGeneration
@@ -4947,6 +5063,7 @@ class MainActivity : Activity() {
     }
 
     private fun finishSeason(current: Detail) {
+        if (childMode.enabled) { showChildHome(); return }
         val next = nextSeasonWork ?: return
         if (!foreground || seasonSuppressed || !library.seasonAutoplay || !library.autoNext ||
             sleepStopped || pausedForLifecycle || detail?.series?.id != current.series.id) return
@@ -5024,6 +5141,10 @@ class MainActivity : Activity() {
     }
 
     private fun goBack() {
+        if (screen == "child") {
+            tvTools.confirm("退出hongguoTV", "离开应用后儿童模式仍保持开启。确定退出？", currentFocus) { finish() }
+            return
+        }
         if (!library.isLoaded) {
             finish()
             return
@@ -5214,7 +5335,7 @@ class MainActivity : Activity() {
         phoneConsole.resume()
         foreground = true
         startGradualPreloading()
-        gradualPreloader?.resume()
+        if (childMode.enabled) gradualPreloader?.pause() else gradualPreloader?.resume()
         social.foreground(true)
         main.removeCallbacks(tick)
         main.post(tick)
@@ -5268,6 +5389,8 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        childUi.close()
+        childMode.revokeSessions()
         cancelEpisodeSwitch()
         playerShortcutKeys.clear()
         playerBackDownTime = null
@@ -5322,6 +5445,8 @@ class MainActivity : Activity() {
 
     // 页面销毁时释放播放器、请求和工作线程，避免资源继续持有旧 Activity。
     override fun onDestroy() {
+        childMode.onChanged = null
+        childUi.destroy()
         phoneConsole.stop()
         gradualPreloader?.close()
         generation++
