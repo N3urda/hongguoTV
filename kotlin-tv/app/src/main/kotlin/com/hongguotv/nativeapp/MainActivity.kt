@@ -4927,7 +4927,7 @@ class MainActivity : Activity() {
         if (!library.seasonAutoplay || !library.autoNext || seasonSuppressed || seasonPending || !foreground) return
         seasonPending = true
         val token = ++seasonGeneration
-        work({ RelatedWorks.nextSeason(current.series, repository.related(current.series.id)) }, { next ->
+        work({ RelatedWorks.nextSeason(current.series, repository.related(current.series.id)) { repository.related(it) } }, { next ->
             if (token != seasonGeneration || !foreground || detail?.series?.id != current.series.id) return@work
             nextSeasonWork = next
             if (next != null) {

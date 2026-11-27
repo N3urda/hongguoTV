@@ -4,7 +4,18 @@ package com.hongguotv.core
 import java.io.IOException
 import org.json.JSONObject
 
-data class RelatedWork(val series: Series, val season: String, val upcoming: Boolean, val seasonIndex: Int = 0) {
+/**
+ * [season] is display text: Hongguo's own `tag_info.text`, or 「第N季」 synthesised from `season_index`
+ * when the tag is missing. [rawTag] keeps the tag exactly as Hongguo sent it (empty when missing), so
+ * a real 「第N季」 tag can be told apart from a synthesised one.
+ */
+data class RelatedWork(
+    val series: Series,
+    val season: String,
+    val upcoming: Boolean,
+    val seasonIndex: Int = 0,
+    val rawTag: String = "",
+) {
     val label
         get() =
             listOf(season, if (upcoming) "待上线 · 预约" else "已上线")
@@ -21,6 +32,8 @@ object RelatedWorks {
     // A final season may end in 「完结篇」: 「…第三季完结篇」 is season 3 of 「…」. Only that edition:
     // 「第X季」 elsewhere in a title can be part of the name itself (「爱在第三季的我们」).
     private val seasonWithEdition = Regex("第([0-9零〇一二两三四五六七八九十百]+)季\\s*(?:完结篇|完結篇)$")
+    // A raw 相关作品 tag that names a season, e.g. 「第3季」; 「同IP」 and anything else do not.
+    private val seasonTag = Regex("^第\\s*([0-9零〇一二两三四五六七八九十百]+)\\s*季$")
 
     private fun seasonNumber(value: String): Int? {
         value.toIntOrNull()?.let { return it.takeIf { n -> n > 0 } }
@@ -42,6 +55,10 @@ object RelatedWorks {
         val match = seasonSuffix.find(trimmed) ?: seasonWithEdition.find(trimmed) ?: return null
         return trimmed.substring(0, match.range.first) to seasonNumber(match.groupValues[1])
     }
+
+    /** The season Hongguo itself tagged on [work]; null for 「同IP」, a missing tag or a synthesised one. */
+    private fun taggedSeason(work: RelatedWork): Int? =
+        seasonTag.find(work.rawTag.trim())?.let { seasonNumber(it.groupValues[1]) }
 
     private fun stem(title: String) = (marker(title)?.first ?: title.trim())
         .replace(Regex("[\\p{P}\\p{Z}\\s]"), "")
@@ -69,6 +86,27 @@ object RelatedWorks {
         }.singleOrNull()
     }
 
+    /**
+     * [nextSeason], and when that finds nothing, Hongguo's own season tags for a next season whose title
+     * is worded differently (「公路求生榜一说他要走到公路尽头第二季」 → 「公路求生榜一说她要走到公路尽头第三季」).
+     * Both directions must agree: in [rows] exactly one work carries the raw tag 「第N+1季」, playable and
+     * with no conflicting `season_index` or title number, and that work's own related list, from
+     * [relatedOf], tags the current work 「第N季」. 「同IP」, a missing or synthesised tag, any conflict or
+     * a failed lookup give null, leaving the choice to the viewer.
+     */
+    fun nextSeason(current: Series, rows: List<RelatedWork>, relatedOf: (String) -> List<RelatedWork>): RelatedWork? {
+        nextSeason(current, rows)?.let { return it }
+        val own = marker(current.title.trim())
+        val number = if (own == null) 1 else own.second ?: return null
+        val candidate = rows.filter { it.series.id != current.id && taggedSeason(it) == number + 1 }
+            .singleOrNull()?.takeUnless { it.upcoming } ?: return null
+        if (candidate.seasonIndex > 0 && candidate.seasonIndex != number + 1) return null
+        marker(candidate.series.title.trim())?.let { if (it.second != number + 1) return null }
+        val back = try { relatedOf(candidate.series.id) } catch (_: IOException) { return null }
+        val currentAsSeen = back.singleOrNull { it.series.id == current.id } ?: return null
+        return candidate.takeIf { taggedSeason(currentAsSeen) == number }
+    }
+
     fun parse(raw: String, currentId: String): List<RelatedWork> {
         val root = JSONObject(raw)
         if (root.optInt("code", -1) != 0) throw IOException("相关作品接口暂不可用")
@@ -91,8 +129,9 @@ object RelatedWorks {
                 val upcoming = type == 1007
                 if (!upcoming && (row.optBoolean("disable_play") || row.optInt("episode_cnt") <= 0))
                     return@mapNotNull null
+                val rawTag = row.optJSONObject("tag_info")?.str("text").orEmpty().trim()
                 val season =
-                    row.optJSONObject("tag_info")?.str("text").orEmpty().ifBlank {
+                    rawTag.ifBlank {
                         row.optInt("season_index").takeIf { it > 0 }?.let { "第${it}季" }.orEmpty()
                     }
                 RelatedWork(
@@ -106,6 +145,7 @@ object RelatedWorks {
                     season,
                     upcoming,
                     row.optInt("season_index").coerceAtLeast(0),
+                    rawTag,
                 )
             }
             .distinctBy { it.series.id }
