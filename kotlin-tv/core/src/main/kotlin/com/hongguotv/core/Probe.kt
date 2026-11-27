@@ -7,6 +7,27 @@ import okhttp3.OkHttpClient
 fun main(args: Array<String>) {
     val repository = if (args.contains("--http1")) ContentRepository(http = OkHttpClient.Builder()
         .protocols(listOf(okhttp3.Protocol.HTTP_1_1)).build()) else ContentRepository()
+    if (args.contains("--verify-directory")) {
+        try {
+            for ((series, minimumCount) in listOf("7709114780467858456" to 210, "7710503618658454553" to 78)) {
+                val detail = repository.detail(series)
+                check(detail.episodes.size >= minimumCount)
+                println("directory series=${detail.series.title}; episodes=${detail.episodes.size}")
+                for (index in listOf(3, detail.episodes.size / 2, detail.episodes.lastIndex).distinct()) {
+                    val ladder = repository.streamLadderWithCompatibility(detail.episodes[index])
+                    val rendition = checkNotNull(ladder.select(1080))
+                    RemoteVideo(repository.http, rendition.toStreamInfo()).use { remote ->
+                        remote.prepare()
+                        val head = remote.read(0, minOf(remote.total, 1024 * 1024).toInt())
+                        val tail = remote.read((remote.total - 65536).coerceAtLeast(0), minOf(remote.total, 65536).toInt())
+                        check(head.size > 8 && String(head, 4, 4) == "ftyp" && tail.isNotEmpty())
+                        println("directory episode=${index + 1}; quality=${rendition.quality}; codec=${rendition.codec}; head=${head.size}; tail=${tail.size}; mp4=true")
+                    }
+                }
+            }
+        } finally { repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() }
+        return
+    }
     if (args.contains("--issue61")) {
         try {
             for (keyword in listOf("无限白粥", "朕可是忠臣", "无限白粥")) {
