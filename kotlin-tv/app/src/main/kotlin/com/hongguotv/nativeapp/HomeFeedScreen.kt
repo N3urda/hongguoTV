@@ -35,6 +35,7 @@ internal class HomeFeedScreen(
     private val restoreProgress: (String) -> WatchProgress? = { null },
     private val saveProgress: (WatchProgress, Int, Boolean) -> Unit = { _, _, _ -> },
     private val decoderMode: (String) -> VideoDecoderMode = { VideoDecoderMode.AUTOMATIC },
+    private val autoQualityDowngrade: Boolean = true,
 ) : LinearLayout(activity), Closeable {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
@@ -349,7 +350,7 @@ internal class HomeFeedScreen(
         playback.onError = { error -> lastPlaybackError = error }
         playback.onSoftwareOverload = {
             val current = clip
-            if (current != null) main.post {
+            if (autoQualityDowngrade && current != null) main.post {
                 if (!closed && active && !state.userPaused && !state.ended && !failed && playbackReady &&
                     clip === current && backend.lowerSoftwareQuality(current)) {
                     cancelPrefetch()
@@ -700,7 +701,7 @@ internal class HomeFeedScreen(
             return true
         }
         if (
-            !shouldSelfHealTrial(
+            !autoQualityDowngrade || !shouldSelfHealTrial(
                 lastPlaybackError?.errorCode,
                 track != null,
                 healAttempts,

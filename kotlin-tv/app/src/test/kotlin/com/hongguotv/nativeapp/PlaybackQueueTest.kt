@@ -575,6 +575,7 @@ class PlaybackQueueTest {
         val titles = labels(dialog.window!!.decorView)
         val decoder = dialog.window!!.decorView.findViewWithTag<View>("choice-1")
         assertEquals("解码方式 硬解优先（自动回退）", decoder.contentDescription)
+        assertTrue(titles.contains("自动降低清晰度 开启"))
         assertTrue(titles.any { it.startsWith("画面旋转") })
         assertTrue(titles.any { it.startsWith("常驻播放进度") })
         dialog.dismiss()
@@ -874,4 +875,63 @@ class PlaybackQueueTest {
                 finish.countDown()
             }
         }
+    @Test fun disablingAutomaticQualityKeepsFullScreenAndFeedAtTheRequestedQualityDuringOverload() = fixture { activity, fake, library, opened ->
+        library.maxQuality = 1080
+        library.autoQualityDowngrade = false
+        val requests = blockDuplicateMetadataRequests(activity)
+        set(activity, "attemptedQuality", 1080)
+        set(activity, "currentTiers", listOf(opened.rendition!!.copy(quality = 1080), opened.rendition))
+        fake.position = 12_000L
+        invoke(activity, "lowerSoftwareVideoQuality", fake.player)
+        ShadowLooper.idleMainLooper()
+        assertEquals(1080, get(activity, "attemptedQuality"))
+        assertEquals(12_000L, fake.position)
+        assertFalse((get(activity, "qualityRecovery") as PlaybackQualityRecovery).limited("101"))
+        assertEquals(0, requests.get())
+        val feed = PublicFeedBackend(1080, autoQualityDowngrade = false)
+        try {
+            val clip = TrialClip(Detail(Series("1", "测试"), listOf("101")), opened.video, 1,
+                opened.track, 1, opened.rendition!!.copy(quality = 1080), opened.tiers)
+            assertFalse(feed.lowerSoftwareQuality(clip))
+        } finally { feed.close() }
+    }
+
+    @Test fun changingAutomaticQualityInvalidatesQueuedLowerQualityAndPersistsChoice() = fixture { activity, fake, library, opened ->
+        invoke(activity, "queuePreparedEpisode", "102:${library.maxQuality}")
+        assertEquals(2, fake.items.size)
+        val recent = get(activity, "recentPlaybackSources") as PlaybackSourceCache
+        recent.remember("102", opened.rendition!!, library.maxQuality)
+        invoke(activity, "setAutoQualityDowngrade", false, false)
+        assertFalse(library.autoQualityDowngrade)
+        assertEquals(1, fake.items.size)
+        assertNull(get(activity, "queuedNext"))
+        assertNull(recent.find("102", library.maxQuality))
+        library.flush()
+        val writes = get(library, "writes") as LatestWriteQueue<*, *>
+        (get(writes, "worker") as ExecutorService).submit {}.get(5, TimeUnit.SECONDS)
+        assertFalse(activity.getSharedPreferences("native-library-v1", 0).getBoolean("autoQualityDowngrade", true))
+    }
+
+    @Test fun disabledAutomaticQualityShowsManualActionsAfterDecoderFailureWithoutReloading() = fixture { activity, _, library, opened ->
+        library.maxQuality = 1080
+        library.autoQualityDowngrade = false
+        val requests = blockDuplicateMetadataRequests(activity)
+        val high = opened.rendition!!.copy(quality = 1080)
+        set(activity, "attemptedQuality", 1080)
+        set(activity, "currentRendition", high)
+        set(activity, "currentTiers", listOf(high, opened.rendition))
+        invoke(activity, "playerFailure", PlaybackException("fixture", null, PlaybackException.ERROR_CODE_DECODING_FAILED))
+        assertTrue(get(activity, "playError") as Boolean)
+        assertEquals(0, get(activity, "autoDowngrades"))
+        assertEquals(1080, library.maxQuality)
+        assertEquals(0, requests.get())
+        fun labels(view: View): List<String> = when (view) {
+            is TextView -> listOf(view.text.toString())
+            is android.view.ViewGroup -> (0 until view.childCount).flatMap { labels(view.getChildAt(it)) }
+            else -> emptyList()
+        }
+        assertTrue(labels(get(activity, "controls") as View).contains("切换清晰度"))
+        assertTrue(labels(get(activity, "controls") as View).contains("切换解码方式"))
+    }
+
 }

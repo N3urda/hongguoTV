@@ -49,6 +49,25 @@ class HomeFeedScreenTest {
         }
     }
 
+    @Test fun manualQualityDoesNotReloadFeedAfterOverloadOrVideoDecoderFailure() {
+        TrialRecoveryFixture(autoQualityDowngrade = false,
+            softwareReduction = { error("Automatic reduction must not run") }) { _, _ -> null }.use { f ->
+            f.player.status?.invoke(TrialStatus.READY)
+            f.player.saved = 12_345L
+            val reads = f.reads()
+            f.player.onSoftwareOverload?.invoke()
+            pump(f.screen)
+            assertEquals(reads, f.reads())
+            assertEquals(12_345L, f.player.saved)
+            f.player.onError?.invoke(androidx.media3.common.PlaybackException("injected video failure", null,
+                androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED))
+            f.player.status?.invoke(TrialStatus.ERROR)
+            pump(f.screen)
+            assertEquals(reads, f.reads())
+            assertEquals(0, get(f.screen, "healAttempts"))
+        }
+    }
+
     @Test fun softwareFallbackReopensSourceAndKeepsEpisodePositionAndPause() {
         TrialRecoveryFixture { _, _ -> null }.use { f ->
             f.player.status?.invoke(TrialStatus.READY)
@@ -619,6 +638,7 @@ class HomeFeedScreenTest {
     private inner class TrialRecoveryFixture(
         autoPreview: Boolean = true,
         softwareReduction: () -> Boolean = { false },
+        autoQualityDowngrade: Boolean = true,
         failure: (String, Int) -> Throwable?,
     ) : java.io.Closeable {
         private val controller = Robolectric.buildActivity(Activity::class.java).setup()
@@ -634,7 +654,7 @@ class HomeFeedScreenTest {
                 return super.trial(series)
             }
         }
-        val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {}, { _, _ -> }, { "收藏" }, backend, player, autoPreview)
+        val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {}, { _, _ -> }, { "收藏" }, backend, player, autoPreview, autoQualityDowngrade = autoQualityDowngrade)
 
         init {
             activity.setContentView(screen)

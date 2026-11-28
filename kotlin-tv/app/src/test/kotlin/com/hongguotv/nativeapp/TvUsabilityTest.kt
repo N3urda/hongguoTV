@@ -254,6 +254,12 @@ class TvUsabilityTest {
             listOf("检查更新", "播放", "外观与操作", "账户", "关于应用").forEach { title ->
                 assertTrue(rows.any { it.text == title })
             }
+            val automaticQuality = rows.single { it.text == "自动降低清晰度" }.parent as View
+            assertTrue(automaticQuality.isFocusable)
+            assertTrue(library.autoQualityDowngrade)
+            automaticQuality.performClick()
+            assertFalse(library.autoQualityDowngrade)
+            assertEquals("自动降低清晰度，关闭，按确定切换", automaticQuality.contentDescription)
             val decoding = rows.single { it.text == "解码方式  ·  硬解优先（自动回退）" }
             assertTrue(decoding.isFocusable)
             assertEquals(VideoDecoderMode.AUTOMATIC, library.videoDecoderMode)

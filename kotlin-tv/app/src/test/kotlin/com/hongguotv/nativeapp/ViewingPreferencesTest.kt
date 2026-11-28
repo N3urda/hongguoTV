@@ -44,4 +44,10 @@ class ViewingPreferencesTest {
         assertEquals(1, p.clockMode)
         assertTrue(p.homeAutoplay)
     }
+    @Test fun automaticQualityDefaultsOnButPreservesAnExplicitOffChoice() {
+        assertTrue(ViewingPreferences.decode(emptyMap<String, Any>()).autoQualityDowngrade)
+        assertTrue(ViewingPreferences.decode(mapOf("autoQualityDowngrade" to "false")).autoQualityDowngrade)
+        assertFalse(ViewingPreferences.decode(mapOf("autoQualityDowngrade" to false)).autoQualityDowngrade)
+    }
+
 }
