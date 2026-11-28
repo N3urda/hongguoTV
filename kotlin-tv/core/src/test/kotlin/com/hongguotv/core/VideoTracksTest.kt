@@ -20,14 +20,14 @@ class VideoTracksTest {
     }
 
     /** VisualSampleEntry: coded width/height are 16-bit fields at offsets 32/34. */
-    private fun sampleEntry(fourcc: String, width: Int, height: Int): ByteArray {
+    private fun sampleEntry(fourcc: String, width: Int, height: Int, config: ByteArray? = null): ByteArray {
         val body =
             ByteArray(24) + u16(width) + u16(height) + u16(0x0018) + u16(0xFFFF) + u32(0) + u32(0)
-        return box(fourcc, body)
+        return box(fourcc, if (config == null) body else body.copyOf(78) + box("hvcC", config))
     }
 
-    private fun videoTrak(fourcc: String, width: Int, height: Int): ByteArray {
-        val stsd = box("stsd", u32(0) + u32(1) + sampleEntry(fourcc, width, height))
+    private fun videoTrak(fourcc: String, width: Int, height: Int, config: ByteArray? = null): ByteArray {
+        val stsd = box("stsd", u32(0) + u32(1) + sampleEntry(fourcc, width, height, config))
         val stbl = box("stbl", stsd)
         val minf = box("minf", box("vmhd") + stbl)
         return box("trak", box("tkhd") + box("mdia", box("hdlr") + minf))
@@ -71,5 +71,29 @@ class VideoTracksTest {
     fun headerWithoutVideoTrackReturnsNull() {
         assertNull(VideoTracks.videoTrack(header(audioTrak())))
         assertNull(VideoTracks.videoTrack(box("ftyp", "isom".toByteArray())))
+    }
+
+    @Test fun readsTheDeclaredHevcLevelWithoutChangingTheBitstream() {
+        val config = ByteArray(23).apply { this[0] = 1; this[1] = 1; this[2] = 0x60; this[12] = 186.toByte() }
+        val bytes = header(videoTrak("hvc1", 480, 854, config))
+        val original = bytes.copyOf()
+        assertEquals(VideoTracks.Track("hvc1", 480, 854, "hvc1.1.6.L186"), VideoTracks.videoTrack(bytes))
+        assertArrayEquals(original, bytes)
+    }
+
+    @Test fun preservesProfileSpaceTierAndNonzeroConstraints() {
+        val config = ByteArray(23).apply {
+            this[0] = 1; this[1] = 0xa2.toByte(); this[2] = 0x60
+            this[6] = 0x80.toByte(); this[12] = 156.toByte()
+        }
+        assertEquals("hev1.B2.6.H156.80", VideoTracks.videoTrack(header(videoTrak("hev1", 720, 1280, config)))!!.codecs)
+    }
+
+    @Test fun malformedConfigurationDoesNotInventACompatibleLevel() {
+        for (config in listOf(ByteArray(12).apply { this[0] = 1 }, ByteArray(23).apply { this[0] = 2 })) {
+            val track = VideoTracks.videoTrack(header(videoTrak("hvc1", 360, 642, config)))!!
+            assertNull(track.codecs)
+            assertEquals(360, track.width)
+        }
     }
 }

@@ -22,6 +22,33 @@ import org.robolectric.shadows.ShadowLooper
 @Config(sdk = [21, 23, 26], qualifiers = "w960dp-h540dp-land-mdpi")
 @LooperMode(LooperMode.Mode.PAUSED)
 class HomeFeedScreenTest {
+    @Test fun softwareFallbackReopensSourceAndKeepsEpisodePositionAndPause() {
+        TrialRecoveryFixture { _, _ -> null }.use { f ->
+            f.player.status?.invoke(TrialStatus.READY)
+            f.player.saved = 12_345L
+            f.clickStage()
+            assertFalse(f.player.playing)
+            val original = get(f.screen, "clip") as TrialClip
+            val reads = f.reads()
+            f.player.softwareFallbackAvailable = true
+            f.player.onError?.invoke(androidx.media3.common.PlaybackException("injected video failure", null,
+                androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED))
+            f.player.status?.invoke(TrialStatus.ERROR)
+            pump(f.screen)
+            val recovered = get(f.screen, "clip") as TrialClip
+            assertNotSame(original, recovered)
+            assertEquals(original.episodeId, recovered.episodeId)
+            assertEquals(reads + 1, f.reads())
+            assertEquals(1, f.player.softwareFallbacks)
+            assertEquals(12_345L, f.player.saved)
+            assertFalse("A decoder retry must not resume a user-paused video", f.player.playing)
+            f.player.status?.invoke(TrialStatus.ERROR)
+            pump(f.screen)
+            assertEquals("A second failure must not repeat the software retry", 1, f.player.softwareFallbacks)
+            assertEquals(reads + 1, f.reads())
+        }
+    }
+
     @Test fun stalledBufferReloadsSameEpisodeAndPositionThenStopsAfterBoundedRetries() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()
@@ -464,6 +491,15 @@ class HomeFeedScreenTest {
         override fun canPrefetch() = prefetchEnabled
         override val view = View(activity)
         override var status: ((TrialStatus) -> Unit)? = null
+        override var onError: ((androidx.media3.common.PlaybackException) -> Unit)? = null
+        var softwareFallbackAvailable = false
+        var softwareFallbacks = 0
+        override fun trySoftwareFallback(clip: TrialClip, error: androidx.media3.common.PlaybackException): Boolean {
+            if (!softwareFallbackAvailable) return false
+            softwareFallbackAvailable = false
+            softwareFallbacks++
+            return true
+        }
         val queued = mutableMapOf<String, TrialClip>()
         var selections = 0
         var clears = 0

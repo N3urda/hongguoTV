@@ -36,7 +36,15 @@ internal fun playbackVideoInfo(quality: String, format: Format?, decoder: Active
 /** Event timestamps and media positions allow correlation with the periodic decoder counters. */
 @androidx.media3.common.util.UnstableApi
 internal class PlaybackDiagnostics(private val screen: String) : AnalyticsListener {
+    @Volatile var lastVideoDecoder: ActiveVideoDecoder? = null
+        private set
+    @Volatile var lastVideoFormat: Format? = null
+        private set
     @Volatile var videoDecoder: ActiveVideoDecoder? = null
+        set(value) {
+            field = value
+            if (value != null) lastVideoDecoder = value
+        }
 
     private fun record(event: EventTime, message: String) {
         Log.i("HGPlayback", "$screen tMs=${event.realtimeMs} item=${event.currentWindowIndex} posMs=${event.currentPlaybackPositionMs} bufferedMs=${event.totalBufferedDurationMs} $message")
@@ -63,7 +71,9 @@ internal class PlaybackDiagnostics(private val screen: String) : AnalyticsListen
     override fun onVideoDecoderReleased(eventTime: EventTime, decoderName: String) =
         record(eventTime, "videoDecoderReleased=$decoderName")
 
-    override fun onVideoInputFormatChanged(eventTime: EventTime, format: Format, decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?) =
+    override fun onVideoInputFormatChanged(eventTime: EventTime, format: Format, decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?) {
+        lastVideoFormat = format
         record(eventTime, "videoFormat=${format.sampleMimeType}/${format.codecs} size=${format.width}x${format.height} " +
             "fps=${format.frameRate} reuse=${decoderReuseEvaluation?.result} discard=${decoderReuseEvaluation?.discardReasons}")
+    }
 }

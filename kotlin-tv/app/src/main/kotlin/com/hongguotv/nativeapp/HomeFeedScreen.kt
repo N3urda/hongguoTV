@@ -34,7 +34,7 @@ internal class HomeFeedScreen(
     private val autoNext: Boolean = true,
     private val restoreProgress: (String) -> WatchProgress? = { null },
     private val saveProgress: (WatchProgress, Int, Boolean) -> Unit = { _, _, _ -> },
-    private val decoderMode: () -> VideoDecoderMode = { VideoDecoderMode.AUTOMATIC },
+    private val decoderMode: (String) -> VideoDecoderMode = { VideoDecoderMode.AUTOMATIC },
 ) : LinearLayout(activity), Closeable {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
@@ -668,12 +668,25 @@ internal class HomeFeedScreen(
     // 播放自愈：解码类失败写入设备能力经验表并自动换低档重载（每剧至多 3 轮，且仅在学到
     // 新失败键时继续，同一键反复重载没有意义）。重载复用 loadCurrent（缓存/预取优先），与
     // 手动重试成本相同。bytevc2 锁定集学完 1080P 键后，重载即落入确定性报错，不无限循环。
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     private fun selfHealTrial(): Boolean {
         val series = state.current ?: return false
-        val track = clip?.track
+        val current = clip ?: return false
+        val error = lastPlaybackError ?: return false
+        if (!isVideoDecoderFailure(error)) return false
+        val track = current.track
         if (healTarget != series.id) {
             healTarget = series.id
             healAttempts = 0
+        }
+        if (healAttempts < TRIAL_SELF_HEAL_LIMIT && playback.trySoftwareFallback(current, error)) {
+            healAttempts++
+            // Cached/preloaded sources were selected for the previous decoder mode and may exceed
+            // the software limit. Preserve position via clearCurrent(), but fetch a suitable tier.
+            cancelPrefetch()
+            clearCache()
+            loadCurrent("正在尝试软件解码…")
+            return true
         }
         if (
             !shouldSelfHealTrial(
@@ -684,7 +697,7 @@ internal class HomeFeedScreen(
         )
             return false
         val knownBefore = CodecCapabilities.learnedCount()
-        CodecCapabilities.learnFailure(track!!.fourcc, track.width, track.height, "${clip!!.episodeId}/${decoderMode().name}")
+        CodecCapabilities.learnFailure(track!!.fourcc, track.width, track.height, "${current.episodeId}/${decoderMode(current.episodeId).name}")
         if (CodecCapabilities.learnedCount() == knownBefore) return false
         healAttempts += 1
         loadCurrent("设备不支持该清晰度，正在自动切换…")

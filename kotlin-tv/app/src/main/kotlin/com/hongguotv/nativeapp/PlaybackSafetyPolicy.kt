@@ -9,13 +9,14 @@ import com.hongguotv.core.VideoTracks
 
 /** Keep 1 GB, 32-bit devices away from the high-resolution allocation path before codec creation. */
 internal class PlaybackSafetyPolicy(
-    is32Bit: Boolean = false,
+    private val is32Bit: Boolean = false,
     lowRam: Boolean = false,
     totalMemoryBytes: Long = 0,
 ) {
     val constrained = is32Bit && (lowRam || totalMemoryBytes in 1..(1536L * 1024 * 1024))
 
-    fun maxQuality(requested: Int): Int = if (constrained) minOf(requested, 720) else requested
+    fun maxQuality(requested: Int, softwareOnly: Boolean = false): Int =
+        if (constrained || is32Bit && softwareOnly) minOf(requested, 720) else requested
 
     private fun acceptsSize(width: Int?, height: Int?): Boolean =
         width != null && height != null && width > 0 && height > 0 &&
@@ -27,8 +28,8 @@ internal class PlaybackSafetyPolicy(
             (rendition.width == null || rendition.height == null ||
                 acceptsSize(rendition.width, rendition.height)))
 
-    fun accepts(track: VideoTracks.Track?): Boolean =
-        !constrained || track != null && acceptsSize(track.width, track.height)
+    fun accepts(track: VideoTracks.Track?, softwareOnly: Boolean = false): Boolean =
+        !(constrained || is32Bit && softwareOnly) || track != null && acceptsSize(track.width, track.height)
 
     companion object {
         fun from(context: Context): PlaybackSafetyPolicy {

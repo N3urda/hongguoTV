@@ -107,6 +107,9 @@ internal fun diagnosticDetail(problem: Throwable): String? =
                 cause is java.io.InterruptedIOException &&
                     cause.message in setOf("timeout", "deadline reached") -> "timeout=deadline"
                 cause is com.hongguotv.core.PlaybackDiagnosticException -> cause.detail
+                cause is NoPlayableQualityException -> cause.track?.let {
+                    "coded=${it.width}x${it.height} codec=${it.codecs ?: it.fourcc}"
+                }
                 cause is EmptyPlaybackResponseException -> cause.detail?.takeIf { it.isNotBlank() }
                 cause is ContentHttpException -> "http=${cause.statusCode}"
                 cause is androidx.media3.common.PlaybackException ->
@@ -209,7 +212,7 @@ private class RecentSourceValidation(
  * 阶梯非空但没有任何一档满足清晰度和解码约束：重试只会得到同一结果，
  * 上层不应再进入自动恢复预算；手动重试保留（服务端转码推进后该集供给可能翻转为 bytevc1）。
  */
-internal class NoPlayableQualityException :
+internal class NoPlayableQualityException(val track: VideoTracks.Track? = null) :
     java.io.IOException("本集没有符合当前清晰度和解码能力的片源")
 
 /**
@@ -249,12 +252,14 @@ internal fun openStream(
     supportsTrack: (VideoTracks.Track?) -> Boolean,
 ): OpenedStream? {
     fun prepare(ladder: StreamLadder): OpenedStream? {
+        var rejectedTrack: VideoTracks.Track? = null
         for (rendition in ladder.playbackOrder(maxQuality, supportsRendition)) {
             val video = RemoteVideo(http, rendition.toStreamInfo())
             try {
                 video.prepare(initialBytes)
                 RequestScope.ensureActive()
                 val track = video.trackInfo()
+                rejectedTrack = track ?: rejectedTrack
                 val withinQuality = track == null || minOf(track.width, track.height) <= maxQuality
                 if (withinQuality && supportsTrack(track)) {
                     val openedRendition = if (video.info.url == rendition.url) rendition
@@ -263,7 +268,8 @@ internal fun openStream(
                 }
                 Log.i(
                     "HongguoTV",
-                    "Skipped ${rendition.quality}P ${rendition.codec}: coded ${track?.width}x${track?.height} exceeds playback limits ($maxQuality P)",
+                    "Skipped ${rendition.quality}P ${rendition.codec}: coded=${track?.width}x${track?.height} " +
+                        "codecs=${track?.codecs}; incompatible with decoder or quality limit ($maxQuality P)",
                 )
                 video.close()
             } catch (error: Exception) {
@@ -271,7 +277,7 @@ internal fun openStream(
                 throw error
             }
         }
-        if (ladder.renditions.isNotEmpty()) throw NoPlayableQualityException()
+        if (ladder.renditions.isNotEmpty()) throw NoPlayableQualityException(rejectedTrack)
         return null
     }
 

@@ -30,4 +30,15 @@ class PlaybackSafetyPolicyTest {
         assertEquals(1080, PlaybackSafetyPolicy(true).maxQuality(1080))
         assertEquals(720, PlaybackSafetyPolicy(true, true).maxQuality(1080))
     }
+
+    @Test fun softwareOnlyHevcIsCappedOn32BitBeforeDecodingEvenWithTwoGigabytes() {
+        val policy = PlaybackSafetyPolicy(true, false, 2L * 1024 * 1024 * 1024)
+        val full = VideoTracks.Track("hvc1", 1080, 1924, "hvc1.1.6.L186")
+        assertEquals(1080, policy.maxQuality(1080))
+        assertTrue(policy.accepts(full))
+        assertEquals(720, policy.maxQuality(1080, softwareOnly = true))
+        assertFalse(policy.accepts(full, softwareOnly = true))
+        assertTrue(policy.accepts(full.copy(width = 480, height = 854), softwareOnly = true))
+        assertTrue(PlaybackSafetyPolicy().accepts(full, softwareOnly = true))
+    }
 }
