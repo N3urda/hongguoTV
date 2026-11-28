@@ -1,12 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.nativeapp
 
+import android.content.Context
+import android.media.AudioManager
+import android.os.Build
 import android.util.Log
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime
+
+internal fun systemMediaVolumeInfo(context: Context): String = try {
+    val manager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    if (manager == null) "系统媒体音量 无法读取" else buildString {
+        append("系统媒体音量 ${manager.getStreamVolume(AudioManager.STREAM_MUSIC)}/${manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}")
+        if (Build.VERSION.SDK_INT >= 23 && manager.isStreamMute(AudioManager.STREAM_MUSIC)) append(" · 已静音")
+        if (manager.isVolumeFixed) append(" · 系统固定音量")
+    }
+} catch (_: RuntimeException) { "系统媒体音量 无法读取" }
 
 internal data class ActiveVideoDecoder(val name: String, val hardwareAccelerated: Boolean, val softwareOnly: Boolean) {
     val typeLabel: String

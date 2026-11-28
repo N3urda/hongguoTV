@@ -531,6 +531,9 @@ internal class Media3TrialPlayback(
             true,
         )
         player.setHandleAudioBecomingNoisy(true)
+        player.addAnalyticsListener(PlaybackAudioRecovery(player) {
+            activeId != null && player.currentMediaItem?.mediaId == activeId
+        })
         player.addAnalyticsListener(SoftwareVideoFallback(player, diagnostics) {
             if (activeId != null && player.currentMediaItem?.mediaId == activeId) onSoftwareOverload?.invoke()
         })

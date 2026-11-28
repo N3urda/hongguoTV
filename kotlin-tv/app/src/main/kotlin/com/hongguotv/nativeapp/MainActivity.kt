@@ -3733,8 +3733,9 @@ class MainActivity : Activity() {
             ""
         }
 
-    private fun playbackAudioInfo(): String = playerDiagnostics?.audioInfo(player?.audioFormat,
-        player?.currentTracks?.isTypeSelected(C.TRACK_TYPE_AUDIO) == true, player?.volume) ?: "音轨 尚未初始化"
+    private fun playbackAudioInfo(): String = (playerDiagnostics?.audioInfo(player?.audioFormat,
+        player?.currentTracks?.isTypeSelected(C.TRACK_TYPE_AUDIO) == true, player?.volume) ?: "音轨 尚未初始化") +
+        "\n" + systemMediaVolumeInfo(this)
 
     /**
      * Requests recovery only for a batch of persistently late video frames. Media3 reports
@@ -3860,6 +3861,11 @@ class MainActivity : Activity() {
                     it.setHandleAudioBecomingNoisy(true)
                     it.addAnalyticsListener(diagnostics)
                     it.addAnalyticsListener(playbackDriftListener(it))
+                    val p = it
+                    it.addAnalyticsListener(PlaybackAudioRecovery(p) {
+                        player === p && foreground && playbackReady && !playError && !waitingForFirstFrame &&
+                            pendingSeek == null && pendingEpisodeTarget == null && !playerModalOpen()
+                    })
                     it.addAnalyticsListener(SoftwareVideoFallback(it, diagnostics, ::lowerSoftwareVideoQuality))
                 }
             }
