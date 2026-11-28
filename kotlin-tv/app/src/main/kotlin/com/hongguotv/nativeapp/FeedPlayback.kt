@@ -69,6 +69,8 @@ internal interface FeedBackend : Closeable {
 
     fun shouldDeferPlaybackPrefetch(): Boolean = false
 
+    fun lowerSoftwareQuality(clip: TrialClip): Boolean = false
+
     fun prefetchEpisode(series: Series, index: Int): TrialClip = episode(series, index)
 
     /** 首页展示过一部作品时通知后端，供下次冷启动跳过重复内容。 */
@@ -95,6 +97,7 @@ internal class PublicFeedBackend(
     private val recentSources: PlaybackSourceCache = PlaybackSourceCache(),
     private val safety: PlaybackSafetyPolicy = PlaybackSafetyPolicy(),
     private val decoderMode: (String) -> VideoDecoderMode = { VideoDecoderMode.AUTOMATIC },
+    private val qualityRecovery: PlaybackQualityRecovery = PlaybackQualityRecovery(),
 ) : FeedBackend {
     companion object {
         // Reuse idle public TLS connections across homepage visits. Dispatchers remain per backend,
@@ -226,15 +229,20 @@ internal class PublicFeedBackend(
             http,
             repository,
             id,
-            safety.maxQuality(quality, mode == VideoDecoderMode.SOFTWARE_ONLY),
+            qualityRecovery.maximum(id, safety.maxQuality(quality, mode == VideoDecoderMode.SOFTWARE_ONLY)),
             { safety.accepts(it) && CodecCapabilities.supports(it, failureScope) },
             recentSources,
             initialBytes = 32 * 1024,
             speculative = speculative,
         ) {
-            acceptsPlaybackTrack(it, safety, mode, failureScope)
+            qualityRecovery.accepts(id, it) && acceptsPlaybackTrack(it, safety, mode, failureScope)
         } ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
     }
+
+    override fun lowerSoftwareQuality(clip: TrialClip): Boolean =
+        qualityRecovery.reduce(clip.episodeId, clip.rendition?.quality ?: 0, clip.track, clip.tiers) {
+            safety.accepts(it) && CodecCapabilities.supports(it, "${clip.episodeId}/${decoderMode(clip.episodeId).name}")
+        }
 
     /** 试播集打开结果：流 + 实际集 id + 界面展示序号（1 起）。 */
     private data class OpenedTrial(
@@ -402,6 +410,10 @@ internal interface TrialPlayback {
     var onError: ((PlaybackException) -> Unit)?
         get() = null
         set(_) {}
+
+    var onSoftwareOverload: (() -> Unit)?
+        get() = null
+        set(_) {}
 }
 
 /** 试播自愈的迭代上限：竖屏首播通常 1080P→720P→480P 两轮收敛，3 轮留出余量。 */
@@ -505,6 +517,7 @@ internal class Media3TrialPlayback(
 
     override var status: ((TrialStatus) -> Unit)? = null
     override var onError: ((PlaybackException) -> Unit)? = null
+    override var onSoftwareOverload: (() -> Unit)? = null
     private var activeId: String? = null
     private var startedAt = 0L
 
@@ -518,6 +531,9 @@ internal class Media3TrialPlayback(
             true,
         )
         player.setHandleAudioBecomingNoisy(true)
+        player.addAnalyticsListener(SoftwareVideoFallback(player, diagnostics) {
+            if (activeId != null && player.currentMediaItem?.mediaId == activeId) onSoftwareOverload?.invoke()
+        })
         player.addListener(
             object : Player.Listener {
                 private fun active() =

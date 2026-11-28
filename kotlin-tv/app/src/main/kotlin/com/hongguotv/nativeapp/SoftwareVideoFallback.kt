@@ -8,7 +8,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime
 
-/** Reduce quality when a 32-bit TV keeps dropping frames on a HEVC software decoder. */
+/** Reduce quality after sustained HEVC software overload, including faster playback and the feed. */
 @UnstableApi
 internal class SoftwareVideoFallback(
     private val player: ExoPlayer,
@@ -25,6 +25,9 @@ internal class SoftwareVideoFallback(
         if (!isPlaying) drops.reset()
     }
 
+    override fun onPlaybackParametersChanged(eventTime: EventTime, parameters: androidx.media3.common.PlaybackParameters) =
+        drops.reset()
+
     override fun onPositionDiscontinuity(eventTime: EventTime, oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) =
         drops.reset()
 
@@ -35,9 +38,6 @@ internal class SoftwareVideoFallback(
         ) onOverload(player)
     }
 
-    companion object {
-        const val QUALITY_LIMIT = 720
-    }
 }
 
 internal class SoftwareVideoDropGuard {

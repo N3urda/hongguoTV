@@ -36,6 +36,11 @@ internal fun playbackVideoInfo(quality: String, format: Format?, decoder: Active
 /** Event timestamps and media positions allow correlation with the periodic decoder counters. */
 @androidx.media3.common.util.UnstableApi
 internal class PlaybackDiagnostics(private val screen: String) : AnalyticsListener {
+    @Volatile var lastAudioDecoder: String? = null
+        private set
+    @Volatile var audioTrackConfig: AudioSink.AudioTrackConfig? = null
+        private set
+    private var activeAudioTracks = 0
     @Volatile var lastVideoDecoder: ActiveVideoDecoder? = null
         private set
     @Volatile var lastVideoFormat: Format? = null
@@ -56,14 +61,36 @@ internal class PlaybackDiagnostics(private val screen: String) : AnalyticsListen
     override fun onAudioUnderrun(eventTime: EventTime, bufferSize: Int, bufferSizeMs: Long, elapsedSinceLastFeedMs: Long) =
         record(eventTime, "audioUnderrun bufferBytes=$bufferSize audioBufferMs=$bufferSizeMs sinceFeedMs=$elapsedSinceLastFeedMs")
 
-    override fun onAudioTrackInitialized(eventTime: EventTime, audioTrackConfig: AudioSink.AudioTrackConfig) =
+    override fun onAudioTrackInitialized(eventTime: EventTime, audioTrackConfig: AudioSink.AudioTrackConfig) {
+        activeAudioTracks++
+        this.audioTrackConfig = audioTrackConfig
         record(eventTime, "audioTrackBytes=${audioTrackConfig.bufferSize} rate=${audioTrackConfig.sampleRate} encoding=${audioTrackConfig.encoding}")
+    }
+
+    override fun onAudioTrackReleased(eventTime: EventTime, audioTrackConfig: AudioSink.AudioTrackConfig) {
+        // AudioTrack release is asynchronous and can arrive after the replacement is initialized.
+        activeAudioTracks = (activeAudioTracks - 1).coerceAtLeast(0)
+        if (activeAudioTracks == 0) this.audioTrackConfig = null
+        record(eventTime, "audioTrackReleased=true")
+    }
 
     override fun onPlaybackStateChanged(eventTime: EventTime, state: Int) =
         record(eventTime, "state=$state")
 
-    override fun onAudioDecoderInitialized(eventTime: EventTime, decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) =
+    override fun onAudioDecoderInitialized(eventTime: EventTime, decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) {
+        lastAudioDecoder = decoderName
         record(eventTime, "audioDecoder=$decoderName")
+    }
+
+    fun audioInfo(format: Format?, selected: Boolean, volume: Float?): String = buildString {
+        appendLine(if (selected) "音轨 已选择" else "音轨 未选择")
+        format?.let { appendLine("音频格式 ${it.sampleMimeType} · ${it.sampleRate} Hz · ${it.channelCount} 声道") }
+        appendLine("最近音频解码器 ${lastAudioDecoder ?: "尚未初始化"}")
+        val output = audioTrackConfig
+        append(if (output == null) "音频输出 未创建" else
+            "音频输出 ${output.sampleRate} Hz · encoding=${output.encoding} · buffer=${output.bufferSize}")
+        volume?.let { append("\n播放器音量 ${(it * 100).toInt()}%") }
+    }
 
     override fun onVideoDecoderInitialized(eventTime: EventTime, decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) =
         record(eventTime, "videoDecoder=$decoderName initMs=$initializationDurationMs")

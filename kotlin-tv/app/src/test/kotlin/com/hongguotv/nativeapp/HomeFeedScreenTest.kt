@@ -22,6 +22,33 @@ import org.robolectric.shadows.ShadowLooper
 @Config(sdk = [21, 23, 26], qualifiers = "w960dp-h540dp-land-mdpi")
 @LooperMode(LooperMode.Mode.PAUSED)
 class HomeFeedScreenTest {
+    @Test fun softwareOverloadRefreshesTheFeedSourceAndKeepsPositionWithoutOverridingPause() {
+        var reductions = 0
+        TrialRecoveryFixture(softwareReduction = { ++reductions == 1 }) { _, _ -> null }.use { f ->
+            f.player.status?.invoke(TrialStatus.READY)
+            f.player.saved = 12_345L
+            val reads = f.reads()
+            val original = get(f.screen, "clip")
+            f.player.onSoftwareOverload?.invoke()
+            pump(f.screen)
+            assertNotSame(original, get(f.screen, "clip"))
+            assertEquals(reads + 1, f.reads())
+            assertEquals(12_345L, f.player.saved)
+            assertTrue(f.player.playing)
+            f.player.status?.invoke(TrialStatus.READY)
+            f.clickStage()
+            f.player.onSoftwareOverload?.invoke()
+            pump(f.screen)
+            assertFalse(f.player.playing)
+            assertEquals("A queued overload cannot interrupt a user pause", 1, reductions)
+            f.clickStage()
+            f.player.onSoftwareOverload?.invoke()
+            pump(f.screen)
+            assertEquals(2, reductions)
+            assertEquals("No usable lower tier means no reload", reads + 1, f.reads())
+        }
+    }
+
     @Test fun softwareFallbackReopensSourceAndKeepsEpisodePositionAndPause() {
         TrialRecoveryFixture { _, _ -> null }.use { f ->
             f.player.status?.invoke(TrialStatus.READY)
@@ -492,6 +519,7 @@ class HomeFeedScreenTest {
         override val view = View(activity)
         override var status: ((TrialStatus) -> Unit)? = null
         override var onError: ((androidx.media3.common.PlaybackException) -> Unit)? = null
+        override var onSoftwareOverload: (() -> Unit)? = null
         var softwareFallbackAvailable = false
         var softwareFallbacks = 0
         override fun trySoftwareFallback(clip: TrialClip, error: androidx.media3.common.PlaybackException): Boolean {
@@ -590,6 +618,7 @@ class HomeFeedScreenTest {
 
     private inner class TrialRecoveryFixture(
         autoPreview: Boolean = true,
+        softwareReduction: () -> Boolean = { false },
         failure: (String, Int) -> Throwable?,
     ) : java.io.Closeable {
         private val controller = Robolectric.buildActivity(Activity::class.java).setup()
@@ -598,6 +627,7 @@ class HomeFeedScreenTest {
         val state = DramaFeedState()
         val player = Playback(activity)
         private val backend = object : Backend() {
+            override fun lowerSoftwareQuality(clip: TrialClip) = softwareReduction()
             override fun trial(series: Series): TrialClip {
                 val count = counts.computeIfAbsent(series.id) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
                 failure(series.id, count)?.let { throw it }

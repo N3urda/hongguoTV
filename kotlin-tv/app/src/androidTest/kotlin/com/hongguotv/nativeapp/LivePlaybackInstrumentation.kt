@@ -20,18 +20,20 @@ class LivePlaybackInstrumentation : Instrumentation() {
     private var decoderStability = false
     private var lowMemoryProfile = false
     private var hevcRecovery = false
+    private var softwareOverload = false
     override fun onCreate(arguments: Bundle?) {
         issue102Samples = arguments?.getString("issue102Samples") == "true"
         issue144Samples = arguments?.getString("issue144Samples") == "true"
         decoderStability = arguments?.getString("decoderStability") == "true"
         lowMemoryProfile = arguments?.getString("lowMemoryProfile") == "true"
         hevcRecovery = arguments?.getString("hevcRecovery") == "true"
+        softwareOverload = arguments?.getString("softwareOverload") == "true"
         super.onCreate(arguments); start()
     }
     private fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
 
     override fun onStart() {
-        if (decoderStability) { DecoderStabilityAcceptance.run(this, lowMemoryProfile, hevcRecovery); return }
+        if (decoderStability) { DecoderStabilityAcceptance.run(this, lowMemoryProfile, hevcRecovery, softwareOverload); return }
         if (issue144Samples) { Issue144DirectoryAcceptance.run(this); return }
         if (issue102Samples) { Issue102PlaybackAcceptance.run(this); return }
         val result = Bundle()

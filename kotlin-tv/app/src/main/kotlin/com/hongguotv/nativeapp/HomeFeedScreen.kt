@@ -347,6 +347,17 @@ internal class HomeFeedScreen(
             }
         }
         playback.onError = { error -> lastPlaybackError = error }
+        playback.onSoftwareOverload = {
+            val current = clip
+            if (current != null) main.post {
+                if (!closed && active && !state.userPaused && !state.ended && !failed && playbackReady &&
+                    clip === current && backend.lowerSoftwareQuality(current)) {
+                    cancelPrefetch()
+                    clearCache()
+                    loadCurrent("播放较卡，正在降低清晰度…")
+                }
+            }
+        }
         playback.status = { value ->
             if (!closed && clip != null)
                 when (value) {
