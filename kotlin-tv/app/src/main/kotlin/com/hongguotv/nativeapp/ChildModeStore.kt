@@ -63,7 +63,7 @@ internal class ChildModeStore(
         if (damaged) return emptyList()
         val rows = state.getJSONArray("entries")
         return (0 until rows.length()).map { rows.getJSONObject(it).let { row ->
-            Series(row.getString("id"), row.optString("title"), cover = row.optString("cover"))
+            Series(row.getString("id"), row.optString("title"), cover = row.optString("cover"), badge = row.optString("badge"))
         } }
     }
     @Synchronized fun contains(id: String) = !damaged && id in allowedIds
@@ -187,7 +187,7 @@ internal class ChildModeStore(
         val rows = copyState().getJSONArray("entries")
         check(rows.length() < 1000) { "儿童片单最多保存 1000 部作品" }
         rows.put(JSONObject().put("id", series.id).put("title", series.title.take(200))
-            .put("cover", series.cover.take(8192)).put("addedAt", wallClock()))
+            .put("cover", series.cover.take(8192)).put("badge", series.badge.take(120)).put("addedAt", wallClock()))
         save(copyState().put("entries", rows), true); touch(token)
     }
     @Synchronized fun remove(token: String, id: String) {

@@ -13,6 +13,7 @@ internal class TvGlyph(private val kind: Int, private val size: Int, var ink: In
         pen.color = ink
         fun line(vararg xy: Float) { val p = Path(); p.moveTo(xy[0], xy[1]); for(i in 2 until xy.size step 2) p.lineTo(xy[i], xy[i+1]); c.drawPath(p, pen) }
         when(kind) {
+            15 -> { line(9f,5f,22f,5f,22f,19f,9f,19f,2f,12f,9f,5f); line(12f,9f,18f,15f); line(18f,9f,12f,15f) }
             10 -> { line(7f,3f,21f,12f,7f,21f,7f,3f) }
             11 -> { line(8f,4f,8f,20f); line(16f,4f,16f,20f) }
             12 -> { c.drawArc(3f,3f,21f,21f,135f,270f,false,pen); line(12f,12f,17f,7f); c.drawCircle(12f,12f,1f,pen) }

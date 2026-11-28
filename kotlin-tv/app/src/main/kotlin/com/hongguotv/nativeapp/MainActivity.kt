@@ -43,6 +43,8 @@ class MainActivity : Activity() {
     private val childMode by lazy { ChildModeStore(this) }
     private val childUi by lazy { ChildModeUi(this, childMode) }
     private var lastChildMode = false
+    private var childHome: ChildHomeView? = null
+    private var childHomePosition: ChildHomeView.Position? = null
     private val repository = ContentRepository(playbackSession = PlaybackDeviceSession.shared)
     private val phoneCatalog by lazy {
         PhoneControlCatalog(library, cloudAccount) { series, progress ->
@@ -825,6 +827,8 @@ class MainActivity : Activity() {
     }
 
     private fun releaseCatalogViews() {
+        childHome?.let { childHomePosition = it.capture() }
+        childHome = null
         producerDialog?.close()
         producerDialog = null
         settingsAccountStatus = null
@@ -1119,27 +1123,11 @@ class MainActivity : Activity() {
             phone.requestFocus()
             return
         }
-        val scroll = ScrollView(this)
-        val list = column()
-        scroll.addView(list)
-        body.addView(scroll, lp(-1, 0).apply { weight = 1f })
-        val allowed = childMode.entries()
-        val recent = library.history().filter { entry -> allowed.any { it.id == entry.series.id } }.take(6)
-        var first: View? = null
-        if (recent.isNotEmpty()) {
-            list.addView(text("继续观看", 18f))
-            recent.forEach { entry ->
-                val button = addButton(list, entry.series.title) { openDetail(entry.series, resume = true) }
-                if (first == null) first = button
-            }
-        }
-        list.addView(text("我的片单 · ${allowed.size} 部", 18f))
-        allowed.forEach { series ->
-            val button = addButton(list, series.title) { openDetail(series) }
-            if (first == null) first = button
-        }
-        if (allowed.isEmpty()) list.addView(text("还没有允许观看的作品，请家长使用手机控制台添加。", 18f))
-        (first ?: phone).requestFocus()
+        val home = ChildHomeView(this, childMode.entries(), library.history(), phone, ::loadCover,
+            { series, resume -> openDetail(series, resume = resume) }, childHomePosition)
+        childHome = home
+        body.addView(home, lp(-1, 0).apply { weight = 1f })
+        home.enter()
     }
 
     private fun showCatalog(
@@ -1448,7 +1436,7 @@ class MainActivity : Activity() {
                         when (requestTab) {
                             0 -> repository.home(requestPage, requestType)
                             2 -> repository.comicRanking(requestPage)
-                            else -> repository.searchAll(requestQuery, requestPage)
+                            else -> repository.searchAll(requestQuery, requestPage).inSearchOrder(requestQuery)
                         }
                     result
                 },
@@ -1962,7 +1950,7 @@ class MainActivity : Activity() {
                         browser.append(emptyList(), false)
                     } else
                         work(
-                            { repository.searchAll(requestQuery, nextPage) },
+                            { repository.searchAll(requestQuery, nextPage).inSearchOrder(requestQuery) },
                             { result ->
                                 if (continuousCatalog === browser) {
                                     val seen = catalog.mapTo(HashSet()) { it.id }

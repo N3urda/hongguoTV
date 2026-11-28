@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.Dialog
 import android.os.Handler
 import android.os.Looper
+import android.view.KeyEvent
 import android.view.View
 import android.view.Window
 import android.widget.*
@@ -17,7 +18,10 @@ internal class ChildModeUi(private val activity: Activity, private val store: Ch
     private val worker = Executors.newSingleThreadExecutor()
     private var dialog: Dialog? = null
     private var token = ""
-    private var generation = 0
+    @Volatile private var generation = 0
+    private var busy = false
+    private var lockInput: ((Boolean) -> Unit)? = null
+    private var resetInput: (() -> Unit)? = null
     val showing get() = dialog?.isShowing == true
     private fun dp(n: Int) = (n * activity.resources.displayMetrics.density).toInt()
     private fun label(text: String) = TextView(activity).apply {
@@ -32,6 +36,9 @@ internal class ChildModeUi(private val activity: Activity, private val store: Ch
     }
     private fun panel(title: String): LinearLayout {
         dialog?.dismiss()
+        busy = false
+        lockInput = null
+        resetInput = null
         val body = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(16), dp(20), dp(16))
             setBackgroundColor(TvStyle.background)
@@ -40,20 +47,29 @@ internal class ChildModeUi(private val activity: Activity, private val store: Ch
         val scroll = ScrollView(activity).apply { addView(body) }
         dialog = Dialog(activity).apply {
             requestWindowFeature(Window.FEATURE_NO_TITLE); setContentView(scroll)
-            setOnDismissListener { generation++ }
+            setOnDismissListener { generation++; busy = false; lockInput = null; resetInput = null }
             show()
             window?.setLayout(minOf(dp(620), activity.resources.displayMetrics.widthPixels - dp(40)),
                 (activity.resources.displayMetrics.heightPixels * .85f).toInt())
         }
         return body
     }
-    private fun <T> run(action: () -> T, success: (T) -> Unit) {
+    private fun <T> run(action: () -> T, discard: (T) -> Unit = {}, success: (T) -> Unit) {
+        if (busy) return
+        busy = true
+        lockInput?.invoke(true)
         val ticket = generation
         worker.execute {
             val result = runCatching(action)
             main.post {
-                if (ticket != generation || activity.isFinishing || activity.isDestroyed) return@post
+                if (ticket != generation || activity.isFinishing || activity.isDestroyed) {
+                    result.getOrNull()?.let(discard)
+                    return@post
+                }
+                busy = false
+                lockInput?.invoke(false)
                 result.fold(success) { error ->
+                    resetInput?.invoke()
                     Toast.makeText(activity, error.message ?: "操作失败，请重试", Toast.LENGTH_LONG).show()
                 }
             }
@@ -62,31 +78,73 @@ internal class ChildModeUi(private val activity: Activity, private val store: Ch
     private fun input(title: String, recovery: Boolean = false, done: (String) -> Unit) {
         val body = panel(title)
         val value = StringBuilder()
-        val display = label("")
+        val display = label("").apply { contentDescription = "已输入 0 位" }
+        val status = label("")
         body.addView(display)
         val chars = if (recovery) "1234567890ABCDEF" else "1234567890"
-        fun refresh() { display.text = if (recovery) value.toString().chunked(4).joinToString("-") else "●".repeat(value.length) }
-        val grid = GridLayout(activity).apply { columnCount = if (recovery) 4 else 3 }
-        chars.forEach { digit -> grid.addView(button(digit.toString()) {
-            if (value.length < if (recovery) 32 else 6) { value.append(digit); refresh() }
-        }, GridLayout.LayoutParams().apply { width = dp(92); height = dp(48) }) }
-        body.addView(grid)
-        body.addView(button("删除") { if (value.isNotEmpty()) { value.deleteCharAt(value.lastIndex); refresh() } })
-        body.addView(button("确认") {
-            if (value.length == if (recovery) 32 else 6) {
-                val entered = value.toString(); value.clear(); refresh(); done(entered)
-            } else Toast.makeText(activity, if (recovery) "请输入完整恢复码" else "请输入 6 位数字密码", Toast.LENGTH_SHORT).show()
-        })
-        body.addView(button("取消") { close() })
-        dialog?.setOnKeyListener { _, key, event ->
-            if (!recovery && key in android.view.KeyEvent.KEYCODE_0..android.view.KeyEvent.KEYCODE_9) {
-                if (event.action == android.view.KeyEvent.ACTION_UP && value.length < 6) {
-                    value.append(('0'.code + key - android.view.KeyEvent.KEYCODE_0).toChar()); refresh()
-                }
-                true
-            } else false
+        val limit = if (recovery) 32 else 6
+        fun refresh() {
+            display.text = if (recovery) value.toString().chunked(4).joinToString("-") else "●".repeat(value.length)
+            display.contentDescription = "已输入 ${value.length} 位"
         }
-        grid.getChildAt(0).requestFocus()
+        fun append(char: Char) { if (!busy && value.length < limit) { value.append(char); refresh() } }
+        fun delete() { if (!busy && value.isNotEmpty()) { value.deleteCharAt(value.lastIndex); refresh() } }
+        val grid = GridLayout(activity).apply { columnCount = if (recovery) 4 else 3 }
+        val inputs = mutableListOf<View>()
+        fun cell(view: View) = grid.addView(view, GridLayout.LayoutParams().apply { width = dp(92); height = dp(48) })
+        chars.forEach { digit ->
+            if (!recovery && digit == '0') cell(View(activity))
+            val key = button(digit.toString()) { append(digit) }
+            inputs += key
+            cell(key)
+        }
+        val erase = ImageButton(activity).apply {
+            contentDescription = "删除一位"
+            setImageDrawable(TvGlyph(15, dp(28), TvStyle.text))
+            background = TvStyle.card(activity, false)
+            isFocusable = true
+            setOnFocusChangeListener { _, focus -> background = TvStyle.card(activity, focus) }
+            setOnClickListener { delete() }
+        }
+        inputs += erase
+        cell(erase)
+        body.addView(grid)
+        val confirm = button("确认") {
+            if (!busy) {
+                if (value.length == limit) done(value.toString())
+                else Toast.makeText(activity, if (recovery) "请输入完整恢复码" else "请输入 6 位数字密码", Toast.LENGTH_SHORT).show()
+            }
+        }
+        inputs += confirm
+        body.addView(status)
+        body.addView(confirm)
+        body.addView(button("取消") { close() }.apply { tag = "parent-cancel" })
+        lockInput = { locked ->
+            inputs.forEach { it.isEnabled = !locked; it.alpha = if (locked) .45f else 1f }
+            status.text = if (locked) "正在验证，请稍候…" else ""
+        }
+        resetInput = { value.clear(); refresh(); inputs.first().requestFocus() }
+        dialog?.setOnKeyListener { _, key, event ->
+            val digit = when (key) {
+                in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> ('0'.code + key - KeyEvent.KEYCODE_0).toChar()
+                in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> ('0'.code + key - KeyEvent.KEYCODE_NUMPAD_0).toChar()
+                in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_F -> if (recovery) ('A'.code + key - KeyEvent.KEYCODE_A).toChar() else null
+                else -> null
+            }
+            when {
+                digit != null -> {
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) append(digit)
+                    true
+                }
+                key == KeyEvent.KEYCODE_DEL || key == KeyEvent.KEYCODE_FORWARD_DEL -> {
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) delete()
+                    true
+                }
+                busy && dialog?.currentFocus?.tag != "parent-cancel" && key in listOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER) -> true
+                else -> false
+            }
+        }
+        inputs.first().requestFocus()
     }
     private fun newPin(title: String, done: (String, String) -> Unit) {
         input(title) { pin -> input("再次输入新密码") { confirm -> done(pin, confirm) } }
@@ -103,7 +161,7 @@ internal class ChildModeUi(private val activity: Activity, private val store: Ch
             return
         }
         if (!store.configured) {
-            newPin("设置 6 位家长密码") { pin, confirm -> run({ store.setup(pin, confirm) }, ::recoveryNotice) }
+            newPin("设置 6 位家长密码") { pin, confirm -> run({ store.setup(pin, confirm) }, success = ::recoveryNotice) }
             return
         }
         val body = panel("家长入口")
@@ -116,18 +174,18 @@ internal class ChildModeUi(private val activity: Activity, private val store: Ch
         })
         body.addView(button("修改家长密码") {
             input("输入原家长密码") { old -> newPin("输入新家长密码") { pin, confirm ->
-                run({ store.changePin(old, pin, confirm) }, ::recoveryNotice)
+                run({ store.changePin(old, pin, confirm) }, success = ::recoveryNotice)
             } }
         })
         body.addView(button("忘记密码：使用恢复码") {
             input("输入保存的恢复码", recovery = true) { code -> newPin("设置新家长密码") { pin, confirm ->
-                run({ store.recover(code, pin, confirm) }, ::recoveryNotice)
+                run({ store.recover(code, pin, confirm) }, success = ::recoveryNotice)
             } }
         })
         body.addView(button("返回") { close() })
     }
     private fun authenticate(done: () -> Unit) {
-        input("输入家长密码") { pin -> run({ store.unlock(pin) }) { token = it; done() } }
+        input("输入家长密码") { pin -> run({ store.unlock(pin) }, discard = { store.lock(it) }) { token = it; done() } }
     }
     fun add(series: Series) {
         if (!store.configured) { show(); return }
@@ -144,7 +202,7 @@ internal class ChildModeUi(private val activity: Activity, private val store: Ch
         if (!store.authorized(token)) { show(); return }
         val body = panel("儿童片单 · ${store.entries().size} 部")
         body.addView(label("新增作品：使用手机控制台，或在普通模式作品详情中添加。移除正在播放的作品会停止播放。"))
-        store.entries().forEach { series ->
+        com.hongguotv.core.SeriesDisplayOrder.byName(store.entries()).forEach { series ->
             body.addView(button("移除 · ${series.title}") {
                 val confirm = panel("移除《${series.title}》？")
                 confirm.addView(button("确认移除") { run({ store.remove(token, series.id) }) { manage() } }.apply { requestFocus() })

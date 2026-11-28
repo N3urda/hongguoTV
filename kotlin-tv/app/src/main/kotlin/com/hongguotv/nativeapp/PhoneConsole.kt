@@ -215,7 +215,7 @@ internal class PhoneConsole(
                 "childRemove" -> { policy.remove(parentToken, body.getString("id")); status().put("message", "已移出儿童片单") }
                 "childList" -> onMain(current) {
                     val page = body.optInt("page", 1).also { require(it in 1..25) }
-                    val entries = policy.entries()
+                    val entries = SeriesDisplayOrder.byName(policy.entries())
                     catalog.result(entries.drop((page - 1) * 40).take(40).map { RelatedWork(it, "儿童片单", false) }, entries.size > page * 40)
                         .also { result -> annotateChild(result, policy, parentToken) }
                 }
@@ -303,7 +303,7 @@ internal class PhoneConsole(
                 val query = body.getString("query").trim()
                 val page = body.optInt("page", 1)
                 require(query.length in 1..80 && query.none { it.isISOControl() } && page in 1..100)
-                val result = current.repository.searchAll(query, page)
+                val result = current.repository.searchAll(query, page).inSearchOrder(query)
                 return onMain(current) {
                     check(scope == control(JSONObject().put("action", "status")).getInt("scope"))
                     childGuard(body)
