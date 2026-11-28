@@ -35,6 +35,7 @@ class PlaybackDeviceSession(
     companion object {
         val shared = PlaybackDeviceSession()
         private const val EMPTY_MODEL_PREFETCH_PAUSE_MILLIS = 5_000L
+        private val EMPTY_MODEL_RECOVERY_COOLDOWN_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(30)
     }
 
     internal data class Profile(
@@ -48,6 +49,10 @@ class PlaybackDeviceSession(
         private val models = linkedMapOf<String, Model>()
         // Background prefetch reads only the primary model endpoint.
         @Volatile private var emptyPrimaryModelAt: Long? = null
+        @Volatile var hasPlayableModel: Boolean = false
+            private set
+
+        fun recordPlayableModel() { hasPlayableModel = true }
 
         fun recordEmptyPrimaryModel(now: Long) { emptyPrimaryModelAt = now }
 
@@ -87,6 +92,7 @@ class PlaybackDeviceSession(
 
     private var cdid = UUID.randomUUID().toString()
     @Volatile private var ready: Profile? = null
+    private var emptyModelRecoveryAt: Long? = null
 
     @Synchronized
     internal fun profile(http: OkHttpClient): Profile {
@@ -106,6 +112,27 @@ class PlaybackDeviceSession(
     @Synchronized
     internal fun takeModel(id: String, owner: Any, now: Long) = ready?.takeModel(id, owner, now)
 
+    /** Recover a previously usable session only after both foreground model endpoints are empty.
+     * Empty responses alone do not establish expiry. Keep fresh sessions and failed registrations,
+     * and share the recovery cooldown across homepage/fullscreen repositories.
+     */
+    @Synchronized
+    internal fun recoverEmptyModels(
+        http: OkHttpClient,
+        expected: Profile,
+        nowNanos: Long = System.nanoTime(),
+    ): Profile? {
+        RequestScope.ensureActive()
+        ready?.let { if (it !== expected) return it }
+        if (!expected.hasPlayableModel) return null
+        if (emptyModelRecoveryAt?.let { nowNanos - it < EMPTY_MODEL_RECOVERY_COOLDOWN_NANOS } == true)
+            return null
+        emptyModelRecoveryAt = nowNanos
+        val replaced = rotate(http, expected)
+        RequestScope.ensureActive()
+        return if (replaced) ready else null
+    }
+
     /**
      * 在调用方的失败期限制内尝试替换匿名身份，部分历史采样有效，但不保证恢复。
      * 若其他仓库实例已替换 [expected]，直接复用替代身份，不重复注册。
@@ -114,6 +141,7 @@ class PlaybackDeviceSession(
     @Synchronized
     internal fun rotate(http: OkHttpClient, expected: Profile? = null): Boolean {
         if (Thread.currentThread().isInterrupted) return false
+        RequestScope.ensureActive()
         // 共享会话的其他仓库实例已替换该失败身份，直接复用。
         if (expected != null && ready !== expected && ready != null) return true
         val device =
@@ -126,6 +154,7 @@ class PlaybackDeviceSession(
                 return false
             }
         if (!validDevice(device)) return false
+        RequestScope.ensureActive()
         cdid = UUID.randomUUID().toString()
         ready = toProfile(device)
         return true
