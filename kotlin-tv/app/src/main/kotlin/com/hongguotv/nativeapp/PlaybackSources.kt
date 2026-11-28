@@ -133,22 +133,24 @@ internal class OpenedStream(
 
 /** Shares previously opened renditions between the feed and full-screen player in one Activity. */
 internal class PlaybackSourceCache(private val clock: () -> Long = SystemClock::elapsedRealtime) {
-    private data class Entry(val rendition: Rendition, val openedAt: Long, val requestedMaxQuality: Int)
+    private data class Entry(val rendition: Rendition, val openedAt: Long, val requestedMaxQuality: Int,
+        val allowQualityFallback: Boolean)
     private val entries = linkedMapOf<String, Entry>()
 
     @Synchronized
-    fun find(id: String, maxQuality: Int): Rendition? {
+    fun find(id: String, maxQuality: Int, allowQualityFallback: Boolean = true): Rendition? {
         prune(clock())
         val entry = entries[id] ?: return null
-        return entry.rendition.takeIf { it.quality <= maxQuality }
+        return entry.rendition.takeIf { it.quality <= maxQuality &&
+            (allowQualityFallback || !entry.allowQualityFallback && entry.requestedMaxQuality == maxQuality) }
     }
 
     @Synchronized
-    fun remember(id: String, rendition: Rendition, maxQuality: Int) {
+    fun remember(id: String, rendition: Rendition, maxQuality: Int, allowQualityFallback: Boolean = true) {
         val now = clock()
         prune(now)
         entries.remove(id)
-        entries[id] = Entry(rendition, now, maxQuality)
+        entries[id] = Entry(rendition, now, maxQuality, allowQualityFallback)
         while (entries.size > 6) entries.remove(entries.keys.first())
     }
 
@@ -156,6 +158,8 @@ internal class PlaybackSourceCache(private val clock: () -> Long = SystemClock::
     fun forget(id: String, rendition: Rendition? = null) {
         if (rendition == null || entries[id]?.rendition === rendition) entries.remove(id)
     }
+
+    @Synchronized fun clear() { entries.clear() }
 
     private fun prune(now: Long) {
         entries.entries.removeAll { now - it.value.openedAt !in 0 until TimeUnit.MINUTES.toMillis(5) }
@@ -249,11 +253,17 @@ internal fun openStream(
     initialBytes: Int = 256 * 1024,
     metadataAhead: List<String> = emptyList(),
     speculative: Boolean = false,
+    allowQualityFallback: Boolean = true,
     supportsTrack: (VideoTracks.Track?) -> Boolean,
 ): OpenedStream? {
     fun prepare(ladder: StreamLadder): OpenedStream? {
         var rejectedTrack: VideoTracks.Track? = null
-        for (rendition in ladder.playbackOrder(maxQuality, supportsRendition)) {
+        // Choose the source tier BEFORE device filtering. A rejected high tier must not silently
+        // become a lower tier when the user disabled automatic quality changes.
+        val highest = ladder.renditions.filter { it.quality <= maxQuality }.maxOfOrNull { it.quality }
+        for (rendition in ladder.playbackOrder(maxQuality) {
+            (allowQualityFallback || it.quality == highest) && supportsRendition(it)
+        }) {
             val video = RemoteVideo(http, rendition.toStreamInfo())
             try {
                 video.prepare(initialBytes)
@@ -286,7 +296,7 @@ internal fun openStream(
     val ladder = try {
         repository.streamLadderWithCompatibility(id, metadataAhead, speculative,
             acceptable = { it.quality <= maxQuality && supportsRendition(it) }) {
-            val cached = recentSources.find(id, maxQuality)
+            val cached = recentSources.find(id, maxQuality, allowQualityFallback)
             // Session recovery can invoke this callback twice; share and close one validation job.
             if (cached != null && validation == null) {
                 val deadline = minOf(prepareDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(2))
@@ -307,14 +317,14 @@ internal fun openStream(
             problem.suppressed.any { it is EmptyPlaybackResponseException }
         if (speculative || (!modelsEmpty && !backupTimedOut)) throw problem
         val pending = validation ?: throw problem
-        if (recentSources.find(id, maxQuality) !== pending.rendition) throw problem
+        if (recentSources.find(id, maxQuality, allowQualityFallback) !== pending.rendition) throw problem
         val recovered = pending.take()
         if (recovered == null) {
             recentSources.forget(id, pending.rendition)
             problem.addSuppressed(PlaybackDiagnosticException("recent-source=unavailable"))
             throw problem
         }
-        if (recentSources.find(id, maxQuality) !== pending.rendition) {
+        if (recentSources.find(id, maxQuality, allowQualityFallback) !== pending.rendition) {
             recovered.close()
             throw problem
         }
@@ -324,7 +334,7 @@ internal fun openStream(
         validation?.close()
     }
     return prepare(ladder)?.also { opened ->
-        opened.rendition?.let { recentSources.remember(id, it, maxQuality) }
+        opened.rendition?.let { recentSources.remember(id, it, maxQuality, allowQualityFallback) }
     }
 }
 

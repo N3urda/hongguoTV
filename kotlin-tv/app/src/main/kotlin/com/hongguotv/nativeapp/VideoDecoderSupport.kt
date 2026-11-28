@@ -71,9 +71,10 @@ internal fun acceptsPlaybackTrack(
     safety: PlaybackSafetyPolicy,
     mode: VideoDecoderMode,
     failureScope: String,
+    automaticQuality: Boolean = true,
 ): Boolean {
-    if (track == null) return safety.accepts(null, mode == VideoDecoderMode.SOFTWARE_ONLY)
-    if (!CodecCapabilities.supports(track, failureScope)) return false
+    if (track == null) return !automaticQuality || safety.accepts(null, mode == VideoDecoderMode.SOFTWARE_ONLY)
+    if (automaticQuality && !CodecCapabilities.supports(track, failureScope)) return false
     val support = videoDecoderSupport(track, mode)
-    return support.playable && safety.accepts(track, support.softwareOnly)
+    return support.playable && (!automaticQuality || safety.accepts(track, support.softwareOnly))
 }

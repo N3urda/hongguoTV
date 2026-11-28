@@ -98,6 +98,7 @@ internal class PublicFeedBackend(
     private val safety: PlaybackSafetyPolicy = PlaybackSafetyPolicy(),
     private val decoderMode: (String) -> VideoDecoderMode = { VideoDecoderMode.AUTOMATIC },
     private val qualityRecovery: PlaybackQualityRecovery = PlaybackQualityRecovery(),
+    private val autoQualityDowngrade: Boolean = true,
 ) : FeedBackend {
     companion object {
         // Reuse idle public TLS connections across homepage visits. Dispatchers remain per backend,
@@ -229,18 +230,19 @@ internal class PublicFeedBackend(
             http,
             repository,
             id,
-            qualityRecovery.maximum(id, safety.maxQuality(quality, mode == VideoDecoderMode.SOFTWARE_ONLY)),
-            { safety.accepts(it) && CodecCapabilities.supports(it, failureScope) },
+            if (autoQualityDowngrade) qualityRecovery.maximum(id, safety.maxQuality(quality, mode == VideoDecoderMode.SOFTWARE_ONLY)) else quality,
+            { !autoQualityDowngrade || safety.accepts(it) && CodecCapabilities.supports(it, failureScope) },
             recentSources,
             initialBytes = 32 * 1024,
             speculative = speculative,
+            allowQualityFallback = autoQualityDowngrade,
         ) {
-            qualityRecovery.accepts(id, it) && acceptsPlaybackTrack(it, safety, mode, failureScope)
+            (!autoQualityDowngrade || qualityRecovery.accepts(id, it)) && acceptsPlaybackTrack(it, safety, mode, failureScope, autoQualityDowngrade)
         } ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
     }
 
     override fun lowerSoftwareQuality(clip: TrialClip): Boolean =
-        qualityRecovery.reduce(clip.episodeId, clip.rendition?.quality ?: 0, clip.track, clip.tiers) {
+        autoQualityDowngrade && qualityRecovery.reduce(clip.episodeId, clip.rendition?.quality ?: 0, clip.track, clip.tiers) {
             safety.accepts(it) && CodecCapabilities.supports(it, "${clip.episodeId}/${decoderMode(clip.episodeId).name}")
         }
 

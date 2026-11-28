@@ -445,9 +445,9 @@ class MainActivity : Activity() {
     private var synopsisExpanded = false
     private var player: ExoPlayer? = null
     private var playerDiagnostics: PlaybackDiagnostics? = null
-    private val playbackSafety by lazy { PlaybackSafetyPolicy.from(this) }
+    private val playbackSafety by lazy { PlaybackSafetyPolicy.from(this) { library.autoQualityDowngrade } }
     private val decoderRecovery = PlaybackDecoderRecovery()
-    private val qualityRecovery = PlaybackQualityRecovery()
+    private val qualityRecovery = PlaybackQualityRecovery { library.autoQualityDowngrade }
     private fun decoderMode(id: String?) = decoderRecovery.mode(id, library.videoDecoderMode)
     private fun requestedPlaybackQuality(id: String?) =
         playbackSafety.maxQuality(library.maxQuality, decoderMode(id) == VideoDecoderMode.SOFTWARE_ONLY)
@@ -1153,9 +1153,11 @@ class MainActivity : Activity() {
                         safety = playbackSafety,
                         decoderMode = ::decoderMode,
                         qualityRecovery = qualityRecovery,
+                        autoQualityDowngrade = library.autoQualityDowngrade,
                     ),
                     Media3TrialPlayback(this, library.playbackSpeed, library.frameMode, decoderRecovery) { library.videoDecoderMode },
                     autoPreview = library.homeAutoplay,
+                    autoQualityDowngrade = library.autoQualityDowngrade,
                     decoderMode = ::decoderMode,
                     backgroundBusy = { gradualPreloader?.busy == true },
                     loadCover = ::loadCover,
@@ -2426,6 +2428,8 @@ class MainActivity : Activity() {
                 1 -> {
                     lateinit var qualityButton: TextView
                     qualityButton = setting("默认清晰度  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton, false) }
+                    toggle("自动降低清晰度", library.autoQualityDowngrade) { setAutoQualityDowngrade(it, false) }
+                    content.addView(text("关闭后保持所选清晰度；片源不足时使用最高可用档，播放失败时可手动切换清晰度或解码方式。", 14f, muted))
                     lateinit var speed: TextView
                     speed = setting("默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(speed, false) }
                     lateinit var danmaku: TextView
@@ -2658,7 +2662,7 @@ class MainActivity : Activity() {
                 if (trial != null && trialSource != null && episodeId != null && episodeId == trialEpisodeId &&
                     trialMaxQuality == playbackMaxQuality(episodeId) &&
                     qualityRecovery.accepts(episodeId, trial.track) &&
-                    acceptsPlaybackTrack(trial.track, playbackSafety, decoderMode(episodeId), decoderScope(episodeId)) &&
+                    acceptsPlaybackTrack(trial.track, playbackSafety, decoderMode(episodeId), decoderScope(episodeId), library.autoQualityDowngrade) &&
                     android.os.SystemClock.elapsedRealtime() - trialCapturedAt in 0..15_000
                 ) {
                     cancelPrefetch()
@@ -3210,12 +3214,13 @@ class MainActivity : Activity() {
                             repository,
                             requestedId,
                             maxQuality,
-                            { playbackSafety.accepts(it) && CodecCapabilities.supports(it, failureScope) },
+                            { !library.autoQualityDowngrade || playbackSafety.accepts(it) && CodecCapabilities.supports(it, failureScope) },
                             recentPlaybackSources,
                             metadataAhead = data.episodes.drop(selectedIndex + 1).take(2),
+                            allowQualityFallback = library.autoQualityDowngrade,
                         ) {
                             qualityRecovery.accepts(requestedId, it) &&
-                                acceptsPlaybackTrack(it, playbackSafety, selectedDecoderMode, failureScope)
+                                acceptsPlaybackTrack(it, playbackSafety, selectedDecoderMode, failureScope, library.autoQualityDowngrade)
                         }
                         ?: throw java.io.IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
                 }
@@ -3496,14 +3501,15 @@ class MainActivity : Activity() {
                                     repository,
                                     id,
                                     quality,
-                                    { playbackSafety.accepts(it) && CodecCapabilities.supports(it, failureScope) },
+                                    { !library.autoQualityDowngrade || playbackSafety.accepts(it) && CodecCapabilities.supports(it, failureScope) },
                                     recentPlaybackSources,
                                     initialBytes = 32 * 1024,
                                     metadataAhead = metadataAhead,
                                     speculative = true,
+                                    allowQualityFallback = library.autoQualityDowngrade,
                                 ) {
                                     qualityRecovery.accepts(id, it) &&
-                                        acceptsPlaybackTrack(it, playbackSafety, selectedDecoderMode, failureScope)
+                                        acceptsPlaybackTrack(it, playbackSafety, selectedDecoderMode, failureScope, library.autoQualityDowngrade)
                                 } ?: throw java.io.IOException("没有电视可播放的清晰度")
                             }
                         }
@@ -4268,7 +4274,7 @@ class MainActivity : Activity() {
                         failureScope,
                     )
             }
-            if (shouldAutoDowngrade(autoDowngrades, 2, currentTiers, attemptedQuality)) {
+            if (library.autoQualityDowngrade && shouldAutoDowngrade(autoDowngrades, 2, currentTiers, attemptedQuality)) {
                 autoDowngrades++
                 android.util.Log.w(
                     "HongguoTV",
@@ -4307,6 +4313,7 @@ class MainActivity : Activity() {
             if (noPlayableQuality) null else nextLowerQuality(attemptedQuality, currentTiers)
         playbackText.text =
             when {
+                noPlayableQuality && !library.autoQualityDowngrade -> "已关闭自动降低清晰度，当前档位无法播放，可手动切换清晰度或解码方式。"
                 noPlayableQuality -> lastPlaybackFailure
                 decoding && lowerTier != null -> "电视无法解码当前视频，可尝试更低清晰度。"
                 decoding -> "当前解码方式无法播放本集，可尝试切换解码方式。"
@@ -4323,6 +4330,10 @@ class MainActivity : Activity() {
             }
         }
         if (decoding || noPlayableQuality) {
+            if (!library.autoQualityDowngrade) {
+                lateinit var qualityButton: TextView
+                qualityButton = addButton(actions, "切换清晰度") { showQualityPicker(qualityButton, true) }
+            }
             lateinit var decoderButton: TextView
             decoderButton = addButton(actions, "切换解码方式") { showVideoDecoderPicker(decoderButton, true) }
         }
@@ -4761,6 +4772,7 @@ class MainActivity : Activity() {
             "画面旋转 ${library.videoRotation}°",
             "常驻播放进度 ${if (library.alwaysShowProgress) "开启" else "关闭"}",
             "播放信息",
+            "自动降低清晰度 ${if (library.autoQualityDowngrade) "开启" else "关闭"}",
         ), anchor, { choice ->
             main.post {
                 if (screen == "player" && anchor.isAttachedToWindow) when (choice) {
@@ -4772,6 +4784,7 @@ class MainActivity : Activity() {
                     5 -> showAdvancedPlaybackSettings(anchor)
                     6 -> showRotationPicker(anchor)
                     7 -> { library.alwaysShowProgress = !library.alwaysShowProgress; updatePersistentProgress(); showPlaybackSettings(anchor) }
+                    9 -> setAutoQualityDowngrade(!library.autoQualityDowngrade, true)
                     8 -> {
                         val format = if (playbackReady) player?.videoFormat else null
                         val decoder = if (playbackReady) playerDiagnostics?.videoDecoder else null
@@ -4797,6 +4810,19 @@ class MainActivity : Activity() {
                 }
             }
         }, onBack = { showPlaybackSettings(anchor) })
+    }
+
+    private fun setAutoQualityDowngrade(enabled: Boolean, inPlayer: Boolean) {
+        if (library.autoQualityDowngrade == enabled) return
+        library.autoQualityDowngrade = enabled
+        qualityRecovery.clear()
+        recentPlaybackSources.clear()
+        cancelPrefetch()
+        if (inPlayer && screen == "player") {
+            detail?.episodes?.getOrNull(episodeIndex)?.let(decoderRecovery::clear)
+            playEpisode(episodeIndex, if (playError) retryPosition else currentPosition(),
+                if (playError) retryAutoplay else player?.playWhenReady ?: requestedAutoplay, recreateView = true)
+        }
     }
 
     private fun showVideoDecoderPicker(anchor: TextView, inPlayer: Boolean) {
@@ -4836,11 +4862,13 @@ class MainActivity : Activity() {
             val target = options[index]
             val changed = library.maxQuality != target || (inPlayer && qualityRecovery.limited(detail?.episodes?.getOrNull(episodeIndex)))
             qualityRecovery.clear()
+            recentPlaybackSources.clear()
             library.maxQuality = target
             if (anchor.tag != "playback-settings")
                 anchor.text = (if (inPlayer) "清晰度 " else "默认清晰度  ·  ") + "${target}P"
             if (inPlayer && changed)
-                playEpisode(episodeIndex, currentPosition(), player?.playWhenReady ?: requestedAutoplay)
+                playEpisode(episodeIndex, if (playError) retryPosition else currentPosition(),
+                    if (playError) retryAutoplay else player?.playWhenReady ?: requestedAutoplay)
         }, selected = options.indexOf(library.maxQuality),
             onBack = if (inPlayer && anchor.tag == "playback-settings") ({ showPlaybackSettings(anchor) }) else null)
     }

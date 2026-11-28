@@ -14,6 +14,7 @@ internal data class ViewingPreferences(
     val clockMode: Int = 1,
     val seasonAutoplay: Boolean = false,
     val videoDecoderMode: VideoDecoderMode = VideoDecoderMode.AUTOMATIC,
+    val autoQualityDowngrade: Boolean = true,
 ) {
     fun initialTab(): Int = startupPage
     companion object {
@@ -28,6 +29,7 @@ internal data class ViewingPreferences(
                 values["homeAutoplay"] as? Boolean ?: true, number("clockMode", 0..2, 1),
                 values["seasonAutoplay"] as? Boolean ?: false,
                 decoderMode ?: oldDecoderMode,
+                values["autoQualityDowngrade"] as? Boolean ?: true,
             )
         }
     }

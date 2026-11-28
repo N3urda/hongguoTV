@@ -5,14 +5,16 @@ import com.hongguotv.core.Rendition
 import com.hongguotv.core.VideoTracks
 
 /** Temporary per-episode limits, shared by the feed and full player. User preferences stay intact. */
-internal class PlaybackQualityRecovery {
+internal class PlaybackQualityRecovery(private val enabled: () -> Boolean = { true }) {
     private val limits = linkedMapOf<String, Int>()
 
-    @Synchronized fun maximum(id: String?, requested: Int): Int = minOf(requested, limits[id] ?: requested)
-    @Synchronized fun limited(id: String?): Boolean = id in limits
+    @Synchronized fun maximum(id: String?, requested: Int): Int =
+        if (enabled()) minOf(requested, limits[id] ?: requested) else requested
+    @Synchronized fun limited(id: String?): Boolean = enabled() && id in limits
     @Synchronized fun clear() { limits.clear() }
 
     @Synchronized fun accepts(id: String, track: VideoTracks.Track?): Boolean {
+        if (!enabled()) return true
         val limit = limits[id] ?: return true
         return track != null && track.width > 0 && track.height > 0 &&
             minOf(track.width, track.height) <= limit
@@ -25,6 +27,7 @@ internal class PlaybackQualityRecovery {
         tiers: List<Rendition>,
         supports: (Rendition) -> Boolean,
     ): Boolean {
+        if (!enabled()) return false
         // Some 720P/540P labels contain the same 480x854 video. Require a lower coded-size
         // ceiling, not merely a different label. The MP4 header is revalidated when reopened.
         val current = listOfNotNull(currentQuality.takeIf { it > 0 }, limits[id],

@@ -70,6 +70,12 @@ class Library(context: Context) {
             viewing = viewing.copy(videoDecoderMode = value)
             put("videoDecoderMode", value.name)
         }
+    var autoQualityDowngrade: Boolean
+        get() = viewing.autoQualityDowngrade
+        set(value) {
+            viewing = viewing.copy(autoQualityDowngrade = value)
+            put("autoQualityDowngrade", value)
+        }
     var homeAutoplay: Boolean
         get() = viewing.homeAutoplay
         set(value) {

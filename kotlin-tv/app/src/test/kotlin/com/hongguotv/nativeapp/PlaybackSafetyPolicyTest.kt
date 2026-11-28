@@ -41,4 +41,16 @@ class PlaybackSafetyPolicyTest {
         assertTrue(policy.accepts(full.copy(width = 480, height = 854), softwareOnly = true))
         assertTrue(PlaybackSafetyPolicy().accepts(full, softwareOnly = true))
     }
+    @Test fun manualQualityOverridesDeviceAndSoftwareCapsUntilAutomaticQualityIsRestored() {
+        var automatic = false
+        val policy = PlaybackSafetyPolicy(true, true, 984L * 1024 * 1024) { automatic }
+        val full = VideoTracks.Track("hvc1", 1080, 1920)
+        assertEquals(1080, policy.maxQuality(1080, softwareOnly = true))
+        assertTrue(policy.accepts(full, softwareOnly = true))
+        assertTrue(policy.accepts(Rendition(1080, "h265", 1080, 1920, "video", null)))
+        automatic = true
+        assertEquals(720, policy.maxQuality(1080, softwareOnly = true))
+        assertFalse(policy.accepts(full, softwareOnly = true))
+    }
+
 }

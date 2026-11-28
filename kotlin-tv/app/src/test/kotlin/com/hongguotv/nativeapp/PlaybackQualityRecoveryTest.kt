@@ -54,4 +54,19 @@ class PlaybackQualityRecoveryTest {
         recovery.clear()
         assertTrue(recovery.accepts("101", original))
     }
+    @Test fun disablingAutomaticQualityIgnoresPriorLimitsAndStopsFurtherReductions() {
+        var enabled = true
+        val recovery = PlaybackQualityRecovery { enabled }
+        assertTrue(recovery.reduce("101", 1080, null, tiers) { true })
+        enabled = false
+        assertEquals(1080, recovery.maximum("101", 1080))
+        assertFalse(recovery.limited("101"))
+        assertTrue(recovery.accepts("101", VideoTracks.Track("hvc1", 1080, 1920)))
+        assertFalse(recovery.reduce("101", 1080, null, tiers) { true })
+        recovery.clear()
+        enabled = true
+        assertEquals(1080, recovery.maximum("101", 1080))
+        assertTrue(recovery.reduce("101", 1080, null, tiers) { true })
+    }
+
 }
