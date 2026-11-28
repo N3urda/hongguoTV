@@ -93,6 +93,8 @@ internal class PublicFeedBackend(
     private val startupCache: FeedStartupCache? = null,
     private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared,
     private val recentSources: PlaybackSourceCache = PlaybackSourceCache(),
+    private val safety: PlaybackSafetyPolicy = PlaybackSafetyPolicy(),
+    private val decoderMode: () -> VideoDecoderMode = { VideoDecoderMode.AUTOMATIC },
 ) : FeedBackend {
     companion object {
         // Reuse idle public TLS connections across homepage visits. Dispatchers remain per backend,
@@ -221,13 +223,13 @@ internal class PublicFeedBackend(
             http,
             repository,
             id,
-            quality,
-            CodecCapabilities::supports,
+            safety.maxQuality(quality),
+            { safety.accepts(it) && CodecCapabilities.supports(it, "$id/${decoderMode().name}") },
             recentSources,
             initialBytes = 32 * 1024,
             speculative = speculative,
         ) {
-            it == null || CodecCapabilities.supports(it)
+            safety.accepts(it) && (it == null || CodecCapabilities.supports(it, "$id/${decoderMode().name}"))
         } ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
 
     /** 试播集打开结果：流 + 实际集 id + 界面展示序号（1 起）。 */
@@ -423,6 +425,7 @@ internal class Media3TrialPlayback(
 ) : TrialPlayback {
     private var currentIndex = 0
     private var preloading = false
+    private val diagnostics = PlaybackDiagnostics("feed")
     private val preloadBuilder =
         DefaultPreloadManager.Builder(
                 context,
@@ -441,7 +444,7 @@ internal class Media3TrialPlayback(
                         }
                 },
             )
-            .setRenderersFactory(playbackRenderers(context, videoDecoderMode = videoDecoderMode))
+            .setRenderersFactory(playbackRenderers(context, diagnostics, videoDecoderMode))
             .setLoadControl(
                 DefaultLoadControl.Builder()
                     .setBufferDurationsMs(2500, 10000, 500, 1000)
@@ -452,7 +455,10 @@ internal class Media3TrialPlayback(
                     .build()
             )
     private val preloadManager = preloadBuilder.build()
-    private val player = preloadBuilder.buildExoPlayer().also { it.addAnalyticsListener(PlaybackDiagnostics("feed")) }
+    private val player = preloadBuilder.buildExoPlayer().also {
+        it.setForegroundMode(true)
+        it.addAnalyticsListener(diagnostics)
+    }
     private val items = linkedMapOf<String, MediaItem>()
     private val surface =
         PlayerView(context).apply {
@@ -642,8 +648,8 @@ internal class Media3TrialPlayback(
 
     override fun release() {
         status = null
-        surface.player = null
         player.release()
+        surface.player = null
         preloadManager.release()
         items.clear()
     }

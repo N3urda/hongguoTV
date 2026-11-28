@@ -41,7 +41,7 @@ internal fun <T> orderVideoDecoders(
     val (software, others) = candidates.partition(softwareOnly)
     val (supported, unsupported) = others.partition(supportsFormat)
     val preferred = supported.sortedByDescending(hardwareAccelerated)
-    if (software.isEmpty()) return preferred + unsupported
+    // Lack of a software decoder is not permission to feed an unsupported format to a driver.
     return preferred + unsupported.filter(supportsCompatibleHardware) + software
 }
 
@@ -64,12 +64,15 @@ private class PlaybackVideoRenderer(
         requiresSecureDecoder: Boolean,
     ): List<MediaCodecInfo> {
         val tryCompatibleHardware = videoDecoderMode() == VideoDecoderMode.COMPATIBLE_HARDWARE
-        return orderVideoDecoders(
+        val candidates = orderVideoDecoders(
             super.getDecoderInfos(mediaCodecSelector, format, requiresSecureDecoder),
             { it.softwareOnly },
             { it.hardwareAccelerated },
             { it.isFormatSupported(format) },
         ) { tryCompatibleHardware && supportsHevcWithoutLevel(it, format) }
+        android.util.Log.i("HGPlayback", "videoCandidates mode=${videoDecoderMode()} mime=${format.sampleMimeType} " +
+            "codecs=${format.codecs} size=${format.width}x${format.height} decoders=${candidates.joinToString { it.name }}")
+        return candidates
     }
 
     override fun canReuseCodec(

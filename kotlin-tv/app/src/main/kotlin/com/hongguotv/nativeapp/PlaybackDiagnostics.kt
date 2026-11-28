@@ -58,5 +58,12 @@ internal class PlaybackDiagnostics(private val screen: String) : AnalyticsListen
         record(eventTime, "audioDecoder=$decoderName")
 
     override fun onVideoDecoderInitialized(eventTime: EventTime, decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) =
-        record(eventTime, "videoDecoder=$decoderName")
+        record(eventTime, "videoDecoder=$decoderName initMs=$initializationDurationMs")
+
+    override fun onVideoDecoderReleased(eventTime: EventTime, decoderName: String) =
+        record(eventTime, "videoDecoderReleased=$decoderName")
+
+    override fun onVideoInputFormatChanged(eventTime: EventTime, format: Format, decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?) =
+        record(eventTime, "videoFormat=${format.sampleMimeType}/${format.codecs} size=${format.width}x${format.height} " +
+            "fps=${format.frameRate} reuse=${decoderReuseEvaluation?.result} discard=${decoderReuseEvaluation?.discardReasons}")
 }

@@ -44,9 +44,10 @@ class PlaybackRenderersTest {
         assertEquals(listOf(software), order(unsupportedHardware, software, tryCompatibleHardware = true))
     }
 
-    @Test fun unsupportedHardwareRemainsAvailableWhenThereIsNoSoftwareDecoder() {
-        assertEquals(listOf(unsupportedHardware), order(unsupportedHardware))
-        assertEquals(listOf(supportedHardware, unsupportedHardware), order(unsupportedHardware, supportedHardware))
+    @Test fun automaticModeNeverForcesAnUnsupportedHardwareDecoder() {
+        assertEquals(emptyList<Decoder>(), order(unsupportedHardware))
+        assertEquals(listOf(supportedHardware), order(unsupportedHardware, supportedHardware))
+        assertEquals(listOf(levelMismatch), order(levelMismatch, tryCompatibleHardware = true))
     }
 
     @Test fun noCandidatesRemainEmpty() {

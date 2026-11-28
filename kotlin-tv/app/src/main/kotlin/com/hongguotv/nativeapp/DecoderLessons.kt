@@ -2,43 +2,43 @@
 package com.hongguotv.nativeapp
 
 /**
- * Learned decoder failures: capabilities the device claims but cannot actually decode. Keys are
- * codec plus coded size, so a failed portrait 1080x1920 never blocks landscape 1920x1080.
+ * A runtime failure is scoped to an episode and decoder mode, never a device-wide codec ban.
+ * Different streams at the same size can have different profiles, levels or damaged bitstreams.
  */
 internal class DecoderLessons {
     private val failed = HashSet<String>()
 
-    fun key(codec: String, width: Int?, height: Int?): String? {
-        val normalized = codec.trim().lowercase()
-        if (normalized.isEmpty()) return null
-        if (width == null || height == null || width <= 0 || height <= 0) return normalized
-        return "$normalized|$width|$height"
+    fun key(codec: String, width: Int?, height: Int?, scope: String?): String? {
+        val normalized = when (val name = codec.trim().lowercase()) {
+            "hvc1", "hev1", "bytevc1", "h265", "hevc" -> "hevc"
+            "avc1", "avc3", "h264", "avc" -> "avc"
+            else -> name
+        }
+        if (scope.isNullOrBlank() || normalized.isEmpty() ||
+            width == null || height == null || width <= 0 || height <= 0) return null
+        return "$scope|$normalized|$width|$height"
     }
 
-    fun remember(codec: String, width: Int?, height: Int?): String? {
-        val exact = key(codec, width, height) ?: return null
+    @Synchronized
+    fun remember(codec: String, width: Int?, height: Int?, scope: String?): String? {
+        val exact = key(codec, width, height, scope) ?: return null
+        if (failed.size >= 128) failed.clear()
         failed += exact
         return exact
     }
 
-    fun fails(codec: String, width: Int?, height: Int?): Boolean {
-        val normalized = codec.trim().lowercase()
-        if (normalized.isEmpty()) return false
-        if (width != null && height != null && width > 0 && height > 0) {
-            if (failed.contains("$normalized|$width|$height")) return true
-        }
-        // A remembered sizeless verdict (metadata was missing) covers that codec entirely.
-        return failed.contains(normalized)
-    }
+    @Synchronized
+    fun fails(codec: String, width: Int?, height: Int?, scope: String?): Boolean =
+        key(codec, width, height, scope)?.let(failed::contains) == true
 
-    fun keys(): Set<String> = failed.toSet()
+    @Synchronized fun keys(): Set<String> = failed.toSet()
 
-    fun restore(keys: Set<String>) {
+    @Synchronized fun restore(keys: Set<String>) {
         failed.clear()
-        failed += keys
+        failed += keys.filter { it.count { c -> c == '|' } == 3 }.take(128)
     }
 
-    fun reset() = failed.clear()
+    @Synchronized fun reset() = failed.clear()
 
-    fun size() = failed.size
+    @Synchronized fun size() = failed.size
 }

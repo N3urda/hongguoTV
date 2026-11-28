@@ -73,6 +73,10 @@ class PlaybackQueueTest {
             ) { _, method, args ->
                 calls += method.name
                 when (method.name) {
+                    "getApplicationLooper" -> android.os.Looper.getMainLooper()
+                    "getAvailableCommands" -> Player.Commands.Builder().add(Player.COMMAND_SET_VIDEO_SURFACE).build()
+                    "isCommandAvailable" -> args!![0] == Player.COMMAND_SET_VIDEO_SURFACE
+                    "getVideoSize" -> VideoSize.UNKNOWN
                     "getCurrentMediaItem" -> items.getOrNull(index)
                     "getMediaItemCount" -> items.size
                     "getCurrentMediaItemIndex" -> index
@@ -172,6 +176,17 @@ class PlaybackQueueTest {
             set(activity, "foreground", false)
             controller.destroy()
         }
+    }
+
+    @Test
+    fun releaseRetiresDecoderBeforeDetachingTheSurface() = fixture { activity, fake, _, _ ->
+        val view = PlayerView(activity).apply { player = fake.player }
+        set(activity, "playerView", view)
+        fake.calls.clear()
+        invoke(activity, "releasePlayer", false)
+        assertTrue(fake.calls.indexOf("release") >= 0)
+        assertTrue(fake.calls.indexOf("clearVideoSurfaceView") > fake.calls.indexOf("release"))
+        assertNull(view.player)
     }
 
     @Test

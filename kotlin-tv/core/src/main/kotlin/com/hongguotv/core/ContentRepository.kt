@@ -136,17 +136,13 @@ class StreamLadder(val renditions: List<Rendition>) {
             ?: pool.minWithOrNull(better)
     }
 
-    /** select() first, then every lower or equal tier best-first for verified downgrade. */
+    /** Playback limits and failed capability checks are hard constraints, including alternates. */
     fun playbackOrder(
         maxQuality: Int,
         supported: (Rendition) -> Boolean = { true },
     ): List<Rendition> {
-        val pick = select(maxQuality, supported) ?: return emptyList()
-        val alternates =
-            renditions
-                .filter { it !== pick && it.quality <= pick.quality }
-                .sortedWith(better.reversed())
-        return listOf(pick) + alternates
+        return renditions.filter { it.quality <= maxQuality && supported(it) }
+            .sortedWith(better.reversed())
     }
 
     companion object {
@@ -995,13 +991,14 @@ constructor(
         id: String,
         metadataAhead: List<String> = emptyList(),
         speculative: Boolean = false,
+        acceptable: (Rendition) -> Boolean = { true },
         onPrimaryEmpty: (() -> Unit)? = null,
     ): StreamLadder =
         RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(if (speculative) 2 else 8)) {
             val profile = if (speculative) playbackSession.existing()
                 ?: throw IOException("播放设备尚未就绪") else playbackSession.profile(http)
             fun read(identity: PlaybackDeviceSession.Profile): StreamLadder =
-                mobileStreamLadder(id, identity, speculative, onPrimaryEmpty).also {
+                mobileStreamLadder(id, identity, speculative, acceptable, onPrimaryEmpty).also {
                     RequestScope.ensureActive()
                     identity.recordPlayableModel()
                 }
@@ -1022,10 +1019,11 @@ constructor(
         id: String,
         profile: PlaybackDeviceSession.Profile,
         speculative: Boolean,
+        acceptable: (Rendition) -> Boolean,
         onPrimaryEmpty: (() -> Unit)?,
     ): StreamLadder {
         return try {
-            MobilePlayback.ladder(id, profile.values, http, MobilePlayback.signer, clock())
+            MobilePlayback.ladder(id, profile.values, http, MobilePlayback.signer, clock(), acceptable = acceptable)
                 .also { profile.recordPlayablePrimaryModel() }
         } catch (empty: EmptyPlaybackResponseException) {
             profile.recordEmptyPrimaryModel(clock())
@@ -1057,13 +1055,13 @@ constructor(
                 throw empty
             }
             val rows = PlaybackModels.renditions(model)
-            if (rows.isNotEmpty()) return StreamLadder(rows)
+            if (rows.isNotEmpty()) return MobilePlayback.compatibleLadder(model, transport, rows, acceptable)
 
             // The tab model can contain only bytevc2. The mobile model on the same host can supply HEVC.
             val alternateHost = PlayRetryPlan.host(0)
             try {
                 MobilePlayback.ladder(
-                    id, profile.values, http, MobilePlayback.signer, clock(), host = alternateHost,
+                    id, profile.values, http, MobilePlayback.signer, clock(), host = alternateHost, acceptable = acceptable,
                 )
             } catch (alternate: IOException) {
                 RequestScope.ensureActive()

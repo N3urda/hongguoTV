@@ -34,6 +34,7 @@ internal class HomeFeedScreen(
     private val autoNext: Boolean = true,
     private val restoreProgress: (String) -> WatchProgress? = { null },
     private val saveProgress: (WatchProgress, Int, Boolean) -> Unit = { _, _, _ -> },
+    private val decoderMode: () -> VideoDecoderMode = { VideoDecoderMode.AUTOMATIC },
 ) : LinearLayout(activity), Closeable {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
@@ -683,7 +684,7 @@ internal class HomeFeedScreen(
         )
             return false
         val knownBefore = CodecCapabilities.learnedCount()
-        CodecCapabilities.learnFailure(track!!.fourcc, track.width, track.height)
+        CodecCapabilities.learnFailure(track!!.fourcc, track.width, track.height, "${clip!!.episodeId}/${decoderMode().name}")
         if (CodecCapabilities.learnedCount() == knownBefore) return false
         healAttempts += 1
         loadCurrent("设备不支持该清晰度，正在自动切换…")

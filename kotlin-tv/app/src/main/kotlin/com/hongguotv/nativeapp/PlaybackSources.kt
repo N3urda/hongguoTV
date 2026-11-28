@@ -35,7 +35,7 @@ internal fun playbackFailureSummary(problem: Throwable): String {
     if (causes.any { it is com.hongguotv.core.PlaybackDeviceRegistrationException })
         return "播放设备注册失败"
     if (causes.any { it is NoPlayableQualityException })
-        return "本集低档为 VVC（bytevc2）编码，电视无法解码，可尝试其他集数"
+        return "本集没有符合当前清晰度和解码能力的片源，可尝试其他集数或解码方式"
     if (causes.any { it is EmptyPlaybackResponseException }) return "播放信息接口返回空响应"
     causes.filterIsInstance<ContentHttpException>().firstOrNull()?.let {
         return "播放信息请求失败（HTTP ${it.statusCode}）"
@@ -137,8 +137,7 @@ internal class PlaybackSourceCache(private val clock: () -> Long = SystemClock::
     fun find(id: String, maxQuality: Int): Rendition? {
         prune(clock())
         val entry = entries[id] ?: return null
-        // An episode can offer only a compatible tier above the requested limit.
-        return entry.rendition.takeIf { it.quality <= maxQuality || entry.requestedMaxQuality == maxQuality }
+        return entry.rendition.takeIf { it.quality <= maxQuality }
     }
 
     @Synchronized
@@ -207,11 +206,11 @@ private class RecentSourceValidation(
 }
 
 /**
- * 阶梯非空但没有任何一档能被本机解码（bytevc2 锁定集的确定性结果）：重试只会得到同一结果，
+ * 阶梯非空但没有任何一档满足清晰度和解码约束：重试只会得到同一结果，
  * 上层不应再进入自动恢复预算；手动重试保留（服务端转码推进后该集供给可能翻转为 bytevc1）。
  */
 internal class NoPlayableQualityException :
-    java.io.IOException("本集低档为 VVC（bytevc2）编码，电视无法解码，可尝试其他集数")
+    java.io.IOException("本集没有符合当前清晰度和解码能力的片源")
 
 /**
  * 试播后移换集：候选集固定为前三集（绝对上限，试播兜底不无限后移），从 start 集起依次尝试，
@@ -256,14 +255,15 @@ internal fun openStream(
                 video.prepare(initialBytes)
                 RequestScope.ensureActive()
                 val track = video.trackInfo()
-                if (supportsTrack(track)) {
+                val withinQuality = track == null || minOf(track.width, track.height) <= maxQuality
+                if (withinQuality && supportsTrack(track)) {
                     val openedRendition = if (video.info.url == rendition.url) rendition
                     else rendition.copy(url = video.info.url, backupUrl = video.info.backupUrl)
                     return OpenedStream(video, openedRendition, ladder.renditions, track)
                 }
                 Log.i(
                     "HongguoTV",
-                    "Skipped ${rendition.quality}P ${rendition.codec}: coded ${track?.width}x${track?.height} beyond decoder capability",
+                    "Skipped ${rendition.quality}P ${rendition.codec}: coded ${track?.width}x${track?.height} exceeds playback limits ($maxQuality P)",
                 )
                 video.close()
             } catch (error: Exception) {
@@ -278,9 +278,11 @@ internal fun openStream(
     var validation: RecentSourceValidation? = null
     val prepareDeadline = RequestScope.deadlineAtMost(Long.MAX_VALUE)
     val ladder = try {
-        repository.streamLadderWithCompatibility(id, metadataAhead, speculative) {
+        repository.streamLadderWithCompatibility(id, metadataAhead, speculative,
+            acceptable = { it.quality <= maxQuality && supportsRendition(it) }) {
             val cached = recentSources.find(id, maxQuality)
-            if (cached != null) {
+            // Session recovery can invoke this callback twice; share and close one validation job.
+            if (cached != null && validation == null) {
                 val deadline = minOf(prepareDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(2))
                 try {
                     validation = RecentSourceValidation(id, cached, deadline, http.dispatcher.executorService) {

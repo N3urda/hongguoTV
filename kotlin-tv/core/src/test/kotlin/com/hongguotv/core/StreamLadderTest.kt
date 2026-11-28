@@ -68,9 +68,8 @@ class StreamLadderTest {
                     rendition(480),
                 )
                 .playbackOrder(1080) { it.codec == "h264" }
-        // Unverified alternates stay eligible: capability metadata can be missing or wrong.
         assertEquals(
-            listOf(720 to "h264", 720 to "bytevc1", 480 to "h264"),
+            listOf(720 to "h264", 480 to "h264"),
             order.map { it.quality to it.codec },
         )
     }
@@ -79,7 +78,7 @@ class StreamLadderTest {
     fun playbackOrderKeepsSameQualityAlternatesRightAfterPick() {
         val order =
             ladder(rendition(720, "bytevc1"), rendition(720, "h264"), rendition(540, "bytevc1"))
-                .playbackOrder(720) { it.codec == "h264" }
+                .playbackOrder(720)
         assertEquals(listOf("h264", "bytevc1", "bytevc1"), order.map { it.codec })
     }
 
