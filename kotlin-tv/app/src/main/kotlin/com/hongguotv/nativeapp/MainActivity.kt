@@ -58,7 +58,7 @@ class MainActivity : Activity() {
         }
     }
     private val phoneConsole by lazy {
-        PhoneConsole(this, tvTools, phoneCatalog, ::phoneControl, childMode = childMode) { keyword, requestedPage, result ->
+        PhoneConsole(this, tvTools, phoneCatalog, ::phoneControl, childMode = childMode, localUpdate = { scope, body -> updater.request(scope, body, childMode) }) { keyword, requestedPage, result ->
             saveProgress()
             releasePlayer()
             library.rememberSearch(keyword, ContentType.SHORT)
@@ -285,7 +285,7 @@ class MainActivity : Activity() {
     private var discoveryScreen: DiscoveryScreen? = null
     private var rankingScreen: RankingScreen? = null
     private lateinit var tvTools: TvTools
-    private lateinit var updater: AppUpdater
+    private lateinit var updater: LocalAppUpdater
 
     private data class DetailVisit(
         val detail: Detail,
@@ -701,7 +701,7 @@ class MainActivity : Activity() {
             }
         }
         updater =
-            AppUpdater(this) {
+            LocalAppUpdater(this) {
                 foreground &&
                     library.isLoaded &&
                     screen == "catalog" &&
@@ -2373,7 +2373,7 @@ class MainActivity : Activity() {
         }
         scroll.addView(content, android.widget.FrameLayout.LayoutParams(-1, -2))
         layout.addView(scroll, lp(0, -1).apply { weight = 1f })
-        val categories = listOf("检查更新", "播放", "外观与操作", "账户", "关于应用")
+        val categories = listOf("应用更新", "播放", "外观与操作", "账户", "关于应用")
         val entries = mutableListOf<View>()
         fun setting(label: String, action: () -> Unit): TextView {
             val view = SettingsValueView(this).apply {
@@ -2454,24 +2454,9 @@ class MainActivity : Activity() {
                     content.addView(text("当前版本  ·  ${BuildConfig.VERSION_NAME}", 17f).apply {
                         setPadding(0, dp(4), 0, dp(12))
                     })
-                    content.addView(text("主动检查新版本，查看更新并下载安装。", 15f, muted).apply {
-                        setPadding(0, 0, 0, dp(16))
-                    })
+                    content.addView(text("手机与电视连接同一局域网，扫码后在应用更新中上传 APK。校验通过后自动打开系统安装器。", 15f, muted))
                     lateinit var updates: TextView
-                    updates = setting("检查更新") { updater.show(updates) }
-                    lateinit var route: TextView
-                    route = setting("更新线路  ·  ${updater.updateRoute.label}") {
-                        tvTools.choose(
-                            title = "更新线路",
-                            labels = AppUpdateRoute.entries.map { it.label },
-                            anchor = route,
-                            onChoice = { index ->
-                                updater.updateRoute = AppUpdateRoute.entries[index]
-                                route.text = "更新线路  ·  ${updater.updateRoute.label}"
-                            },
-                            selected = updater.updateRoute.ordinal,
-                        )
-                    }
+                    updates = setting("手机上传更新") { phoneConsole.show(updates) }
                 }
                 1 -> {
                     lateinit var qualityButton: TextView

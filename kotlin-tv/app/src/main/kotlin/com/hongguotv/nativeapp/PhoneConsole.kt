@@ -29,6 +29,7 @@ internal class PhoneConsole(
     },
     private val httpProvider: () -> OkHttpClient = { ContentRepository().http },
     private val childMode: ChildModeStore? = null,
+    private val localUpdate: ((String, JSONObject) -> JSONObject)? = null,
     private val showSearch: (String, Int, CatalogPage) -> Unit,
 ) {
     private val main = Handler(Looper.getMainLooper())
@@ -187,6 +188,10 @@ internal class PhoneConsole(
         val action = body.getString("action")
         val policy = childMode
         val parentToken = body.optString("parentToken")
+        if (action.startsWith("update")) {
+            check(current.active.get()) { "连接已关闭，请重新扫码" }
+            return localUpdate?.invoke(current.server.url, body) ?: error("本机不支持上传更新")
+        }
         if (policy != null && (action.startsWith("child") || action.startsWith("parent"))) {
             if (!current.allowCommand()) return JSONObject().put("error", "操作过快，请稍后重试")
             check(current.active.get())

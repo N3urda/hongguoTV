@@ -110,12 +110,13 @@ class PhoneControlServer(address: String, private val request: (JSONObject) -> J
             return reply(socket, 403, "{}")
         if (headers.containsKey("transfer-encoding") || headers["content-type"]?.substringBefore(';') != "application/json")
             return reply(socket, 400, "{}")
-        val length = headers["content-length"]?.toIntOrNull()?.takeIf { it in 2..4096 }
+        val length = headers["content-length"]?.toIntOrNull()?.takeIf { it in 2..65536 }
             ?: return reply(socket, 413, "{}")
         val bytes = ByteArray(length)
         for (i in bytes.indices) { val b = read(); if (b < 0) return; bytes[i] = b.toByte() }
         val body = runCatching { JSONObject(bytes.toString(Charsets.UTF_8)) }.getOrNull()
             ?: return reply(socket, 400, "{}")
+        if (length > 4096 && body.optString("action") != "updateChunk") return reply(socket, 413, "{}")
         if (closed.get()) return
         val result = try { request(body) }
             catch (_: IllegalArgumentException) { JSONObject().put("error", "参数无效，请刷新页面重试") }

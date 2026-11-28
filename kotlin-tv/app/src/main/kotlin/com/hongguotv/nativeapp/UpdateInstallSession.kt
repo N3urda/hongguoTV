@@ -38,7 +38,7 @@ internal object UpdateInstallSession {
                     )
                 }.toBundle() else null
                 val pending = PendingIntent.getActivity(context, id, callback, flags, options)
-                context.getSharedPreferences("update_install_session", 0).edit().putInt("active", id).commit()
+                context.getSharedPreferences("update_install_session", 0).edit().remove("result_text").putInt("active", id).commit()
                 if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("安装准备已取消")
                 session.commit(pending.intentSender)
             }
@@ -69,12 +69,14 @@ class UpdateInstallResultActivity : Activity() {
             if (!opened) {
                 preferences.edit().remove("active").apply()
                 runCatching { packageManager.packageInstaller.abandonSession(id) }
+                LocalUpdateCleanup.clean(this, completed = true)
                 val message = "系统安装会话无法打开确认页，请继续使用 U 盘安装"
                 preferences.edit().putString("result_text", message).apply()
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show()
             }
         } else {
             preferences.edit().remove("active").apply()
+            LocalUpdateCleanup.clean(this, completed = true)
             // 仅记录状态码，不记录可能包含文件路径的系统错误正文。
             android.util.Log.i("HongguoTV", "Update session result status=$status")
             if (status != PackageInstaller.STATUS_SUCCESS) {
