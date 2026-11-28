@@ -69,6 +69,8 @@ internal interface FeedBackend : Closeable {
 
     fun shouldDeferPlaybackPrefetch(): Boolean = false
 
+    fun lowerSoftwareQuality(clip: TrialClip): Boolean = false
+
     fun prefetchEpisode(series: Series, index: Int): TrialClip = episode(series, index)
 
     /** 首页展示过一部作品时通知后端，供下次冷启动跳过重复内容。 */
@@ -93,6 +95,9 @@ internal class PublicFeedBackend(
     private val startupCache: FeedStartupCache? = null,
     private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared,
     private val recentSources: PlaybackSourceCache = PlaybackSourceCache(),
+    private val safety: PlaybackSafetyPolicy = PlaybackSafetyPolicy(),
+    private val decoderMode: (String) -> VideoDecoderMode = { VideoDecoderMode.AUTOMATIC },
+    private val qualityRecovery: PlaybackQualityRecovery = PlaybackQualityRecovery(),
 ) : FeedBackend {
     companion object {
         // Reuse idle public TLS connections across homepage visits. Dispatchers remain per backend,
@@ -216,19 +221,28 @@ internal class PublicFeedBackend(
 
     override fun detail(series: Series) = timed("detail") { repository.detail(series.id) }
 
-    private fun open(id: String, speculative: Boolean = false): OpenedStream =
-        openStream(
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun open(id: String, speculative: Boolean = false): OpenedStream {
+        val mode = decoderMode(id)
+        val failureScope = "$id/${mode.name}"
+        return openStream(
             http,
             repository,
             id,
-            quality,
-            CodecCapabilities::supports,
+            qualityRecovery.maximum(id, safety.maxQuality(quality, mode == VideoDecoderMode.SOFTWARE_ONLY)),
+            { safety.accepts(it) && CodecCapabilities.supports(it, failureScope) },
             recentSources,
             initialBytes = 32 * 1024,
             speculative = speculative,
         ) {
-            it == null || CodecCapabilities.supports(it)
+            qualityRecovery.accepts(id, it) && acceptsPlaybackTrack(it, safety, mode, failureScope)
         } ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
+    }
+
+    override fun lowerSoftwareQuality(clip: TrialClip): Boolean =
+        qualityRecovery.reduce(clip.episodeId, clip.rendition?.quality ?: 0, clip.track, clip.tiers) {
+            safety.accepts(it) && CodecCapabilities.supports(it, "${clip.episodeId}/${decoderMode(clip.episodeId).name}")
+        }
 
     /** 试播集打开结果：流 + 实际集 id + 界面展示序号（1 起）。 */
     private data class OpenedTrial(
@@ -388,10 +402,16 @@ internal interface TrialPlayback {
 
     fun clear()
 
+    fun trySoftwareFallback(clip: TrialClip, error: PlaybackException): Boolean = false
+
     fun release()
 
     /** 播放器级错误（含错误码），供上层做解码经验学习；status(ERROR) 仍会触发。默认 no-op。 */
     var onError: ((PlaybackException) -> Unit)?
+        get() = null
+        set(_) {}
+
+    var onSoftwareOverload: (() -> Unit)?
         get() = null
         set(_) {}
 }
@@ -419,10 +439,13 @@ internal class Media3TrialPlayback(
     context: Context,
     private val speed: Float = 1f,
     private val frame: VideoFrameMode = VideoFrameMode.FIT,
-    videoDecoderMode: () -> VideoDecoderMode = { VideoDecoderMode.AUTOMATIC },
+    private val decoderRecovery: PlaybackDecoderRecovery = PlaybackDecoderRecovery(),
+    private val videoDecoderMode: () -> VideoDecoderMode = { VideoDecoderMode.AUTOMATIC },
 ) : TrialPlayback {
     private var currentIndex = 0
     private var preloading = false
+    private var activeEpisodeId: String? = null
+    private val diagnostics = PlaybackDiagnostics("feed")
     private val preloadBuilder =
         DefaultPreloadManager.Builder(
                 context,
@@ -441,7 +464,9 @@ internal class Media3TrialPlayback(
                         }
                 },
             )
-            .setRenderersFactory(playbackRenderers(context, videoDecoderMode = videoDecoderMode))
+            .setRenderersFactory(playbackRenderers(context, diagnostics) {
+                decoderRecovery.mode(activeEpisodeId, videoDecoderMode())
+            })
             .setLoadControl(
                 DefaultLoadControl.Builder()
                     .setBufferDurationsMs(2500, 10000, 500, 1000)
@@ -452,7 +477,10 @@ internal class Media3TrialPlayback(
                     .build()
             )
     private val preloadManager = preloadBuilder.build()
-    private val player = preloadBuilder.buildExoPlayer().also { it.addAnalyticsListener(PlaybackDiagnostics("feed")) }
+    private val player = preloadBuilder.buildExoPlayer().also {
+        it.setForegroundMode(true)
+        it.addAnalyticsListener(diagnostics)
+    }
     private val items = linkedMapOf<String, MediaItem>()
     private val surface =
         PlayerView(context).apply {
@@ -469,7 +497,8 @@ internal class Media3TrialPlayback(
         }
 
     override fun canPrefetch(): Boolean {
-        val allowed = player.isPlaying && player.totalBufferedDuration >= 3000
+        val allowed = player.isPlaying && player.totalBufferedDuration >= 3000 &&
+            decoderRecovery.mode(activeEpisodeId, videoDecoderMode()) == videoDecoderMode()
         if (allowed != preloading) {
             preloading = allowed
             preloadManager.invalidate()
@@ -488,6 +517,7 @@ internal class Media3TrialPlayback(
 
     override var status: ((TrialStatus) -> Unit)? = null
     override var onError: ((PlaybackException) -> Unit)? = null
+    override var onSoftwareOverload: (() -> Unit)? = null
     private var activeId: String? = null
     private var startedAt = 0L
 
@@ -501,6 +531,12 @@ internal class Media3TrialPlayback(
             true,
         )
         player.setHandleAudioBecomingNoisy(true)
+        player.addAnalyticsListener(PlaybackAudioRecovery(player) {
+            activeId != null && player.currentMediaItem?.mediaId == activeId
+        })
+        player.addAnalyticsListener(SoftwareVideoFallback(player, diagnostics) {
+            if (activeId != null && player.currentMediaItem?.mediaId == activeId) onSoftwareOverload?.invoke()
+        })
         player.addListener(
             object : Player.Listener {
                 private fun active() =
@@ -575,6 +611,7 @@ internal class Media3TrialPlayback(
         }
 
     private fun play(clip: TrialClip, position: Long, autoplay: Boolean) {
+        activeEpisodeId = clip.episodeId
         surface.setKeepContentOnPlayerReset(true)
         val item = register(clip, currentIndex)
         activeId = key(clip)
@@ -590,6 +627,10 @@ internal class Media3TrialPlayback(
 
     override fun load(clip: TrialClip, position: Long, autoplay: Boolean) =
         play(clip, position, autoplay)
+
+    override fun trySoftwareFallback(clip: TrialClip, error: PlaybackException): Boolean =
+        activeId == key(clip) && decoderRecovery.trySoftware(clip.episodeId, videoDecoderMode(), error,
+            diagnostics.lastVideoDecoder, hasSoftwareVideoDecoder(player.videoFormat ?: diagnostics.lastVideoFormat))
 
     override fun queue(clip: TrialClip, index: Int) {
         register(clip, index)
@@ -633,6 +674,7 @@ internal class Media3TrialPlayback(
         // Leaving a series must not leave its last frame over another title or an error.
         surface.setKeepContentOnPlayerReset(false)
         activeId = null
+        activeEpisodeId = null
         preloading = false
         player.stop()
         player.clearMediaItems()
@@ -642,8 +684,8 @@ internal class Media3TrialPlayback(
 
     override fun release() {
         status = null
-        surface.player = null
         player.release()
+        surface.player = null
         preloadManager.release()
         items.clear()
     }

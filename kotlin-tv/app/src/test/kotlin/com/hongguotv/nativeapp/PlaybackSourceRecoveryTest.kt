@@ -78,9 +78,9 @@ class PlaybackSourceRecoveryTest {
             primaryEmpty = true
         }
 
-        fun assertWarmRecoveryRequests() {
+        fun assertWarmRecoveryRequests(modelAttempts: Int = 2) {
             assertEquals("primary", requests.first())
-            assertEquals(listOf("backup", "cdn"), requests.drop(1).sorted())
+            assertEquals(mapOf("primary" to modelAttempts, "backup" to modelAttempts, "cdn" to 1), requests.groupingBy { it }.eachCount())
         }
     }
 
@@ -107,17 +107,14 @@ class PlaybackSourceRecoveryTest {
             backupTimesOut = true
         }
         fixture.open().use { assertEquals(16L, it.video.total) }
-        fixture.assertWarmRecoveryRequests()
+        fixture.assertWarmRecoveryRequests(modelAttempts = 1)
     }
 
     @Test
-    fun resumesAnAboveLimitCompatibleTierAtTheSameQualitySetting() {
-        val fixture = Fixture().apply { warm(quality = 480) }
-        fixture.open(quality = 480).use {
-            assertEquals("720P", it.video.info.quality)
-            assertEquals(720, it.rendition?.quality)
-        }
-        fixture.assertWarmRecoveryRequests()
+    fun refusesAnAboveLimitTierEvenWhenItIsTheOnlyAvailableSource() {
+        val fixture = Fixture()
+        assertThrows(NoPlayableQualityException::class.java) { fixture.open(quality = 480) }
+        assertEquals(listOf("primary"), fixture.requests)
     }
 
     @Test
@@ -126,7 +123,7 @@ class PlaybackSourceRecoveryTest {
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open("10102") }
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open(speculative = true) }
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open(quality = 480) }
-        assertEquals(listOf("primary", "backup", "primary", "primary", "backup"), fixture.requests)
+        assertEquals(listOf("primary", "backup", "primary", "backup", "primary", "primary", "backup"), fixture.requests)
     }
 
     @Test
@@ -151,12 +148,12 @@ class PlaybackSourceRecoveryTest {
         }
         val error = assertThrows(PlaybackSourceException::class.java) { fixture.open() }
         assertEquals(403, error.upstreamCode)
-        fixture.assertWarmRecoveryRequests()
+        fixture.assertWarmRecoveryRequests(modelAttempts = 1)
 
         fixture.backupWaitsForCdn = false
         fixture.backupStatus = 200
         fixture.requests.clear()
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open() }
-        assertEquals(listOf("primary", "backup"), fixture.requests)
+        assertEquals(listOf("primary", "backup", "primary", "backup"), fixture.requests)
     }
 }

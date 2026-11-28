@@ -136,17 +136,13 @@ class StreamLadder(val renditions: List<Rendition>) {
             ?: pool.minWithOrNull(better)
     }
 
-    /** select() first, then every lower or equal tier best-first for verified downgrade. */
+    /** Playback limits and failed capability checks are hard constraints, including alternates. */
     fun playbackOrder(
         maxQuality: Int,
         supported: (Rendition) -> Boolean = { true },
     ): List<Rendition> {
-        val pick = select(maxQuality, supported) ?: return emptyList()
-        val alternates =
-            renditions
-                .filter { it !== pick && it.quality <= pick.quality }
-                .sortedWith(better.reversed())
-        return listOf(pick) + alternates
+        return renditions.filter { it.quality <= maxQuality && supported(it) }
+            .sortedWith(better.reversed())
     }
 
     companion object {
@@ -995,64 +991,90 @@ constructor(
         id: String,
         metadataAhead: List<String> = emptyList(),
         speculative: Boolean = false,
+        acceptable: (Rendition) -> Boolean = { true },
         onPrimaryEmpty: (() -> Unit)? = null,
     ): StreamLadder =
         RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(if (speculative) 2 else 8)) {
             val profile = if (speculative) playbackSession.existing()
                 ?: throw IOException("播放设备尚未就绪") else playbackSession.profile(http)
-            try {
-                MobilePlayback.ladder(id, profile.values, http, MobilePlayback.signer, clock())
-                    .also { profile.recordPlayablePrimaryModel() }
-            } catch (empty: EmptyPlaybackResponseException) {
-                profile.recordEmptyPrimaryModel(clock())
-                if (speculative) throw empty
-                RequestScope.ensureActive()
-                onPrimaryEmpty?.invoke()
-                val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-                val trace = PlaybackRequestTrace()
-                val entry = try {
-                    tabVideoModel(id, profile, trace, transport, strict = true, mobileV5 = true)
-                } catch (_: EmptyPlaybackResponseException) {
-                    throw EmptyPlaybackResponseException(empty.detail, allPlaybackModelsEmpty = true).apply {
-                        addSuppressed(empty)
-                        addSuppressed(PlaybackDiagnosticException("video-tab-empty ${trace.summary()}"))
-                    }
-                } catch (fallback: IOException) {
-                    val failure = if (fallback is ContentHttpException)
-                        PlaybackSourceException(PlaybackSourceException.Reason.HTTP_REJECTED, fallback.statusCode)
-                    else fallback
-                    throw failure.apply {
-                        addSuppressed(empty)
-                        addSuppressed(PlaybackDiagnosticException("video-tab ${trace.summary()}"))
-                    }
-                }
-                RequestScope.ensureActive()
-                val model = entry?.optJSONObject("video_model")
-                if (model == null) {
-                    empty.addSuppressed(PlaybackDiagnosticException("video-tab-no-model ${trace.summary()}"))
-                    throw empty
-                }
-                val rows = PlaybackModels.renditions(model)
-                if (rows.isNotEmpty()) return@withDeadline StreamLadder(rows)
-
-                // The tab model can contain only bytevc2. The mobile model on the same host can supply HEVC.
-                val alternateHost = PlayRetryPlan.host(0)
-                try {
-                    MobilePlayback.ladder(
-                        id, profile.values, http, MobilePlayback.signer, clock(), host = alternateHost,
-                    )
-                } catch (alternate: IOException) {
+            fun read(identity: PlaybackDeviceSession.Profile): StreamLadder =
+                mobileStreamLadder(id, identity, speculative, acceptable, onPrimaryEmpty).also {
                     RequestScope.ensureActive()
-                    alternate.addSuppressed(empty)
-                    alternate.addSuppressed(
-                        PlaybackDiagnosticException(
-                            "video-tab-no-compatible-source ${trace.summary()} alternate-model=${PlayRetryPlan.tag(alternateHost)}"
-                        )
-                    )
-                    throw alternate
+                    identity.recordPlayableModel()
+                }
+            try {
+                read(profile)
+            } catch (empty: EmptyPlaybackResponseException) {
+                if (speculative || !empty.allPlaybackModelsEmpty) throw empty
+                val replacement = playbackSession.recoverEmptyModels(http, profile) ?: throw empty
+                // Retry once inside the original eight-second deadline, with no recursive rotation.
+                try { read(replacement) } catch (failure: IOException) {
+                    failure.addSuppressed(empty)
+                    throw failure
                 }
             }
         }
+
+    private fun mobileStreamLadder(
+        id: String,
+        profile: PlaybackDeviceSession.Profile,
+        speculative: Boolean,
+        acceptable: (Rendition) -> Boolean,
+        onPrimaryEmpty: (() -> Unit)?,
+    ): StreamLadder {
+        return try {
+            MobilePlayback.ladder(id, profile.values, http, MobilePlayback.signer, clock(), acceptable = acceptable)
+                .also { profile.recordPlayablePrimaryModel() }
+        } catch (empty: EmptyPlaybackResponseException) {
+            profile.recordEmptyPrimaryModel(clock())
+            if (speculative) throw empty
+            RequestScope.ensureActive()
+            onPrimaryEmpty?.invoke()
+            val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+            val trace = PlaybackRequestTrace()
+            val entry = try {
+                tabVideoModel(id, profile, trace, transport, strict = true, mobileV5 = true)
+            } catch (_: EmptyPlaybackResponseException) {
+                throw EmptyPlaybackResponseException(empty.detail, allPlaybackModelsEmpty = true).apply {
+                    addSuppressed(empty)
+                    addSuppressed(PlaybackDiagnosticException("video-tab-empty ${trace.summary()}"))
+                }
+            } catch (fallback: IOException) {
+                val failure = if (fallback is ContentHttpException)
+                    PlaybackSourceException(PlaybackSourceException.Reason.HTTP_REJECTED, fallback.statusCode)
+                else fallback
+                throw failure.apply {
+                    addSuppressed(empty)
+                    addSuppressed(PlaybackDiagnosticException("video-tab ${trace.summary()}"))
+                }
+            }
+            RequestScope.ensureActive()
+            val model = entry?.optJSONObject("video_model")
+            if (model == null) {
+                empty.addSuppressed(PlaybackDiagnosticException("video-tab-no-model ${trace.summary()}"))
+                throw empty
+            }
+            val rows = PlaybackModels.renditions(model)
+            if (rows.isNotEmpty()) return MobilePlayback.compatibleLadder(model, transport, rows, acceptable)
+
+            // The tab model can contain only bytevc2. The mobile model on the same host can supply HEVC.
+            val alternateHost = PlayRetryPlan.host(0)
+            try {
+                MobilePlayback.ladder(
+                    id, profile.values, http, MobilePlayback.signer, clock(), host = alternateHost, acceptable = acceptable,
+                )
+            } catch (alternate: IOException) {
+                RequestScope.ensureActive()
+                alternate.addSuppressed(empty)
+                alternate.addSuppressed(
+                    PlaybackDiagnosticException(
+                        "video-tab-no-compatible-source ${trace.summary()} alternate-model=${PlayRetryPlan.tag(alternateHost)}"
+                    )
+                )
+                throw alternate
+            }
+        }
+    }
 
     /** Retained legacy transport for compatibility regression coverage. */
     internal fun legacyStreamLadderWithCompatibility(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {

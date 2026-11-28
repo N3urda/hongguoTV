@@ -41,7 +41,7 @@ internal fun <T> orderVideoDecoders(
     val (software, others) = candidates.partition(softwareOnly)
     val (supported, unsupported) = others.partition(supportsFormat)
     val preferred = supported.sortedByDescending(hardwareAccelerated)
-    if (software.isEmpty()) return preferred + unsupported
+    // Lack of a software decoder is not permission to feed an unsupported format to a driver.
     return preferred + unsupported.filter(supportsCompatibleHardware) + software
 }
 
@@ -58,18 +58,19 @@ private class PlaybackVideoRenderer(
     private val diagnostics: PlaybackDiagnostics?,
     private val videoDecoderMode: () -> VideoDecoderMode,
 ) : MediaCodecVideoRenderer(builder) {
+    private var initializedMode: VideoDecoderMode? = null
     override fun getDecoderInfos(
         mediaCodecSelector: MediaCodecSelector,
         format: Format,
         requiresSecureDecoder: Boolean,
     ): List<MediaCodecInfo> {
-        val tryCompatibleHardware = videoDecoderMode() == VideoDecoderMode.COMPATIBLE_HARDWARE
-        return orderVideoDecoders(
+        val candidates = videoDecoderCandidates(
             super.getDecoderInfos(mediaCodecSelector, format, requiresSecureDecoder),
-            { it.softwareOnly },
-            { it.hardwareAccelerated },
-            { it.isFormatSupported(format) },
-        ) { tryCompatibleHardware && supportsHevcWithoutLevel(it, format) }
+            format, videoDecoderMode(),
+        )
+        android.util.Log.i("HGPlayback", "videoCandidates mode=${videoDecoderMode()} mime=${format.sampleMimeType} " +
+            "codecs=${format.codecs} size=${format.width}x${format.height} decoders=${candidates.joinToString { it.name }}")
+        return candidates
     }
 
     override fun canReuseCodec(
@@ -78,10 +79,10 @@ private class PlaybackVideoRenderer(
         newFormat: Format,
     ): DecoderReuseEvaluation {
         val mode = videoDecoderMode()
-        val canUseDecoder = codecInfo.softwareOnly ||
+        val canUseDecoder = supportsSoftwareFormat(codecInfo, newFormat) ||
             (mode != VideoDecoderMode.SOFTWARE_ONLY && (codecInfo.isFormatSupported(newFormat) ||
                 (mode == VideoDecoderMode.COMPATIBLE_HARDWARE && supportsHevcWithoutLevel(codecInfo, newFormat))))
-        if (!canUseDecoder) {
+        if (!canUseDecoder || initializedMode != null && initializedMode != mode) {
             return DecoderReuseEvaluation(
                 codecInfo.name,
                 oldFormat,
@@ -100,12 +101,14 @@ private class PlaybackVideoRenderer(
         initializationDurationMs: Long,
     ) {
         super.onCodecInitialized(name, configuration, initializedTimestampMs, initializationDurationMs)
+        initializedMode = videoDecoderMode()
         diagnostics?.videoDecoder = configuration.codecInfo.let {
             ActiveVideoDecoder(name, it.hardwareAccelerated, it.softwareOnly)
         }
     }
 
     override fun onCodecReleased(name: String) {
+        initializedMode = null
         diagnostics?.videoDecoder = null
         super.onCodecReleased(name)
     }

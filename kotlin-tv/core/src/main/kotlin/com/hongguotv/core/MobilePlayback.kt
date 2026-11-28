@@ -87,6 +87,7 @@ internal object MobilePlayback {
         signer: MobilePlaybackSigner,
         now: Long,
         host: String? = null,
+        acceptable: (Rendition) -> Boolean = { true },
     ): StreamLadder {
         require(id.matches(Regex("[0-9]{1,30}")))
         RequestScope.ensureActive()
@@ -147,16 +148,24 @@ internal object MobilePlayback {
             val model = PlaybackModels.objectValue(entries.optJSONObject(id)?.opt("video_model"))
                 ?: throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
             val rows = PlaybackModels.renditions(model)
-            if (rows.isEmpty() && currentApp) return@execute compatibleLadder(model, transport)
+            if (currentApp) return@execute compatibleLadder(model, transport, rows, acceptable)
             if (rows.isEmpty()) throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
             StreamLadder(rows)
         }
     }
 
     /** App-provided VOD codec negotiation; no website or account headers. */
-    private fun compatibleLadder(model: JSONObject, transport: OkHttpClient): StreamLadder {
+    internal fun compatibleLadder(
+        model: JSONObject,
+        transport: OkHttpClient,
+        initial: List<Rendition> = emptyList(),
+        acceptable: (Rendition) -> Boolean = { true },
+    ): StreamLadder {
+        if (initial.any(acceptable)) return StreamLadder(initial)
         val endpoint = PlaybackModels.fallback(model)
-            ?: throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
+            ?: return initial.takeIf { it.isNotEmpty() }?.let(::StreamLadder)
+                ?: throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
+        val candidates = initial.toMutableList()
         for (codec in listOf("1", "3")) {
             RequestScope.ensureActive()
             val url = endpoint.toHttpUrl().newBuilder().setQueryParameter("codec_type", codec).build()
@@ -174,8 +183,10 @@ internal object MobilePlayback {
                     ?: throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
                 PlaybackModels.renditions(data)
             }
-            if (rows.isNotEmpty()) return StreamLadder(rows)
+            candidates += rows.filter { row -> candidates.none { it.url == row.url } }
+            if (rows.any(acceptable)) return StreamLadder(candidates)
         }
+        if (candidates.isNotEmpty()) return StreamLadder(candidates)
         throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
     }
 }

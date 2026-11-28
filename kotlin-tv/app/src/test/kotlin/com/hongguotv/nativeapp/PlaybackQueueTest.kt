@@ -66,6 +66,7 @@ class PlaybackQueueTest {
         var index = 0
         var position = 0L
         var playing = true
+        var speed = 1f
         val player =
             Proxy.newProxyInstance(
                 ExoPlayer::class.java.classLoader,
@@ -73,13 +74,18 @@ class PlaybackQueueTest {
             ) { _, method, args ->
                 calls += method.name
                 when (method.name) {
+                    "getApplicationLooper" -> android.os.Looper.getMainLooper()
+                    "getAvailableCommands" -> Player.Commands.Builder().add(Player.COMMAND_SET_VIDEO_SURFACE).build()
+                    "isCommandAvailable" -> args!![0] == Player.COMMAND_SET_VIDEO_SURFACE
+                    "getVideoSize" -> VideoSize.UNKNOWN
                     "getCurrentMediaItem" -> items.getOrNull(index)
                     "getMediaItemCount" -> items.size
                     "getCurrentMediaItemIndex" -> index
                     "getCurrentPosition" -> position
                     "getDuration" -> 90000L
                     "getPlaybackState" -> Player.STATE_READY
-                    "getPlaybackParameters" -> PlaybackParameters(1f)
+                    "getPlaybackParameters" -> PlaybackParameters(speed)
+                    "setPlaybackSpeed" -> { speed = args!![0] as Float; null }
                     "getPlayWhenReady",
                     "isPlaying" -> playing
                     "pause" -> { playing = false; null }
@@ -175,6 +181,17 @@ class PlaybackQueueTest {
     }
 
     @Test
+    fun releaseRetiresDecoderBeforeDetachingTheSurface() = fixture { activity, fake, _, _ ->
+        val view = PlayerView(activity).apply { player = fake.player }
+        set(activity, "playerView", view)
+        fake.calls.clear()
+        invoke(activity, "releasePlayer", false)
+        assertTrue(fake.calls.indexOf("release") >= 0)
+        assertTrue(fake.calls.indexOf("clearVideoSurfaceView") > fake.calls.indexOf("release"))
+        assertNull(view.player)
+    }
+
+    @Test
     fun menuOpensSingleRowWithoutPausingAndClockModesRemainIndependent() =
         fixture { activity, fake, library, _ ->
             val hud = LinearLayout(activity).apply { visibility = android.view.View.GONE }
@@ -259,7 +276,7 @@ class PlaybackQueueTest {
         fake.position = 12_000L
         invoke(activity, "lowerSoftwareVideoQuality", fake.player)
         ShadowLooper.idleMainLooper()
-        assertNull(get(activity, "softwareQualityLimitedEpisode"))
+        assertFalse((get(activity, "qualityRecovery") as PlaybackQualityRecovery).limited("101"))
 
         val tiers = listOf(higher, lower)
         set(activity, "currentTiers", tiers)
@@ -278,6 +295,34 @@ class PlaybackQueueTest {
         assertEquals(720, get(activity, "attemptedQuality"))
         assertEquals("720P（自动降清）", get(activity, "quality"))
         assertEquals(1080, library.maxQuality)
+        assertEquals(0, requests.get())
+    }
+
+    @Test
+    fun overloaded720PSoftwareDecoderCanStillReduceWorkInsteadOfRemainingStuck() = fixture { activity, fake, library, opened ->
+        val requests = blockDuplicateMetadataRequests(activity)
+        library.maxQuality = 1080
+        library.playbackSpeed = 2f
+        val current = requireNotNull(opened.rendition).copy(codec = "h265", width = null, height = null)
+        val lower = current.copy(quality = 480)
+        val tiers = listOf(current, lower)
+        set(activity, "attemptedQuality", 720)
+        set(activity, "currentTrack", VideoTracks.Track("hvc1", 720, 1280))
+        set(activity, "currentTiers", tiers)
+        set(activity, "playerView", PlayerView(activity))
+        fake.position = 12_000L
+        @Suppress("UNCHECKED_CAST")
+        val slot = get(activity, "preparedNext") as PreparedSlot<OpenedStream>
+        slot.clear()
+        slot.complete(slot.begin("101:480"), "101:480", OpenedStream(opened.video, lower, tiers, null))
+        invoke(activity, "lowerSoftwareVideoQuality", fake.player)
+        ShadowLooper.idleMainLooper()
+        (get(activity, "workJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
+        ShadowLooper.idleMainLooper()
+        assertEquals("Sustained software overload must also recover below 720P", 480, get(activity, "attemptedQuality"))
+        assertEquals(12_000L, get(activity, "startPosition"))
+        assertEquals(1080, library.maxQuality)
+        assertEquals(2f, fake.speed)
         assertEquals(0, requests.get())
     }
 

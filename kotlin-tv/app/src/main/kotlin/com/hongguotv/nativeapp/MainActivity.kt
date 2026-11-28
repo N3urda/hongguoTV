@@ -128,8 +128,8 @@ class MainActivity : Activity() {
             "quality" -> {
                 val quality = body.getInt("value")
                 require(quality in PlaybackQuality.options)
-                if (library.maxQuality != quality || softwareQualityLimitedEpisode != null) {
-                    softwareQualityLimitedEpisode = null
+                if (library.maxQuality != quality || qualityRecovery.limited(detail?.episodes?.getOrNull(episodeIndex))) {
+                    qualityRecovery.clear()
                     library.maxQuality = quality
                     playEpisode(episodeIndex, currentPosition(), player?.playWhenReady ?: requestedAutoplay)
                 }
@@ -445,6 +445,14 @@ class MainActivity : Activity() {
     private var synopsisExpanded = false
     private var player: ExoPlayer? = null
     private var playerDiagnostics: PlaybackDiagnostics? = null
+    private val playbackSafety by lazy { PlaybackSafetyPolicy.from(this) }
+    private val decoderRecovery = PlaybackDecoderRecovery()
+    private val qualityRecovery = PlaybackQualityRecovery()
+    private fun decoderMode(id: String?) = decoderRecovery.mode(id, library.videoDecoderMode)
+    private fun requestedPlaybackQuality(id: String?) =
+        playbackSafety.maxQuality(library.maxQuality, decoderMode(id) == VideoDecoderMode.SOFTWARE_ONLY)
+    private fun playbackMaxQuality(id: String? = null) = qualityRecovery.maximum(id, requestedPlaybackQuality(id))
+    private fun decoderScope(id: String) = "$id/${decoderMode(id).name}"
     private var video: RemoteVideo? = null
     private var playbackReady = false
     private var pausedForLifecycle = false
@@ -489,7 +497,6 @@ class MainActivity : Activity() {
     private var currentRendition: Rendition? = null
     private var currentTiers: List<Rendition> = emptyList()
     private var autoDowngrades = 0
-    private var softwareQualityLimitedEpisode: String? = null
     private val stallGuard = PlaybackStallGuard()
     private var lastPlaybackDiagnosticAt = 0L
     private val tick =
@@ -1139,13 +1146,17 @@ class MainActivity : Activity() {
                     { id -> if (cloudAccount.signedIn) cloudAccount.favoriteActionLabel(id)
                         else if (library.favorite(id)) "已收藏 · 本机" else "加入本机收藏" },
                     PublicFeedBackend(
-                        library.maxQuality,
+                        playbackMaxQuality(),
                         account = cloudAccount.recommendationCredentials(),
                         startupCache = cloudAccount.recommendationStartupCache(),
                         recentSources = recentPlaybackSources,
+                        safety = playbackSafety,
+                        decoderMode = ::decoderMode,
+                        qualityRecovery = qualityRecovery,
                     ),
-                    Media3TrialPlayback(this, library.playbackSpeed, library.frameMode) { library.videoDecoderMode },
+                    Media3TrialPlayback(this, library.playbackSpeed, library.frameMode, decoderRecovery) { library.videoDecoderMode },
                     autoPreview = library.homeAutoplay,
+                    decoderMode = ::decoderMode,
                     backgroundBusy = { gradualPreloader?.busy == true },
                     loadCover = ::loadCover,
                     related = ::showHomeRelated,
@@ -2593,7 +2604,7 @@ class MainActivity : Activity() {
         val trialEpisodeId = trial?.episodeId
         val trialSource = trial?.video?.preparedSource()
         val trialCapturedAt = android.os.SystemClock.elapsedRealtime()
-        val trialMaxQuality = trialSource?.let { library.maxQuality }
+        val trialMaxQuality = trialSource?.let { playbackMaxQuality(trialEpisodeId) }
         if (!fromRelated) detailTrail.clear()
         relatedSection = null
         val accountScope = cloudAccount.historyScope
@@ -2645,7 +2656,9 @@ class MainActivity : Activity() {
                 }
                 val episodeId = result.episodes.getOrNull(target.index)
                 if (trial != null && trialSource != null && episodeId != null && episodeId == trialEpisodeId &&
-                    trialMaxQuality == library.maxQuality &&
+                    trialMaxQuality == playbackMaxQuality(episodeId) &&
+                    qualityRecovery.accepts(episodeId, trial.track) &&
+                    acceptsPlaybackTrack(trial.track, playbackSafety, decoderMode(episodeId), decoderScope(episodeId)) &&
                     android.os.SystemClock.elapsedRealtime() - trialCapturedAt in 0..15_000
                 ) {
                     cancelPrefetch()
@@ -2980,11 +2993,11 @@ class MainActivity : Activity() {
             return
         }
         val requestedId = data.episodes[selectedIndex]
-        if (screen != "player" || softwareQualityLimitedEpisode != requestedId) softwareQualityLimitedEpisode = null
-        val requestedQuality = library.maxQuality
-        val maxQuality = if (softwareQualityLimitedEpisode == null) requestedQuality
-            else minOf(requestedQuality, SoftwareVideoFallback.QUALITY_LIMIT)
+        val requestedQuality = requestedPlaybackQuality(requestedId)
+        val maxQuality = qualityRecovery.maximum(requestedId, requestedQuality)
         val prepareKey = "$requestedId:$maxQuality"
+        val failureScope = decoderScope(requestedId)
+        val selectedDecoderMode = decoderMode(requestedId)
         // Retain a nearly completed prefetch while keeping most of the foreground deadline available.
         val pending =
             if (position == 0L && !recovering) claimPendingPreparation(prepareKey) else null
@@ -3197,11 +3210,12 @@ class MainActivity : Activity() {
                             repository,
                             requestedId,
                             maxQuality,
-                            CodecCapabilities::supports,
+                            { playbackSafety.accepts(it) && CodecCapabilities.supports(it, failureScope) },
                             recentPlaybackSources,
                             metadataAhead = data.episodes.drop(selectedIndex + 1).take(2),
                         ) {
-                            it == null || CodecCapabilities.supports(it)
+                            qualityRecovery.accepts(requestedId, it) &&
+                                acceptsPlaybackTrack(it, playbackSafety, selectedDecoderMode, failureScope)
                         }
                         ?: throw java.io.IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
                 }
@@ -3435,8 +3449,11 @@ class MainActivity : Activity() {
         )
             return
         val id = data.episodes[episodeIndex + 1]
+        if (decoderMode(data.episodes[episodeIndex]) != library.videoDecoderMode) return
         val metadataAhead = data.episodes.drop(episodeIndex + 2).take(2)
-        val quality = library.maxQuality
+        val quality = playbackMaxQuality(id)
+        val failureScope = decoderScope(id)
+        val selectedDecoderMode = decoderMode(id)
         val key = "$id:$quality"
         if (preparedNext.isFresh(key) || prefetchJob?.isDone == false) return
         val now = android.os.SystemClock.elapsedRealtime()
@@ -3479,13 +3496,14 @@ class MainActivity : Activity() {
                                     repository,
                                     id,
                                     quality,
-                                    CodecCapabilities::supports,
+                                    { playbackSafety.accepts(it) && CodecCapabilities.supports(it, failureScope) },
                                     recentPlaybackSources,
                                     initialBytes = 32 * 1024,
                                     metadataAhead = metadataAhead,
                                     speculative = true,
                                 ) {
-                                    it == null || CodecCapabilities.supports(it)
+                                    qualityRecovery.accepts(id, it) &&
+                                        acceptsPlaybackTrack(it, playbackSafety, selectedDecoderMode, failureScope)
                                 } ?: throw java.io.IOException("没有电视可播放的清晰度")
                             }
                         }
@@ -3535,7 +3553,7 @@ class MainActivity : Activity() {
                 sleepTimer.episodesLeft == 1 ||
                 queuedNext != null ||
                 next !in data.episodes.indices ||
-                key != "${data.episodes[next]}:${library.maxQuality}" ||
+                key != "${data.episodes[next]}:${playbackMaxQuality(data.episodes[next])}" ||
                 p.mediaItemCount != 1 ||
                 p.currentMediaItem?.mediaId != data.episodes[episodeIndex]
         )
@@ -3603,7 +3621,6 @@ class MainActivity : Activity() {
             automaticEpisodeAt = android.os.SystemClock.uptimeMillis()
         }
         episodeIndex = queuedEpisode
-        softwareQualityLimitedEpisode = null
         group = episodeIndex / 20
         queuedNext = null
         queuedHttp = null
@@ -3612,7 +3629,7 @@ class MainActivity : Activity() {
         previous?.close()
         closeTransport(previousHttp)
         hideSeekHint()
-        applyOpenedStream(next, library.maxQuality)
+        applyOpenedStream(next, playbackMaxQuality(data.episodes[episodeIndex]))
         autoDowngrades = 0
         pendingSeek = null
         startPosition = 0
@@ -3709,10 +3726,16 @@ class MainActivity : Activity() {
                     recoveryAttempts = recovery.attempts,
                     total = recovery.total,
                     detail = lastPlaybackDetail,
-                )
+                ) + "\n" + playbackVideoInfo(quality,
+                    player?.videoFormat ?: playerDiagnostics?.lastVideoFormat ?: currentTrack?.videoFormat(),
+                    playerDiagnostics?.videoDecoder ?: playerDiagnostics?.lastVideoDecoder) + "\n" + playbackAudioInfo()
         } catch (_: Exception) {
             ""
         }
+
+    private fun playbackAudioInfo(): String = (playerDiagnostics?.audioInfo(player?.audioFormat,
+        player?.currentTracks?.isTypeSelected(C.TRACK_TYPE_AUDIO) == true, player?.volume) ?: "音轨 尚未初始化") +
+        "\n" + systemMediaVolumeInfo(this)
 
     /**
      * Requests recovery only for a batch of persistently late video frames. Media3 reports
@@ -3783,21 +3806,18 @@ class MainActivity : Activity() {
     }
 
     private fun lowerSoftwareVideoQuality(p: ExoPlayer) {
-        if (player !== p || !p.isPlaying || attemptedQuality <= SoftwareVideoFallback.QUALITY_LIMIT) return
+        if (player !== p || !p.isPlaying) return
         val id = p.currentMediaItem?.mediaId ?: return
         val ticket = generation
         main.post {
             if (player !== p || generation != ticket || !p.isPlaying || !foreground ||
                 !playbackReady || playError || waitingForFirstFrame || pendingSeek != null || pendingEpisodeTarget != null ||
                 playerModalOpen() || detail?.episodes?.getOrNull(episodeIndex) != id ||
-                p.currentMediaItem?.mediaId != id || softwareQualityLimitedEpisode == id
+                p.currentMediaItem?.mediaId != id
             ) return@post
-            val hasLowerTier = currentTiers.any {
-                it.quality in 1..SoftwareVideoFallback.QUALITY_LIMIT && CodecCapabilities.supports(it)
-            }
-            if (!hasLowerTier) return@post
-
-            softwareQualityLimitedEpisode = id
+            if (!qualityRecovery.reduce(id, attemptedQuality, currentTrack, currentTiers) {
+                    playbackSafety.accepts(it) && CodecCapabilities.supports(it, decoderScope(id))
+                }) return@post
             android.util.Log.i("HongguoTV", "Reducing software HEVC playback from ${attemptedQuality}P after sustained dropped frames")
             playEpisode(episodeIndex, currentPosition(), p.playWhenReady)
         }
@@ -3820,8 +3840,11 @@ class MainActivity : Activity() {
                         .setTargetBufferBytes(12 * 1024 * 1024)
                         .build()
                 val diagnostics = PlaybackDiagnostics("player")
-                val renderers = playbackRenderers(this, diagnostics) { library.videoDecoderMode }
+                val renderers = playbackRenderers(this, diagnostics) { decoderMode(detail?.episodes?.getOrNull(episodeIndex)) }
                 ExoPlayer.Builder(this, renderers).setLoadControl(load).build().also {
+                    // stop() between episodes can flush a compatible codec instead of resetting it.
+                    // The player is always released on leaving playback or entering the background.
+                    it.setForegroundMode(true)
                     player = it
                     playerDiagnostics = diagnostics
                     // Buffer the start of the queued episode once current media loading settles.
@@ -3838,9 +3861,12 @@ class MainActivity : Activity() {
                     it.setHandleAudioBecomingNoisy(true)
                     it.addAnalyticsListener(diagnostics)
                     it.addAnalyticsListener(playbackDriftListener(it))
-                    if (Build.SUPPORTED_64_BIT_ABIS.isEmpty()) {
-                        it.addAnalyticsListener(SoftwareVideoFallback(it, diagnostics, ::lowerSoftwareVideoQuality))
-                    }
+                    val p = it
+                    it.addAnalyticsListener(PlaybackAudioRecovery(p) {
+                        player === p && foreground && playbackReady && !playError && !waitingForFirstFrame &&
+                            pendingSeek == null && pendingEpisodeTarget == null && !playerModalOpen()
+                    })
+                    it.addAnalyticsListener(SoftwareVideoFallback(it, diagnostics, ::lowerSoftwareVideoQuality))
                 }
             }
 
@@ -4216,25 +4242,30 @@ class MainActivity : Activity() {
         // 不再进入自动恢复预算，不给降档按钮；手动重试保留（供给可能随服务端转码翻转）。
         val noPlayableQuality =
             generateSequence(problem) { it.cause }.take(8).any { it is NoPlayableQualityException }
-        // The device claimed support it doesn't have (MediaCodecList over-reporting): learn the
-        // runtime verdict and retry one tier lower automatically instead of surfacing the panel.
-        if (
-            !noPlayableQuality &&
-                problem is PlaybackException &&
-                problem.errorCode in
-                    PlaybackException.ERROR_CODE_DECODER_INIT_FAILED..PlaybackException
-                            .ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
-        ) {
+        // A failure belongs to this episode and decoder mode; profile, level and bitstream damage
+        // can differ between two videos with the same codec and dimensions.
+        if (!noPlayableQuality && isVideoDecoderFailure(problem)) {
+            val id = detail?.episodes?.getOrNull(episodeIndex)
+            val failedFormat = player?.videoFormat ?: playerDiagnostics?.lastVideoFormat ?: currentTrack?.videoFormat()
+            if (id != null && decoderRecovery.trySoftware(id, library.videoDecoderMode,
+                    problem as PlaybackException, playerDiagnostics?.lastVideoDecoder,
+                    hasSoftwareVideoDecoder(failedFormat))) {
+                android.util.Log.w("HGPlayback", "Hardware video failed; retrying software once at bounded quality")
+                playEpisode(episodeIndex, retryPosition, retryAutoplay, autoDowngrade = true, recreateView = true)
+                return
+            }
             val track = currentTrack
             val rendition = currentRendition
+            val failureScope = detail?.episodes?.getOrNull(episodeIndex)?.let(::decoderScope)
             when {
                 track != null ->
-                    CodecCapabilities.learnFailure(track.fourcc, track.width, track.height)
+                    CodecCapabilities.learnFailure(track.fourcc, track.width, track.height, failureScope)
                 rendition != null ->
                     CodecCapabilities.learnFailure(
                         rendition.codec,
                         rendition.width,
                         rendition.height,
+                        failureScope,
                     )
             }
             if (shouldAutoDowngrade(autoDowngrades, 2, currentTiers, attemptedQuality)) {
@@ -4264,7 +4295,7 @@ class MainActivity : Activity() {
         controls.removeAllViews()
         controls.visibility = View.VISIBLE
         panel = true
-        val decoding = problem is PlaybackException && problem.errorCode in 3000..4999
+        val decoding = isVideoDecoderFailure(problem)
         val retryable =
             if (problem is PlaybackException)
                 problem.errorCode in 2000..2999 ||
@@ -4278,7 +4309,7 @@ class MainActivity : Activity() {
             when {
                 noPlayableQuality -> lastPlaybackFailure
                 decoding && lowerTier != null -> "电视无法解码当前视频，可尝试更低清晰度。"
-                decoding -> "电视无法解码当前视频，本集没有更低清晰度可用。"
+                decoding -> "当前解码方式无法播放本集，可尝试切换解码方式。"
                 else -> "$lastPlaybackFailure · 可手动重试"
             }
         val actions = row()
@@ -4290,6 +4321,10 @@ class MainActivity : Activity() {
                 library.maxQuality = lower
                 playEpisode(episodeIndex, retryPosition, retryAutoplay)
             }
+        }
+        if (decoding || noPlayableQuality) {
+            lateinit var decoderButton: TextView
+            decoderButton = addButton(actions, "切换解码方式") { showVideoDecoderPicker(decoderButton, true) }
         }
         addButton(actions, "返回选集") { returnToDetail(true) }
         addButton(actions, "查看错误详情") { tvTools.info("播放诊断", playbackDiagnostics().trim(), currentFocus) }
@@ -4740,7 +4775,7 @@ class MainActivity : Activity() {
                     8 -> {
                         val format = if (playbackReady) player?.videoFormat else null
                         val decoder = if (playbackReady) playerDiagnostics?.videoDecoder else null
-                        tvTools.info("播放信息", playbackVideoInfo(quality, format, decoder), anchor)
+                        tvTools.info("播放信息", playbackVideoInfo(quality, format, decoder) + "\n" + playbackAudioInfo(), anchor)
                     }
                 }
             }
@@ -4768,13 +4803,16 @@ class MainActivity : Activity() {
         val modes = VideoDecoderMode.entries
         tvTools.choose("解码方式", modes.map { it.label }, anchor, { choice ->
             val mode = modes[choice]
-            if (mode != library.videoDecoderMode) {
+            val id = detail?.episodes?.getOrNull(episodeIndex)
+            if (mode != library.videoDecoderMode || inPlayer && mode != decoderMode(id)) {
                 library.videoDecoderMode = mode
+                id?.let(decoderRecovery::clear)
+                qualityRecovery.clear()
                 if (!inPlayer) {
                     anchor.text = "解码方式  ·  ${mode.label}"
                 } else if (screen == "player" && anchor.isAttachedToWindow) {
-                    softwareQualityLimitedEpisode = null
-                    playEpisode(episodeIndex, currentPosition(), player?.playWhenReady ?: requestedAutoplay, recreateView = true)
+                    playEpisode(episodeIndex, if (playError) retryPosition else currentPosition(),
+                        if (playError) retryAutoplay else player?.playWhenReady ?: requestedAutoplay, recreateView = true)
                 }
             }
         }, selected = library.videoDecoderMode.ordinal,
@@ -4796,8 +4834,8 @@ class MainActivity : Activity() {
         val options = PlaybackQuality.options
         tvTools.choose("全局默认清晰度", options.map { "${it}P" }, anchor, { index ->
             val target = options[index]
-            val changed = library.maxQuality != target || (inPlayer && softwareQualityLimitedEpisode != null)
-            if (inPlayer) softwareQualityLimitedEpisode = null
+            val changed = library.maxQuality != target || (inPlayer && qualityRecovery.limited(detail?.episodes?.getOrNull(episodeIndex)))
+            qualityRecovery.clear()
             library.maxQuality = target
             if (anchor.tag != "playback-settings")
                 anchor.text = (if (inPlayer) "清晰度 " else "默认清晰度  ·  ") + "${target}P"
@@ -4988,16 +5026,18 @@ class MainActivity : Activity() {
         pendingSeek = null
         playerListener?.let { player?.removeListener(it) }
         playerListener = null
-        video?.close()
-        video = null
         player?.removeListener(bufferingIndicator)
         bufferingIndicator.clear()
+        // Retire the codec while its Surface is still attached. Detaching first can race vendor
+        // buffer allocation and block Surface.forceScopedDisconnect on the UI thread (#148).
+        player?.release()
         playerView?.player = null
         playerView = null
         seekHint = null
         persistentBar = null
-        player?.release()
         player = null
+        video?.close()
+        video = null
         playerDiagnostics = null
         playbackReady = false
         transportPlay = null

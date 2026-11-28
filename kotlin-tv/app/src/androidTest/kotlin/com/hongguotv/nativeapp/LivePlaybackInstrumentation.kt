@@ -15,16 +15,28 @@ import com.hongguotv.core.Detail
 
 /** Explicit real-network acceptance: uses the Activity's production player, never a sample URL. */
 class LivePlaybackInstrumentation : Instrumentation() {
+    private var audioProbeArgs: Bundle? = null
     private var issue102Samples = false
     private var issue144Samples = false
+    private var decoderStability = false
+    private var lowMemoryProfile = false
+    private var hevcRecovery = false
+    private var softwareOverload = false
     override fun onCreate(arguments: Bundle?) {
+        if (arguments?.getString("audioProbe") == "true") audioProbeArgs = arguments
         issue102Samples = arguments?.getString("issue102Samples") == "true"
         issue144Samples = arguments?.getString("issue144Samples") == "true"
+        decoderStability = arguments?.getString("decoderStability") == "true"
+        lowMemoryProfile = arguments?.getString("lowMemoryProfile") == "true"
+        hevcRecovery = arguments?.getString("hevcRecovery") == "true"
+        softwareOverload = arguments?.getString("softwareOverload") == "true"
         super.onCreate(arguments); start()
     }
     private fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
 
     override fun onStart() {
+        audioProbeArgs?.let { AudioPlaybackAcceptance.run(this, it); return }
+        if (decoderStability) { DecoderStabilityAcceptance.run(this, lowMemoryProfile, hevcRecovery, softwareOverload); return }
         if (issue144Samples) { Issue144DirectoryAcceptance.run(this); return }
         if (issue102Samples) { Issue102PlaybackAcceptance.run(this); return }
         val result = Bundle()

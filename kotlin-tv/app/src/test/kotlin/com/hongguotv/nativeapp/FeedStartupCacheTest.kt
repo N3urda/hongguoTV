@@ -15,6 +15,18 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26])
 class FeedStartupCacheTest {
+    @org.junit.Before
+    fun installAvcDecoderForMediaFixtures() {
+        val capabilities = android.media.MediaCodecInfo.CodecCapabilities.createFromProfileLevel(
+            "video/avc", android.media.MediaCodecInfo.CodecProfileLevel.AVCProfileHigh,
+            android.media.MediaCodecInfo.CodecProfileLevel.AVCLevel51,
+        )
+        org.robolectric.shadows.ShadowMediaCodecList.addCodec(
+            org.robolectric.shadows.MediaCodecInfoBuilder.newBuilder()
+                .setName("OMX.google.h264.decoder").setIsEncoder(false).setCapabilities(capabilities).build()
+        )
+    }
+
     private fun session() = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
 
     private val page = CatalogPage(listOf(Series("101", "缓存作品")), true)
